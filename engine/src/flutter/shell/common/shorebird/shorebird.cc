@@ -270,6 +270,12 @@ void ConfigureShorebird(std::string code_cache_path,
     // On iOS we add the patch to the front of the list instead of clearing
     // the list, to allow dart_snapshot.cc to still find the base snapshot
     // for the vm isolate.
+#elif SHOREBIRD_ENABLE_AOT_PATCHING
+    // Open AOT patches replace only the isolate snapshot. Keep the base
+    // application library paths after the patch so VM snapshot symbols still
+    // resolve from the signed App.framework in JIT-disabled iOS builds.
+#endif
+#if SHOREBIRD_USE_INTERPRETER || SHOREBIRD_ENABLE_AOT_PATCHING
     settings.application_library_paths.insert(
         settings.application_library_paths.begin(), active_path);
 #else

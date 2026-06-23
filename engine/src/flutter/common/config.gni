@@ -29,6 +29,17 @@ declare_args() {
   # See [go/slimpeller-dashboard](https://github.com/orgs/flutter/projects/21)
   # for details.
   slimpeller = false
+
+  # Whether to enable Shorebird-style AOT isolate snapshot patch loading.
+  #
+  # This is intentionally separate from the legacy SHOREBIRD_USE_INTERPRETER
+  # define: vmcode patches are mapped AOT snapshot data/instructions, not KBC.
+  shorebird_enable_aot_patching = is_ios
+
+  # Legacy bytecode/interpreter based Shorebird patching. Keep disabled for the
+  # open AOT patch path so iOS release/profile builds can remain JIT-free and
+  # interpreter-free.
+  shorebird_use_interpreter = false
 }
 
 # feature_defines_list ---------------------------------------------------------
@@ -71,7 +82,11 @@ if (is_android || is_ios || is_linux || is_mac || is_win) {
   feature_defines_list += [ "SHOREBIRD_PLATFORM_SUPPORTED=1" ]
 }
 
-if (is_ios) {
+if (shorebird_enable_aot_patching) {
+  feature_defines_list += [ "SHOREBIRD_ENABLE_AOT_PATCHING=1" ]
+}
+
+if (shorebird_use_interpreter) {
   feature_defines_list += [ "SHOREBIRD_USE_INTERPRETER=1" ]
 }
 

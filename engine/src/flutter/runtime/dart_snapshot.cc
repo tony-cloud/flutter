@@ -14,7 +14,7 @@
 #include "flutter/runtime/dart_vm.h"
 #include "third_party/dart/runtime/include/dart_api.h"
 
-#if SHOREBIRD_USE_INTERPRETER
+#if SHOREBIRD_ENABLE_AOT_PATCHING || SHOREBIRD_USE_INTERPRETER
 #include "flutter/runtime/shorebird/patch_cache.h"  // nogncheck
 #endif
 #include "flutter/shell/common/shorebird/updater.h"  // nogncheck
@@ -158,13 +158,13 @@ static std::shared_ptr<const fml::Mapping> ResolveIsolateData(
   // Updater class comment for why this matters in add-to-app and
   // FlutterEngineGroup scenarios.
   shorebird::Updater::Instance().ReportLaunchStart();
-#if SHOREBIRD_USE_INTERPRETER
+#if SHOREBIRD_ENABLE_AOT_PATCHING || SHOREBIRD_USE_INTERPRETER
   // Try loading from a Shorebird patch first.
   if (auto mapping = TryLoadFromPatch(settings.application_library_paths,
                                       DartSnapshot::kIsolateDataSymbol)) {
     return mapping;
   }
-#endif  // SHOREBIRD_USE_INTERPRETER
+#endif  // SHOREBIRD_ENABLE_AOT_PATCHING || SHOREBIRD_USE_INTERPRETER
   return SearchMapping(
       settings.isolate_snapshot_data,       // embedder_mapping_callback
       settings.isolate_snapshot_data_path,  // file_path
@@ -185,14 +185,14 @@ static std::shared_ptr<const fml::Mapping> ResolveIsolateInstructions(
       true      // dontneed_safe
   );
 #else  // DART_SNAPSHOT_STATIC_LINK
-#if SHOREBIRD_USE_INTERPRETER
+#if SHOREBIRD_ENABLE_AOT_PATCHING || SHOREBIRD_USE_INTERPRETER
   // Try loading from a Shorebird patch first.
   if (auto mapping =
           TryLoadFromPatch(settings.application_library_paths,
                            DartSnapshot::kIsolateInstructionsSymbol)) {
     return mapping;
   }
-#endif  // SHOREBIRD_USE_INTERPRETER
+#endif  // SHOREBIRD_ENABLE_AOT_PATCHING || SHOREBIRD_USE_INTERPRETER
   return SearchMapping(
       settings.isolate_snapshot_instr,           // embedder_mapping_callback
       settings.isolate_snapshot_instr_path,      // file_path
