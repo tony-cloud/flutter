@@ -101,7 +101,6 @@ template("embedder_source_set") {
     deps = [
       ":embedder_gpu_configuration",
       "$dart_src/runtime/bin:common_embedder_dart_io",
-      "$dart_src/runtime/bin:elf_loader",
       "//flutter/assets",
       "//flutter/common",
       "//flutter/common/graphics",
@@ -113,6 +112,11 @@ template("embedder_source_set") {
       "//flutter/skia",
       "//flutter/third_party/tonic",
     ]
+    if (is_ios || is_mac) {
+      deps += [ "$dart_src/runtime/bin:shared_object_loaders" ]
+    } else {
+      deps += [ "$dart_src/runtime/bin:elf_loader" ]
+    }
 
     if (embedder_enable_gl) {
       sources += [

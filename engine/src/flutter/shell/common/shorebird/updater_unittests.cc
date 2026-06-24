@@ -80,6 +80,23 @@ TEST_F(UpdaterTest, MockUpdaterTracksStartUpdateThreadCalls) {
   EXPECT_EQ(mock_->start_update_thread_count(), 1);
 }
 
+TEST_F(UpdaterTest, MockUpdaterStoresLastAppConfig) {
+  AppConfig config;
+  config.release_version = "1.0.0+1";
+  config.app_id = "app.test";
+  config.yaml_config = "app_id: app.test\n";
+
+  EXPECT_TRUE(Updater::Instance().Init(config));
+
+  auto stored_config = Updater::Instance().LastAppConfig();
+  ASSERT_TRUE(stored_config.has_value());
+  EXPECT_EQ(stored_config->release_version, "1.0.0+1");
+  EXPECT_EQ(stored_config->app_id, "app.test");
+  EXPECT_EQ(stored_config->yaml_config, "app_id: app.test\n");
+  EXPECT_EQ(mock_->last_release_version(), "1.0.0+1");
+  EXPECT_EQ(mock_->last_app_id(), "app.test");
+}
+
 TEST_F(UpdaterTest, MockUpdaterCallLogRecordsSequence) {
   EXPECT_TRUE(mock_->call_log().empty());
 

@@ -31,6 +31,13 @@ List<String> linkInfoArgsFor(String buildPath) => <String>[
   '--print_dispatch_table_link_info_to=$buildPath/App.dt.link',
 ];
 
+FakeCommand linkInfoSupportProbe(String genSnapshotPath) {
+  return FakeCommand(
+    command: <String>[genSnapshotPath, '--help', '--verbose'],
+    stdout: '--print_class_table_link_info_to\n',
+  );
+}
+
 void main() {
   late Environment environment;
   late MemoryFileSystem fileSystem;
@@ -897,6 +904,7 @@ flavors:
       // interleave at each subsequent await point in the same order.
       processManager.addCommands(<FakeCommand>[
         // arm64 gen_snapshot runs first (iteration order).
+        linkInfoSupportProbe('Artifact.genSnapshotArm64.TargetPlatform.darwin.release'),
         FakeCommand(
           command: <String>[
             'Artifact.genSnapshotArm64.TargetPlatform.darwin.release',
@@ -908,6 +916,7 @@ flavors:
           ],
         ),
         // x86_64 gen_snapshot runs next.
+        linkInfoSupportProbe('Artifact.genSnapshotX64.TargetPlatform.darwin.release'),
         FakeCommand(
           command: <String>[
             'Artifact.genSnapshotX64.TargetPlatform.darwin.release',

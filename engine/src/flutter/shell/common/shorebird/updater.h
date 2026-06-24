@@ -30,6 +30,9 @@ struct AppConfig {
   /// Version string for this release (e.g., "1.0.0+1").
   std::string release_version;
 
+  /// Application id from shorebird.yaml.
+  std::string app_id;
+
   /// Paths to the original AOT libraries (libapp.so on Android, App.framework
   /// on iOS).
   std::vector<std::string> original_libapp_paths;
@@ -93,6 +96,9 @@ class Updater {
   /// @return Path to patch, or empty string if no patch available
   virtual std::string NextBootPatchPath() = 0;
 
+  /// Returns the last app configuration supplied to Init, when available.
+  virtual std::optional<AppConfig> LastAppConfig() const = 0;
+
   // Boot lifecycle methods — guarded to run at most once per process.
   // Callers may call these freely; subsequent calls after the first are
   // silently ignored.
@@ -142,6 +148,9 @@ class NoOpUpdater : public Updater {
   bool Init(const AppConfig& config) override { return true; }
   void ValidateNextBootPatch() override {}
   std::string NextBootPatchPath() override { return ""; }
+  std::optional<AppConfig> LastAppConfig() const override {
+    return std::nullopt;
+  }
   void DoReportLaunchStart() override {}
   void DoReportLaunchSuccess() override {}
   void DoReportLaunchFailure() override {}
@@ -160,11 +169,15 @@ class RealUpdater : public Updater {
   bool Init(const AppConfig& config) override;
   void ValidateNextBootPatch() override;
   std::string NextBootPatchPath() override;
+  std::optional<AppConfig> LastAppConfig() const override;
   void DoReportLaunchStart() override;
   void DoReportLaunchSuccess() override;
   void DoReportLaunchFailure() override;
   bool ShouldAutoUpdate() override;
   void StartUpdateThread() override;
+
+ private:
+  std::optional<AppConfig> config_;
 };
 #endif  // SHOREBIRD_PLATFORM_SUPPORTED
 
@@ -178,6 +191,7 @@ class MockUpdater : public Updater {
   bool Init(const AppConfig& config) override;
   void ValidateNextBootPatch() override;
   std::string NextBootPatchPath() override;
+  std::optional<AppConfig> LastAppConfig() const override;
   void DoReportLaunchStart() override;
   void DoReportLaunchSuccess() override;
   void DoReportLaunchFailure() override;
@@ -197,6 +211,7 @@ class MockUpdater : public Updater {
   const std::string& last_release_version() const {
     return last_release_version_;
   }
+  const std::string& last_app_id() const { return last_app_id_; }
   const std::string& last_yaml_config() const { return last_yaml_config_; }
 
   // Test configuration
@@ -220,7 +235,9 @@ class MockUpdater : public Updater {
   bool should_auto_update_ = false;
   std::string next_boot_patch_path_;
   std::string last_release_version_;
+  std::string last_app_id_;
   std::string last_yaml_config_;
+  std::optional<AppConfig> last_app_config_;
   std::vector<std::string> call_log_;
 };
 

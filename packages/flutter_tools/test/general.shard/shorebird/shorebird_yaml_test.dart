@@ -56,6 +56,8 @@ flavors:
   bar: 3-a
 base_url: https://example.com
 patch_verification: strict
+aot_patch_key_id: test-key
+aot_patch_base_snapshot_hash: "1234"
 ''';
       final YamlDocument input = loadYamlDocument(yamlContents);
       final YamlMap yamlMap = input.contents as YamlMap;
@@ -69,6 +71,8 @@ patch_verification: strict
         'auto_update': false,
         'base_url': 'https://example.com',
         'patch_verification': 'strict',
+        'aot_patch_key_id': 'test-key',
+        'aot_patch_base_snapshot_hash': '1234',
       });
       final Map<String, dynamic> compiled2 = compileShorebirdYaml(
         yamlMap,
@@ -80,6 +84,8 @@ patch_verification: strict
         'auto_update': false,
         'base_url': 'https://example.com',
         'patch_verification': 'strict',
+        'aot_patch_key_id': 'test-key',
+        'aot_patch_base_snapshot_hash': '1234',
         'patch_public_key': '4-a',
       });
     });
@@ -91,6 +97,8 @@ flavors:
   foo: 2-a
   bar: 3-a
 base_url: https://example.com
+aot_patch_key_id: test-key
+aot_patch_base_snapshot_hash: "1234"
 ''';
       // Make a temporary file to test editing in place.
       final Directory tempDir = Directory.systemTemp.createTempSync('shorebird_yaml_test.');
@@ -108,6 +116,8 @@ base_url: https://example.com
       expect(yamlMap['app_id'], '2-a');
       expect(yamlMap['auto_update'], false);
       expect(yamlMap['base_url'], 'https://example.com');
+      expect(yamlMap['aot_patch_key_id'], 'test-key');
+      expect(yamlMap['aot_patch_base_snapshot_hash'], '1234');
     });
   });
 }

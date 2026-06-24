@@ -59,15 +59,15 @@ Map<String, dynamic> compileShorebirdYaml(
 }) {
   final String appId = appIdForFlavor(yamlMap, flavor: flavor);
   final Map<String, dynamic> compiled = <String, dynamic>{'app_id': appId};
-  void copyIfSet(String key) {
-    if (yamlMap[key] != null) {
-      compiled[key] = yamlMap[key];
+
+  for (final MapEntry<Object?, Object?> entry in yamlMap.entries) {
+    final Object? key = entry.key;
+    if (key is! String || key == 'app_id' || key == 'flavors') {
+      continue;
     }
+    compiled[key] = entry.value;
   }
 
-  copyIfSet('base_url');
-  copyIfSet('auto_update');
-  copyIfSet('patch_verification');
   final String? shorebirdPublicKeyEnvVar = environment['SHOREBIRD_PUBLIC_KEY'];
   if (shorebirdPublicKeyEnvVar != null) {
     compiled['patch_public_key'] = shorebirdPublicKeyEnvVar;

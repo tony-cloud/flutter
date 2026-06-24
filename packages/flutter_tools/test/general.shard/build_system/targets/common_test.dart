@@ -35,6 +35,13 @@ List<String> linkInfoArgsFor(String buildPath) => <String>[
   '--print_dispatch_table_link_info_to=$buildPath/App.dt.link',
 ];
 
+FakeCommand linkInfoSupportProbe(String genSnapshotPath) {
+  return FakeCommand(
+    command: <String>[genSnapshotPath, '--help', '--verbose'],
+    stdout: '--print_class_table_link_info_to\n',
+  );
+}
+
 final Platform macPlatform = FakePlatform(
   operatingSystem: 'macos',
   environment: <String, String>{},
@@ -808,6 +815,7 @@ void main() {
       iosEnvironment.defines[kSdkRoot] = 'path/to/iPhoneOS.sdk';
       final String build = iosEnvironment.buildDir.path;
       processManager.addCommands(<FakeCommand>[
+        linkInfoSupportProbe('Artifact.genSnapshotArm64.TargetPlatform.ios.profile'),
         FakeCommand(
           command: <String>[
             // This path is not known by the cache due to the iOS gen_snapshot split.

@@ -14,6 +14,7 @@
 #include "flutter/fml/mapping.h"
 #include "flutter/runtime/shorebird/patch_mapping.h"
 #include "third_party/dart/runtime/bin/elf_loader.h"
+#include "third_party/dart/runtime/bin/file.h"
 #include "third_party/dart/runtime/include/dart_api.h"
 
 #if defined(FML_OS_MACOSX)
@@ -27,9 +28,14 @@ namespace {
 // These symbol names match the constants in dart_snapshot.cc.
 // We duplicate them here rather than extracting them into a header.
 // They are actually defined down in Dart and will never change.
+#if DART_INITIALIZE_PARAMS_CURRENT_VERSION >= 0x0000000B
+constexpr const char* kIsolateDataSymbol = kSnapshotDataCSymbol;
+constexpr const char* kIsolateInstructionsSymbol = kSnapshotTextCSymbol;
+#else
 constexpr const char* kIsolateDataSymbol = "kDartIsolateSnapshotData";
 constexpr const char* kIsolateInstructionsSymbol =
     "kDartIsolateSnapshotInstructions";
+#endif
 
 struct VmcodeObjectLocation {
   PatchObjectFormat format = PatchObjectFormat::kElf;
@@ -52,18 +58,10 @@ bool IsMachOMagic(const uint8_t* bytes) {
   constexpr uint8_t kMachO32Be[] = {0xfe, 0xed, 0xfa, 0xce};
   constexpr uint8_t kMachO64Le[] = {0xcf, 0xfa, 0xed, 0xfe};
   constexpr uint8_t kMachO64Be[] = {0xfe, 0xed, 0xfa, 0xcf};
-  constexpr uint8_t kFat32Be[] = {0xca, 0xfe, 0xba, 0xbe};
-  constexpr uint8_t kFat32Le[] = {0xbe, 0xba, 0xfe, 0xca};
-  constexpr uint8_t kFat64Be[] = {0xca, 0xfe, 0xba, 0xbf};
-  constexpr uint8_t kFat64Le[] = {0xbf, 0xba, 0xfe, 0xca};
   return HasMagic(bytes, kMachO32Le, sizeof(kMachO32Le)) ||
          HasMagic(bytes, kMachO32Be, sizeof(kMachO32Be)) ||
          HasMagic(bytes, kMachO64Le, sizeof(kMachO64Le)) ||
-         HasMagic(bytes, kMachO64Be, sizeof(kMachO64Be)) ||
-         HasMagic(bytes, kFat32Be, sizeof(kFat32Be)) ||
-         HasMagic(bytes, kFat32Le, sizeof(kFat32Le)) ||
-         HasMagic(bytes, kFat64Be, sizeof(kFat64Be)) ||
-         HasMagic(bytes, kFat64Le, sizeof(kFat64Le));
+         HasMagic(bytes, kMachO64Be, sizeof(kMachO64Be));
 }
 
 bool FindVmcodeObject(const uint8_t* mapping,
@@ -125,17 +123,24 @@ std::shared_ptr<PatchCacheEntry> PatchCacheEntry::Create(
   // The VM Snapshot is identical for all binaries produced by a given version
   // of Dart. Our linker checks this and will fail to link if ever the VM
   // snapshot changes. We ignore the VM data/instrs here.
+#if DART_INITIALIZE_PARAMS_CURRENT_VERSION < 0x0000000B
   const uint8_t* ignored_vm_data = nullptr;
   const uint8_t* ignored_vm_instrs = nullptr;
+#endif
   const uint8_t* isolate_data = nullptr;
   const uint8_t* isolate_instrs = nullptr;
 
   void* loaded_object = nullptr;
   if (object_location.format == PatchObjectFormat::kElf) {
+#if DART_INITIALIZE_PARAMS_CURRENT_VERSION >= 0x0000000B
+    loaded_object = Dart_LoadELF(path.c_str(), object_location.file_offset,
+                                 &error, &isolate_data, &isolate_instrs);
+#else
     loaded_object = Dart_LoadELF(
         path.c_str(), object_location.file_offset, &error, &ignored_vm_data,
         &ignored_vm_instrs, &isolate_data, &isolate_instrs,
-        dart::bin::kReadOnly);
+        dart::bin::File::kReadOnly);
+#endif
   } else {
 #if defined(FML_OS_MACOSX)
     loaded_object =

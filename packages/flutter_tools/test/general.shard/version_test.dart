@@ -1621,6 +1621,56 @@ void main() {
     expect(processManager, hasNoRemainingExpectations);
   });
 
+  late FileSystem shorebirdCandidateFileSystem;
+  testUsingContext(
+    'determine resolves version from shorebird release candidate file',
+    () {
+      const flutterRoot = '/path/to/flutter';
+      shorebirdCandidateFileSystem = MemoryFileSystem.test();
+      shorebirdCandidateFileSystem.file(
+          shorebirdCandidateFileSystem.path.join(
+            flutterRoot,
+            'bin',
+            'internal',
+            'release-candidate-branch.version',
+          ),
+        )
+        ..createSync(recursive: true)
+        ..writeAsStringSync('flutter-3.44-candidate.0');
+      processManager.addCommands(<FakeCommand>[
+        const FakeCommand(
+          command: <String>['git', 'tag', '--points-at', 'HEAD'],
+          // No tag at HEAD.
+        ),
+        const FakeCommand(
+          command: <String>[
+            'git',
+            'for-each-ref',
+            '--contains',
+            'HEAD',
+            '--format',
+            '%(refname:short)',
+            'refs/remotes/origin/flutter_release/*',
+          ],
+          stdout: '',
+        ),
+      ]);
+      final platform = FakePlatform();
+
+      final GitTagVersion gitTagVersion = GitTagVersion.determine(
+        platform,
+        git: git,
+        workingDirectory: flutterRoot,
+      );
+      expect(gitTagVersion.frameworkVersionFor('abcd1234'), '3.44.0-0.0.pre');
+      expect(processManager, hasNoRemainingExpectations);
+    },
+    overrides: <Type, Generator>{
+      FileSystem: () => shorebirdCandidateFileSystem,
+      ProcessManager: () => processManager,
+    },
+  );
+
   testUsingContext(
     'determine picks stable branch over rc branch from shorebird flutter_release',
     () {

@@ -37,12 +37,12 @@
                 "--android",
                 "--android-cpu=arm64",
                 "--no-lto",
-                "--gn-args=dart_dynamic_modules=true",
+                "--gn-args=dart_dynamic_modules=false",
                 "--rbe",
                 "--no-goma"
             ],
             "name": "ci/android_debug_arm64_ddm",
-            "description": "Produces experimental debug mode artifacts to target 64-bit arm Android from a Linux host with dynamic modules enabled.",
+            "description": "Produces experimental debug mode artifacts to target 64-bit arm Android from a Linux host with dynamic modules disabled.",
             "ninja": {
                 "config": "ci/android_debug_arm64_ddm",
                 "targets": [
@@ -76,12 +76,12 @@
                 "--android",
                 "--android-cpu=x64",
                 "--no-lto",
-                "--gn-args=dart_dynamic_modules=true",
+                "--gn-args=dart_dynamic_modules=false",
                 "--rbe",
                 "--no-goma"
             ],
             "name": "ci/android_debug_x64_ddm",
-            "description": "Produces experimental debug mode artifacts to target x64 Android from a Linux host with dynamic modules enabled.",
+            "description": "Produces experimental debug mode artifacts to target x64 Android from a Linux host with dynamic modules disabled.",
             "ninja": {
                 "config": "ci/android_debug_x64_ddm",
                 "targets": [

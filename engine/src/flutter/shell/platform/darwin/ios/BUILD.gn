@@ -195,7 +195,7 @@ source_set("flutter_framework_source") {
 
   deps = [
     ":ios_gpu_configuration",
-    "$dart_src/runtime/bin:elf_loader",
+    "$dart_src/runtime/bin:shared_object_loaders",
     "//flutter/common",
     "//flutter/common/graphics",
     "//flutter/fml",

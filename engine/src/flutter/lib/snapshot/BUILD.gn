@@ -2,7 +2,6 @@
 # Use of this source code is governed by a BSD-style license that can be
 # found in the LICENSE file.
 
-import("//build/compiled_action.gni")
 import("//flutter/build/bin_to_obj.gni")
 import("//flutter/common/config.gni")
 import("//flutter/impeller/tools/impeller.gni")
@@ -74,21 +73,36 @@ group("generate_snapshot_bins") {
 #
 # See: `bin_to_linkable` rules below that build these outputs into linkable form
 # See: https://github.com/flutter/flutter/wiki/Flutter-engine-operation-in-AOT-Mode
-compiled_action("generate_snapshot_bin") {
+action("generate_snapshot_bin") {
   if (target_cpu == "x86" && host_os == "linux") {
     # By default Dart will create a 32-bit gen_snapshot host binary if the target
     # platform is 32-bit.  Override this to create a 64-bit gen_snapshot for x86
     # targets because some host platforms may not support 32-bit binaries.
-    tool = "$dart_src/runtime/bin:gen_snapshot_host_targeting_host"
-    toolchain = "//build/toolchain/$host_os:clang_x64"
+    gen_snapshot_tool = "$dart_src/runtime/bin:gen_snapshot_host_targeting_host"
+    gen_snapshot_toolchain = "//build/toolchain/$host_os:clang_x64"
   } else {
-    tool = "$dart_src/runtime/bin:gen_snapshot"
+    gen_snapshot_tool = "$dart_src/runtime/bin:gen_snapshot"
+    gen_snapshot_toolchain = host_toolchain
   }
 
   platform_kernel = "$root_out_dir/flutter_patched_sdk/platform_strong.dill"
+  gen_snapshot_target = "$gen_snapshot_tool($gen_snapshot_toolchain)"
+  gen_snapshot_binary =
+      get_label_info(gen_snapshot_target, "root_out_dir") + "/" +
+      get_label_info(gen_snapshot_target, "name")
+  if (host_os == "win") {
+    gen_snapshot_binary += ".exe"
+  }
 
-  inputs = [ platform_kernel ]
-  deps = [ ":kernel_platform_files" ]
+  script = "//flutter/lib/snapshot/generate_core_snapshot.py"
+  inputs = [
+    platform_kernel,
+    gen_snapshot_binary,
+  ]
+  deps = [
+    ":kernel_platform_files",
+    gen_snapshot_target,
+  ]
 
   vm_snapshot_data = "$target_gen_dir/vm_isolate_snapshot.bin"
   vm_snapshot_instructions = "$target_gen_dir/vm_snapshot_instructions.bin"
@@ -103,22 +117,25 @@ compiled_action("generate_snapshot_bin") {
   ]
 
   args = [
-    "--snapshot_kind=core",
-    "--enable_mirrors=false",
-    "--vm_snapshot_data=" + rebase_path(vm_snapshot_data),
-    "--vm_snapshot_instructions=" + rebase_path(vm_snapshot_instructions),
-    "--isolate_snapshot_data=" + rebase_path(isolate_snapshot_data),
-    "--isolate_snapshot_instructions=" +
-        rebase_path(isolate_snapshot_instructions),
+    "--gen-snapshot",
+    rebase_path(gen_snapshot_binary, root_build_dir),
+    "--platform-kernel",
+    rebase_path(platform_kernel, root_build_dir),
+    "--vm-snapshot-data",
+    rebase_path(vm_snapshot_data, root_build_dir),
+    "--vm-snapshot-instructions",
+    rebase_path(vm_snapshot_instructions, root_build_dir),
+    "--isolate-snapshot-data",
+    rebase_path(isolate_snapshot_data, root_build_dir),
+    "--isolate-snapshot-instructions",
+    rebase_path(isolate_snapshot_instructions, root_build_dir),
   ]
 
   if (is_debug && flutter_runtime_mode != "profile" &&
       flutter_runtime_mode != "release" &&
       flutter_runtime_mode != "jit_release") {
-    args += [ "--enable_asserts" ]
+    args += [ "--enable-asserts" ]
   }
-
-  args += [ rebase_path(platform_kernel) ]
 
   metadata = {
     entitlement_file_path = [ "gen_snapshot" ]

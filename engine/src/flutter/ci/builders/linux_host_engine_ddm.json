@@ -41,10 +41,10 @@
                 "--no-lto",
                 "--rbe",
                 "--no-goma",
-                "--gn-args=dart_dynamic_modules=true"
+                "--gn-args=dart_dynamic_modules=false"
             ],
             "name": "ci/host_debug_ddm",
-            "description": "Produces debug mode Linux host-side tooling with dynamic modules enabled.",
+            "description": "Produces debug mode Linux host-side tooling with dynamic modules disabled.",
             "ninja": {
                 "config": "ci/host_debug_ddm",
                 "targets": [

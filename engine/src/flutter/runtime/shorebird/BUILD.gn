@@ -1,4 +1,5 @@
 import("//flutter/common/config.gni")
+import("//flutter/build/dart/dart.gni")
 
 source_set("patch_cache") {
   sources = [
@@ -9,6 +10,7 @@ source_set("patch_cache") {
   ]
 
   deps = [
+    "$dart_src/runtime/bin:libdart_builtin",
     "//flutter/fml",
     "//flutter/runtime:libdart",
     "//flutter/shell/common/shorebird:updater",

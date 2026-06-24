@@ -1,20 +1,59 @@
 #include "flutter/shell/common/shorebird/snapshots_data_handle.h"
 
-#include "third_party/dart/runtime/include/dart_native_api.h"
+#include <cstdint>
+#include <cstring>
 
 namespace flutter {
+namespace {
+
+constexpr int32_t kDartSnapshotMagicValue = 0xdcdcf5f5;
+constexpr size_t kDartSnapshotMagicOffset = 0;
+constexpr size_t kDartSnapshotMagicSize = sizeof(int32_t);
+constexpr size_t kDartSnapshotLengthOffset =
+    kDartSnapshotMagicOffset + kDartSnapshotMagicSize;
+constexpr size_t kDartImageSizeOffset = 0;
+
+template <typename T>
+T ReadUnaligned(const uint8_t* ptr, size_t offset) {
+  T value;
+  memcpy(&value, ptr + offset, sizeof(T));
+  return value;
+}
+
+}  // namespace
+
+size_t ShorebirdSnapshotDataSize(const uint8_t* ptr) {
+  if (ptr == nullptr) {
+    return 0;
+  }
+  const int32_t magic =
+      ReadUnaligned<int32_t>(ptr, kDartSnapshotMagicOffset);
+  if (magic != kDartSnapshotMagicValue) {
+    return 0;
+  }
+  const int64_t length =
+      ReadUnaligned<int64_t>(ptr, kDartSnapshotLengthOffset);
+  return length < 0 ? 0 : static_cast<size_t>(length + kDartSnapshotMagicSize);
+}
+
+size_t ShorebirdSnapshotInstructionsSize(const uint8_t* ptr) {
+  if (ptr == nullptr) {
+    return 0;
+  }
+  return ReadUnaligned<size_t>(ptr, kDartImageSizeOffset);
+}
 
 static std::unique_ptr<fml::Mapping> DataMapping(const DartSnapshot& snapshot) {
   auto ptr = snapshot.GetDataMapping();
   return std::make_unique<fml::NonOwnedMapping>(ptr,
-                                                Dart_SnapshotDataSize(ptr));
+                                                ShorebirdSnapshotDataSize(ptr));
 }
 
 static std::unique_ptr<fml::Mapping> InstructionsMapping(
     const DartSnapshot& snapshot) {
   auto ptr = snapshot.GetInstructionsMapping();
-  return std::make_unique<fml::NonOwnedMapping>(ptr,
-                                                Dart_SnapshotInstrSize(ptr));
+  return std::make_unique<fml::NonOwnedMapping>(
+      ptr, ShorebirdSnapshotInstructionsSize(ptr));
 }
 
 // The size of the snapshot data is the sum of the sizes of the blobs.

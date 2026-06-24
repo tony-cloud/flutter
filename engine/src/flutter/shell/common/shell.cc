@@ -531,11 +531,17 @@ Shell::Shell(DartVMRef vm,
   // In add-to-app, subsequent engines are silently ignored since they
   // boot from the same snapshot that was already reported on.
   // On unsupported platforms, NoOpUpdater handles these calls gracefully.
+#if SHOREBIRD_USE_INTERPRETER
+  if (!vm_) {
+    shorebird::Updater::Instance().ReportLaunchFailure();
+  }
+#else
   if (!vm_) {
     shorebird::Updater::Instance().ReportLaunchFailure();
   } else {
     shorebird::Updater::Instance().ReportLaunchSuccess();
   }
+#endif  // SHOREBIRD_USE_INTERPRETER
   FML_CHECK(!settings.enable_software_rendering || !settings.enable_impeller)
       << "Software rendering is incompatible with Impeller.";
   if (!settings.enable_impeller && settings.warn_on_impeller_opt_out) {

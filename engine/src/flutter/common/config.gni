@@ -30,16 +30,17 @@ declare_args() {
   # for details.
   slimpeller = false
 
-  # Whether to enable Shorebird-style AOT isolate snapshot patch loading.
-  #
-  # This is intentionally separate from the legacy SHOREBIRD_USE_INTERPRETER
-  # define: vmcode patches are mapped AOT snapshot data/instructions, not KBC.
-  shorebird_enable_aot_patching = is_ios
+  # Bytecode/interpreter based Shorebird patching. iOS uses this path because
+  # App Store-delivered patches must not be installed as newly executable AOT
+  # snapshot text.
+  shorebird_use_interpreter = is_ios
+}
 
-  # Legacy bytecode/interpreter based Shorebird patching. Keep disabled for the
-  # open AOT patch path so iOS release/profile builds can remain JIT-free and
-  # interpreter-free.
-  shorebird_use_interpreter = false
+declare_args() {
+  # Whether to enable Shorebird-style native AOT isolate snapshot patch loading.
+  # This maps downloaded patch bytes as snapshot instructions and is not the
+  # iOS App Store path. Keep it off when the interpreter route is enabled.
+  shorebird_enable_aot_patching = is_ios && !shorebird_use_interpreter
 }
 
 # feature_defines_list ---------------------------------------------------------

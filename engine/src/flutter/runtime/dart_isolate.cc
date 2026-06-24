@@ -4,10 +4,20 @@
 
 #include "flutter/runtime/dart_isolate.h"
 
+#include <algorithm>
+#include <array>
+#include <cctype>
 #include <cstdlib>
+#include <cstring>
+#include <memory>
+#include <optional>
+#include <string_view>
 #include <utility>
 
+#include "flutter/fml/build_config.h"
+#include "flutter/fml/file.h"
 #include "flutter/fml/logging.h"
+#include "flutter/fml/mapping.h"
 #include "flutter/fml/posix_wrappers.h"
 #include "flutter/fml/trace_event.h"
 #include "flutter/lib/io/dart_io.h"
@@ -20,6 +30,8 @@
 #include "flutter/runtime/dart_vm_lifecycle.h"
 #include "flutter/runtime/isolate_configuration.h"
 #include "flutter/runtime/platform_isolate_manager.h"
+#include "flutter/shell/common/shorebird/shorebird.h"
+#include "flutter/shell/common/shorebird/updater.h"
 #include "fml/message_loop_task_queues.h"
 #include "fml/task_source.h"
 #include "fml/time/time_point.h"
@@ -40,6 +52,463 @@ namespace flutter {
 namespace {
 
 constexpr std::string_view kFileUriPrefix = "file://";
+
+#if SHOREBIRD_USE_INTERPRETER
+struct JsonStringValue {
+  const char* chars = nullptr;
+  intptr_t length = 0;
+
+  std::string ToString() const { return std::string(chars, length); }
+};
+
+struct ShorebirdAotPatchKeyState {
+  std::string key_id;
+  std::array<uint8_t, 32> key = {};
+  bool is_configured = false;
+};
+
+static ShorebirdAotPatchKeyState g_shorebird_aot_patch_key_state;
+
+void WriteShorebirdInterpreterPatchStage(const std::string& active_path,
+                                         const std::string& stage) {
+  std::string marker_path = active_path;
+  const auto patches = active_path.rfind("/patches/");
+  if (patches != std::string::npos) {
+    marker_path =
+        active_path.substr(0, patches) + "/last_interpreter_reload.stage";
+  } else {
+    marker_path += ".stage";
+  }
+
+  const auto separator = marker_path.find_last_of('/');
+  if (separator == std::string::npos) {
+    return;
+  }
+
+  const std::string directory_path = marker_path.substr(0, separator);
+  const std::string stage_file_name = marker_path.substr(separator + 1);
+  fml::UniqueFD directory = fml::OpenDirectory(
+      directory_path.c_str(), false, fml::FilePermission::kRead);
+  if (!directory.is_valid()) {
+    return;
+  }
+
+  const std::string content = stage + "\n";
+  fml::NonOwnedMapping mapping(
+      reinterpret_cast<const uint8_t*>(content.data()), content.size());
+  fml::WriteAtomically(directory, stage_file_name.c_str(), mapping);
+}
+
+bool IsJsonWhitespace(char c) {
+  return c == ' ' || c == '\n' || c == '\r' || c == '\t';
+}
+
+void SkipJsonWhitespace(const char* json, intptr_t json_length, intptr_t* pos) {
+  while (*pos < json_length && IsJsonWhitespace(json[*pos])) {
+    (*pos)++;
+  }
+}
+
+bool ParseJsonString(const char* json,
+                     intptr_t json_length,
+                     intptr_t* pos,
+                     JsonStringValue* out) {
+  if (*pos >= json_length || json[*pos] != '"') {
+    return false;
+  }
+  (*pos)++;
+  const intptr_t start = *pos;
+  while (*pos < json_length) {
+    const char c = json[*pos];
+    if (c == '\\') {
+      // Open patch artifact metadata is stable ASCII. Reject escaped strings
+      // here so raw comparisons cannot silently accept ambiguous metadata.
+      return false;
+    }
+    if (c == '"') {
+      out->chars = json + start;
+      out->length = *pos - start;
+      (*pos)++;
+      return true;
+    }
+    if (static_cast<unsigned char>(c) < 0x20) {
+      return false;
+    }
+    (*pos)++;
+  }
+  return false;
+}
+
+bool JsonStringEquals(const JsonStringValue& value, const char* expected) {
+  const intptr_t expected_length = strlen(expected);
+  return value.length == expected_length &&
+         strncmp(value.chars, expected, value.length) == 0;
+}
+
+std::optional<std::string> FindJsonString(const fml::Mapping& mapping,
+                                          const char* key) {
+  const char* json = reinterpret_cast<const char*>(mapping.GetMapping());
+  const intptr_t json_length = static_cast<intptr_t>(mapping.GetSize());
+  intptr_t pos = 0;
+  while (pos < json_length) {
+    if (json[pos] != '"') {
+      pos++;
+      continue;
+    }
+
+    JsonStringValue current_key;
+    if (!ParseJsonString(json, json_length, &pos, &current_key)) {
+      return std::nullopt;
+    }
+    SkipJsonWhitespace(json, json_length, &pos);
+    if (pos >= json_length || json[pos] != ':') {
+      continue;
+    }
+    pos++;
+    SkipJsonWhitespace(json, json_length, &pos);
+
+    if (!JsonStringEquals(current_key, key)) {
+      continue;
+    }
+    JsonStringValue value;
+    if (!ParseJsonString(json, json_length, &pos, &value)) {
+      return std::nullopt;
+    }
+    return value.ToString();
+  }
+  return std::nullopt;
+}
+
+std::string UnquoteYamlValue(std::string value) {
+  if (value.size() >= 2 &&
+      ((value.front() == '"' && value.back() == '"') ||
+       (value.front() == '\'' && value.back() == '\''))) {
+    return value.substr(1, value.size() - 2);
+  }
+  return value;
+}
+
+std::string YamlValue(const shorebird::AppConfig& config,
+                      const std::string& key) {
+  return UnquoteYamlValue(GetValueFromYaml(config.yaml_config, key));
+}
+
+std::string RequiredJsonString(const fml::Mapping& artifact,
+                               const char* key,
+                               const std::string& path,
+                               bool* ok) {
+  auto value = FindJsonString(artifact, key);
+  if (value.has_value() && !value->empty()) {
+    return *value;
+  }
+  FML_LOG(ERROR) << "Shorebird updater: encrypted interpreter patch is missing "
+                 << key << ": " << path;
+  *ok = false;
+  return "";
+}
+
+std::string YamlValueOrRequiredJson(const shorebird::AppConfig& config,
+                                    const std::string& yaml_key,
+                                    const fml::Mapping& artifact,
+                                    const char* json_key,
+                                    const std::string& path,
+                                    bool* ok) {
+  std::string value = YamlValue(config, yaml_key);
+  if (!value.empty()) {
+    return value;
+  }
+  return RequiredJsonString(artifact, json_key, path, ok);
+}
+
+std::string CurrentTargetOs() {
+#if FML_OS_IOS
+  return "ios";
+#elif FML_OS_ANDROID
+  return "android";
+#elif FML_OS_MACOSX
+  return "macos";
+#elif FML_OS_LINUX
+  return "linux";
+#elif FML_OS_WIN
+  return "windows";
+#else
+  return "";
+#endif
+}
+
+std::string CurrentTargetArch() {
+#if FML_ARCH_CPU_ARM64
+  return "arm64";
+#elif FML_ARCH_CPU_X86_64
+  return "x64";
+#elif FML_ARCH_CPU_ARMEL
+  return "arm";
+#elif FML_ARCH_CPU_X86
+  return "ia32";
+#else
+  return "";
+#endif
+}
+
+int HexNibble(char c) {
+  if ('0' <= c && c <= '9') {
+    return c - '0';
+  }
+  if ('a' <= c && c <= 'f') {
+    return 10 + (c - 'a');
+  }
+  if ('A' <= c && c <= 'F') {
+    return 10 + (c - 'A');
+  }
+  return -1;
+}
+
+bool ParseAes256KeyHex(const std::string& key_hex,
+                       std::array<uint8_t, 32>* key) {
+  if (key_hex.size() != key->size() * 2) {
+    return false;
+  }
+  for (size_t i = 0; i < key->size(); i++) {
+    const int high = HexNibble(key_hex[i * 2]);
+    const int low = HexNibble(key_hex[(i * 2) + 1]);
+    if (high < 0 || low < 0) {
+      return false;
+    }
+    (*key)[i] = static_cast<uint8_t>((high << 4) | low);
+  }
+  return true;
+}
+
+bool ShorebirdAotPatchKeyCallback(const char* key_id,
+                                  uint8_t* key_buffer,
+                                  intptr_t key_buffer_length,
+                                  intptr_t* key_length) {
+  const auto& state = g_shorebird_aot_patch_key_state;
+  if (!state.is_configured || key_buffer == nullptr || key_length == nullptr ||
+      key_buffer_length < static_cast<intptr_t>(state.key.size())) {
+    return false;
+  }
+  if (!state.key_id.empty() &&
+      (key_id == nullptr || state.key_id != std::string(key_id))) {
+    return false;
+  }
+  memmove(key_buffer, state.key.data(), state.key.size());
+  *key_length = static_cast<intptr_t>(state.key.size());
+  return true;
+}
+
+class ScopedShorebirdAotPatchKeyCallback {
+ public:
+  ScopedShorebirdAotPatchKeyCallback(std::string key_id,
+                                     std::array<uint8_t, 32> key) {
+    g_shorebird_aot_patch_key_state.key_id = std::move(key_id);
+    g_shorebird_aot_patch_key_state.key = key;
+    g_shorebird_aot_patch_key_state.is_configured = true;
+    Dart_SetAotPatchKeyCallback(ShorebirdAotPatchKeyCallback);
+  }
+
+  ~ScopedShorebirdAotPatchKeyCallback() {
+    Dart_SetAotPatchKeyCallback(nullptr);
+    std::fill(g_shorebird_aot_patch_key_state.key.begin(),
+              g_shorebird_aot_patch_key_state.key.end(), 0);
+    g_shorebird_aot_patch_key_state.key_id.clear();
+    g_shorebird_aot_patch_key_state.is_configured = false;
+  }
+
+ private:
+  FML_DISALLOW_COPY_AND_ASSIGN(ScopedShorebirdAotPatchKeyCallback);
+};
+
+std::shared_ptr<const fml::Mapping> InstallEncryptedShorebirdInterpreterPatch(
+    const fml::Mapping& artifact,
+    const std::string& path) {
+  auto config = shorebird::Updater::Instance().LastAppConfig();
+  if (!config.has_value()) {
+    FML_LOG(ERROR) << "Shorebird updater: encrypted interpreter patch selected "
+                      "before updater initialization: "
+                   << path;
+    return nullptr;
+  }
+
+  bool ok = true;
+  const std::string key_hex = YamlValue(*config, "aot_patch_key_hex");
+  std::array<uint8_t, 32> key = {};
+  if (!ParseAes256KeyHex(key_hex, &key)) {
+    FML_LOG(ERROR) << "Shorebird updater: shorebird.yaml must provide "
+                      "aot_patch_key_hex as 64 hex characters to install "
+                      "encrypted interpreter patches.";
+    return nullptr;
+  }
+  std::string key_id = YamlValue(*config, "aot_patch_key_id");
+  if (key_id.empty()) {
+    key_id = RequiredJsonString(artifact, "key_id", path, &ok);
+  }
+
+  std::string app_id = config->app_id.empty()
+                           ? RequiredJsonString(artifact, "app_id", path, &ok)
+                           : config->app_id;
+  std::string app_build_id =
+      config->release_version.empty()
+          ? RequiredJsonString(artifact, "app_build_id", path, &ok)
+          : config->release_version;
+  std::string base_flavor_id =
+      YamlValue(*config, "aot_patch_base_flavor_id");
+  std::string base_license_type =
+      YamlValue(*config, "aot_patch_base_license_type");
+  std::string flavor_id = YamlValueOrRequiredJson(
+      *config, "aot_patch_flavor_id", artifact, "flavor_id", path, &ok);
+  std::string license_type =
+      YamlValueOrRequiredJson(*config, "aot_patch_license_type", artifact,
+                              "license_type", path, &ok);
+  std::string sdk_hash = YamlValueOrRequiredJson(
+      *config, "aot_patch_sdk_hash", artifact, "sdk_hash", path, &ok);
+  std::string base_snapshot_hash =
+      YamlValueOrRequiredJson(*config, "aot_patch_base_snapshot_hash", artifact,
+                              "base_snapshot_hash", path, &ok);
+  std::string patch_snapshot_hash =
+      RequiredJsonString(artifact, "patch_snapshot_hash", path, &ok);
+  std::string obfuscation_map_hash =
+      YamlValue(*config, "aot_patch_obfuscation_map_hash");
+  if (obfuscation_map_hash.empty()) {
+    obfuscation_map_hash =
+        FindJsonString(artifact, "obfuscation_map_hash").value_or("");
+  }
+  std::string target_os = CurrentTargetOs();
+  std::string target_arch = CurrentTargetArch();
+  if (target_os.empty() || target_arch.empty()) {
+    FML_LOG(ERROR) << "Shorebird updater: unsupported target for encrypted "
+                      "interpreter patch.";
+    ok = false;
+  }
+  if (!ok) {
+    return nullptr;
+  }
+
+  Dart_AotPatchInstallOptions options = {};
+  options.app_id = app_id.c_str();
+  options.app_build_id = app_build_id.c_str();
+  options.base_flavor_id =
+      base_flavor_id.empty() ? nullptr : base_flavor_id.c_str();
+  options.base_license_type =
+      base_license_type.empty() ? nullptr : base_license_type.c_str();
+  options.flavor_id = flavor_id.c_str();
+  options.license_type = license_type.c_str();
+  options.sdk_hash = sdk_hash.c_str();
+  options.base_snapshot_hash = base_snapshot_hash.c_str();
+  options.patch_snapshot_hash = patch_snapshot_hash.c_str();
+  options.obfuscation_map_hash =
+      obfuscation_map_hash.empty() ? nullptr : obfuscation_map_hash.c_str();
+  options.target_os = target_os.c_str();
+  options.target_arch = target_arch.c_str();
+  options.runtime_mode = "dart-bytecode-interpreter";
+
+  uint8_t* patch_payload = nullptr;
+  intptr_t patch_payload_length = 0;
+  {
+    ScopedShorebirdAotPatchKeyCallback scoped_key(key_id, key);
+    Dart_Handle install_result = Dart_InstallAotPatch(
+        artifact.GetMapping(), static_cast<intptr_t>(artifact.GetSize()),
+        &options, &patch_payload, &patch_payload_length);
+    if (tonic::CheckAndHandleError(install_result)) {
+      return nullptr;
+    }
+  }
+  if (patch_payload == nullptr || patch_payload_length <= 0) {
+    FML_LOG(ERROR) << "Shorebird updater: encrypted interpreter patch "
+                      "decrypted to an empty payload: "
+                   << path;
+    if (patch_payload != nullptr) {
+      Dart_FreeAotPatchPayload(patch_payload);
+    }
+    return nullptr;
+  }
+
+  auto payload_mapping = std::make_shared<fml::NonOwnedMapping>(
+      patch_payload, static_cast<size_t>(patch_payload_length),
+      [](const uint8_t* data, size_t size) {
+        Dart_FreeAotPatchPayload(const_cast<uint8_t*>(data));
+      });
+  if (!Dart_IsBytecode(payload_mapping->GetMapping(),
+                       payload_mapping->GetSize())) {
+    FML_LOG(ERROR) << "Shorebird updater: decrypted interpreter patch payload "
+                      "is not Dart bytecode: "
+                   << path;
+    return nullptr;
+  }
+  return payload_mapping;
+}
+
+bool ApplyShorebirdBytecodePatch(
+    const std::shared_ptr<const fml::Mapping>& mapping,
+    const std::string& active_path) {
+  if (!Dart_IsBytecode(mapping->GetMapping(), mapping->GetSize())) {
+    FML_LOG(ERROR) << "Shorebird updater: interpreter patch payload is not "
+                      "Dart bytecode: "
+                   << active_path;
+    WriteShorebirdInterpreterPatchStage(active_path,
+                                        "reload_error: payload_not_bytecode");
+    shorebird::Updater::Instance().ReportLaunchFailure();
+    return true;
+  }
+  FML_LOG(INFO) << "Shorebird updater: applying interpreter reload patch: "
+                << active_path << " (" << mapping->GetSize() << " bytes)";
+  WriteShorebirdInterpreterPatchStage(active_path, "reload_begin");
+  Dart_Handle reload_result = Dart_ReloadBytecodePatch(
+      mapping->GetMapping(), static_cast<intptr_t>(mapping->GetSize()));
+  if (Dart_IsError(reload_result)) {
+    const char* error = Dart_GetError(reload_result);
+    WriteShorebirdInterpreterPatchStage(
+        active_path,
+        std::string("reload_error: ") + (error == nullptr ? "" : error));
+    FML_LOG(ERROR) << "Shorebird updater: interpreter reload patch failed: "
+                   << (error == nullptr ? "" : error);
+    shorebird::Updater::Instance().ReportLaunchFailure();
+    return true;
+  }
+  if (tonic::CheckAndHandleError(reload_result)) {
+    shorebird::Updater::Instance().ReportLaunchFailure();
+    return true;
+  }
+
+  WriteShorebirdInterpreterPatchStage(active_path, "reload_success");
+  shorebird::Updater::Instance().ReportLaunchSuccess();
+  FML_LOG(INFO) << "Shorebird updater: applied interpreter reload patch: "
+                << active_path;
+  return true;
+}
+
+bool LoadShorebirdInterpreterPatchIfNeeded() {
+  std::string active_path = shorebird::Updater::Instance().NextBootPatchPath();
+  if (active_path.empty()) {
+    shorebird::Updater::Instance().ReportLaunchSuccess();
+    return true;
+  }
+
+  auto file_mapping = fml::FileMapping::CreateReadOnly(active_path);
+  if (!file_mapping || file_mapping->GetSize() == 0) {
+    FML_LOG(ERROR) << "Shorebird updater: interpreter patch is not readable: "
+                   << active_path;
+    WriteShorebirdInterpreterPatchStage(active_path,
+                                        "reload_error: patch_not_readable");
+    shorebird::Updater::Instance().ReportLaunchFailure();
+    return true;
+  }
+
+  std::shared_ptr<const fml::Mapping> mapping(std::move(file_mapping));
+  if (!Dart_IsBytecode(mapping->GetMapping(), mapping->GetSize())) {
+    mapping =
+        InstallEncryptedShorebirdInterpreterPatch(*mapping, active_path);
+    if (!mapping) {
+      WriteShorebirdInterpreterPatchStage(active_path,
+                                          "reload_error: decrypt_failed");
+      shorebird::Updater::Instance().ReportLaunchFailure();
+      return true;
+    }
+  }
+
+  return ApplyShorebirdBytecodePatch(mapping, active_path);
+}
+#endif  // SHOREBIRD_USE_INTERPRETER
 
 class DartErrorString {
  public:
@@ -704,6 +1173,13 @@ bool DartIsolate::PrepareForRunningFromPrecompiledCode() {
   if (Dart_IsNull(Dart_RootLibrary())) {
     return false;
   }
+
+#if SHOREBIRD_USE_INTERPRETER
+  if (IsRootIsolate() && !Dart_IsServiceIsolate(isolate()) &&
+      !LoadShorebirdInterpreterPatchIfNeeded()) {
+    return false;
+  }
+#endif  // SHOREBIRD_USE_INTERPRETER
 
   if (!MarkIsolateRunnable()) {
     return false;
