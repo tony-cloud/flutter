@@ -11,14 +11,9 @@ source_set("patch_cache") {
 
   deps = [
     "$dart_src/runtime/bin:libdart_builtin",
+    "$dart_src/runtime/bin:shared_object_loaders",
     "//flutter/fml",
     "//flutter/runtime:libdart",
     "//flutter/shell/common/shorebird:updater",
   ]
-
-  if (is_ios || is_mac) {
-    deps += [ "$dart_src/runtime/bin:shared_object_loaders" ]
-  } else {
-    deps += [ "$dart_src/runtime/bin:elf_loader" ]
-  }
 }
