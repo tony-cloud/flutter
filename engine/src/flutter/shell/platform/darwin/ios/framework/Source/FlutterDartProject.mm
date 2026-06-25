@@ -9,12 +9,14 @@
 #import <Metal/Metal.h>
 #import <UIKit/UIKit.h>
 
+#include <cstring>
 #include <sstream>
 
 #include "flutter/common/constants.h"
 #include "flutter/fml/build_config.h"
 #include "flutter/fml/paths.h"
 #include "flutter/shell/common/shorebird/shorebird.h"
+#include "flutter/shell/common/shorebird/updater.h"
 #include "flutter/shell/common/switches.h"
 #import "flutter/shell/platform/darwin/common/InternalFlutterSwiftCommon/InternalFlutterSwiftCommon.h"
 #include "flutter/shell/platform/darwin/common/command_line.h"
@@ -309,6 +311,7 @@ flutter::Settings FLTDefaultSettingsForBundle(NSBundle* bundle, NSProcessInfo* p
 // That doesn't seem to be enough to prevent this property from being synthesized.
 // Mark dynamic to avoid warnings.
 @dynamic dartEntrypointArguments;
+@synthesize shorebirdAotPatchKeyProvider = _shorebirdAotPatchKeyProvider;
 
 #pragma mark - Override base class designated initializers
 
@@ -336,6 +339,35 @@ flutter::Settings FLTDefaultSettingsForBundle(NSBundle* bundle, NSProcessInfo* p
   }
 
   return self;
+}
+
+- (void)setShorebirdAotPatchKeyProvider:
+    (FlutterShorebirdAotPatchKeyProvider)shorebirdAotPatchKeyProvider {
+  _shorebirdAotPatchKeyProvider = [shorebirdAotPatchKeyProvider copy];
+  if (_shorebirdAotPatchKeyProvider == nil) {
+    _settings.shorebird_aot_patch_key_callback = nullptr;
+    flutter::shorebird::Updater::Instance().SetAotPatchKeyCallback(nullptr);
+    return;
+  }
+
+  FlutterShorebirdAotPatchKeyProvider keyProvider = [_shorebirdAotPatchKeyProvider copy];
+  _settings.shorebird_aot_patch_key_callback =
+      [keyProvider](const char* key_id, uint8_t* key_buffer, intptr_t key_buffer_length,
+                    intptr_t* key_length) -> bool {
+    if (key_buffer == nullptr || key_length == nullptr) {
+      return false;
+    }
+    NSString* keyIdentifier = key_id == nullptr ? @"" : [NSString stringWithUTF8String:key_id];
+    NSData* keyData = keyProvider(keyIdentifier);
+    if (keyData.length != 32 || key_buffer_length < static_cast<intptr_t>(keyData.length)) {
+      return false;
+    }
+    std::memcpy(key_buffer, keyData.bytes, keyData.length);
+    *key_length = static_cast<intptr_t>(keyData.length);
+    return true;
+  };
+  flutter::shorebird::Updater::Instance().SetAotPatchKeyCallback(
+      _settings.shorebird_aot_patch_key_callback);
 }
 
 #pragma mark - PlatformData accessors

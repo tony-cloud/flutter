@@ -249,6 +249,7 @@ void ConfigureShorebird(std::string code_cache_path,
   config.code_cache_dir = code_cache_dir;
   config.file_callbacks = ShorebirdFileCallbacks();
   config.yaml_config = shorebird_yaml;
+  config.aot_patch_key_callback = settings.shorebird_aot_patch_key_callback;
 
   bool init_result = shorebird::Updater::Instance().Init(config);
 

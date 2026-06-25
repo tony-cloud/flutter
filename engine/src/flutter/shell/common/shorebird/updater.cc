@@ -123,6 +123,12 @@ std::optional<AppConfig> RealUpdater::LastAppConfig() const {
   return config_;
 }
 
+void RealUpdater::SetAotPatchKeyCallback(AotPatchKeyCallback callback) {
+  if (config_.has_value()) {
+    config_->aot_patch_key_callback = std::move(callback);
+  }
+}
+
 void RealUpdater::DoReportLaunchStart() {
   shorebird_report_launch_start();
 }
@@ -168,6 +174,12 @@ std::string MockUpdater::NextBootPatchPath() {
 
 std::optional<AppConfig> MockUpdater::LastAppConfig() const {
   return last_app_config_;
+}
+
+void MockUpdater::SetAotPatchKeyCallback(AotPatchKeyCallback callback) {
+  if (last_app_config_.has_value()) {
+    last_app_config_->aot_patch_key_callback = std::move(callback);
+  }
 }
 
 void MockUpdater::DoReportLaunchStart() {

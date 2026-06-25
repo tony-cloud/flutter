@@ -9,6 +9,8 @@
 #include "flutter/shell/platform/darwin/common/framework/Headers/FlutterMacros.h"
 #import "flutter/shell/platform/darwin/ios/framework/Source/FlutterDartProject_Internal.h"
 
+#include <cstring>
+
 FLUTTER_ASSERT_ARC
 
 @interface FlutterDartProjectTest : XCTestCase
@@ -37,6 +39,47 @@ FLUTTER_ASSERT_ARC
   size_t resource_cache_max_bytes_threshold = screenWidth * screenHeight * 12 * 4;
   XCTAssertEqual(project.settings.resource_cache_max_bytes_threshold,
                  resource_cache_max_bytes_threshold);
+}
+
+- (void)testShorebirdAotPatchKeyProviderConfiguresSettingsCallback {
+  FlutterDartProject* project = [[FlutterDartProject alloc] init];
+  uint8_t keyBytes[32];
+  for (size_t i = 0; i < sizeof(keyBytes); i++) {
+    keyBytes[i] = static_cast<uint8_t>(i);
+  }
+  NSData* keyData = [NSData dataWithBytes:keyBytes length:sizeof(keyBytes)];
+  __block NSString* requestedKeyIdentifier = nil;
+
+  project.shorebirdAotPatchKeyProvider = ^NSData*(NSString* keyIdentifier) {
+    requestedKeyIdentifier = keyIdentifier;
+    return keyData;
+  };
+
+  uint8_t keyBuffer[32] = {};
+  intptr_t keyLength = 0;
+  XCTAssertTrue(project.settings.shorebird_aot_patch_key_callback("test-key", keyBuffer,
+                                                                  sizeof(keyBuffer), &keyLength));
+  XCTAssertEqualObjects(requestedKeyIdentifier, @"test-key");
+  XCTAssertEqual(keyLength, static_cast<intptr_t>(sizeof(keyBytes)));
+  XCTAssertEqual(std::memcmp(keyBytes, keyBuffer, sizeof(keyBytes)), 0);
+
+  project.shorebirdAotPatchKeyProvider = nil;
+  XCTAssertFalse(static_cast<bool>(project.settings.shorebird_aot_patch_key_callback));
+}
+
+- (void)testShorebirdAotPatchKeyProviderRejectsWrongLengthKeys {
+  FlutterDartProject* project = [[FlutterDartProject alloc] init];
+  uint8_t shortKey[31] = {};
+  NSData* shortKeyData = [NSData dataWithBytes:shortKey length:sizeof(shortKey)];
+
+  project.shorebirdAotPatchKeyProvider = ^NSData*(NSString* keyIdentifier) {
+    return shortKeyData;
+  };
+
+  uint8_t keyBuffer[32] = {};
+  intptr_t keyLength = 0;
+  XCTAssertFalse(project.settings.shorebird_aot_patch_key_callback("test-key", keyBuffer,
+                                                                   sizeof(keyBuffer), &keyLength));
 }
 
 - (void)testMainBundleSettingsAreCorrectlyParsed {

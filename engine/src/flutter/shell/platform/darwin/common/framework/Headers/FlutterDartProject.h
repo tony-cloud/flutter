@@ -12,11 +12,28 @@
 NS_ASSUME_NONNULL_BEGIN
 
 /**
+ * Resolves the raw AES-256 key bytes for an encrypted Shorebird patch artifact.
+ *
+ * The key identifier is the artifact encryption key id. Return a 32-byte
+ * `NSData` containing the AES-256 key, or nil to reject the patch.
+ */
+typedef NSData* _Nullable (^FlutterShorebirdAotPatchKeyProvider)(NSString* keyIdentifier);
+
+/**
  * A set of Flutter and Dart assets used by a `FlutterEngine` to initialize execution.
  *
  */
 FLUTTER_DARWIN_EXPORT
 @interface FlutterDartProject : NSObject
+
+/**
+ * App-owned key resolver for encrypted Shorebird patch artifacts.
+ *
+ * Set this before starting the engine. Production apps should use this instead
+ * of bundling `aot_patch_key_hex` in `shorebird.yaml`.
+ */
+@property(nonatomic, nullable, copy)
+    FlutterShorebirdAotPatchKeyProvider shorebirdAotPatchKeyProvider;
 
 /**
  * Initializes a Flutter Dart project from a bundle.

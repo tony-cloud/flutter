@@ -7,6 +7,7 @@
 
 #include <atomic>
 #include <cstdint>
+#include <functional>
 #include <memory>
 #include <mutex>
 #include <optional>
@@ -15,6 +16,11 @@
 
 namespace flutter {
 namespace shorebird {
+
+using AotPatchKeyCallback = std::function<bool(const char* /* key_id */,
+                                               uint8_t* /* key_buffer */,
+                                               intptr_t /* key_buffer_length */,
+                                               intptr_t* /* key_length */)>;
 
 /// File callbacks for iOS patch loading.
 /// Mirrors the FileCallbacks struct from the Rust updater.
@@ -48,6 +54,10 @@ struct AppConfig {
 
   /// YAML configuration from shorebird.yaml.
   std::string yaml_config;
+
+  /// App-owned key resolver for encrypted patch artifacts. This allows
+  /// production apps to keep decryption keys out of shorebird.yaml.
+  AotPatchKeyCallback aot_patch_key_callback;
 };
 
 /// Abstract interface for the Shorebird updater.
@@ -98,6 +108,11 @@ class Updater {
 
   /// Returns the last app configuration supplied to Init, when available.
   virtual std::optional<AppConfig> LastAppConfig() const = 0;
+
+  /// Updates the app-owned key resolver after Init. This is used by platform
+  /// embedders whose public project APIs are configured after default settings
+  /// and updater initialization have run.
+  virtual void SetAotPatchKeyCallback(AotPatchKeyCallback callback) = 0;
 
   // Boot lifecycle methods — guarded to run at most once per process.
   // Callers may call these freely; subsequent calls after the first are
@@ -151,6 +166,7 @@ class NoOpUpdater : public Updater {
   std::optional<AppConfig> LastAppConfig() const override {
     return std::nullopt;
   }
+  void SetAotPatchKeyCallback(AotPatchKeyCallback callback) override {}
   void DoReportLaunchStart() override {}
   void DoReportLaunchSuccess() override {}
   void DoReportLaunchFailure() override {}
@@ -170,6 +186,7 @@ class RealUpdater : public Updater {
   void ValidateNextBootPatch() override;
   std::string NextBootPatchPath() override;
   std::optional<AppConfig> LastAppConfig() const override;
+  void SetAotPatchKeyCallback(AotPatchKeyCallback callback) override;
   void DoReportLaunchStart() override;
   void DoReportLaunchSuccess() override;
   void DoReportLaunchFailure() override;
@@ -192,6 +209,7 @@ class MockUpdater : public Updater {
   void ValidateNextBootPatch() override;
   std::string NextBootPatchPath() override;
   std::optional<AppConfig> LastAppConfig() const override;
+  void SetAotPatchKeyCallback(AotPatchKeyCallback callback) override;
   void DoReportLaunchStart() override;
   void DoReportLaunchSuccess() override;
   void DoReportLaunchFailure() override;

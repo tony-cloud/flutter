@@ -64,6 +64,7 @@ struct JsonStringValue {
 struct ShorebirdAotPatchKeyState {
   std::string key_id;
   std::array<uint8_t, 32> key = {};
+  shorebird::AotPatchKeyCallback app_key_callback;
   bool is_configured = false;
 };
 
@@ -87,15 +88,15 @@ void WriteShorebirdInterpreterPatchStage(const std::string& active_path,
 
   const std::string directory_path = marker_path.substr(0, separator);
   const std::string stage_file_name = marker_path.substr(separator + 1);
-  fml::UniqueFD directory = fml::OpenDirectory(
-      directory_path.c_str(), false, fml::FilePermission::kRead);
+  fml::UniqueFD directory = fml::OpenDirectory(directory_path.c_str(), false,
+                                               fml::FilePermission::kRead);
   if (!directory.is_valid()) {
     return;
   }
 
   const std::string content = stage + "\n";
-  fml::NonOwnedMapping mapping(
-      reinterpret_cast<const uint8_t*>(content.data()), content.size());
+  fml::NonOwnedMapping mapping(reinterpret_cast<const uint8_t*>(content.data()),
+                               content.size());
   fml::WriteAtomically(directory, stage_file_name.c_str(), mapping);
 }
 
@@ -180,9 +181,8 @@ std::optional<std::string> FindJsonString(const fml::Mapping& mapping,
 }
 
 std::string UnquoteYamlValue(std::string value) {
-  if (value.size() >= 2 &&
-      ((value.front() == '"' && value.back() == '"') ||
-       (value.front() == '\'' && value.back() == '\''))) {
+  if (value.size() >= 2 && ((value.front() == '"' && value.back() == '"') ||
+                            (value.front() == '\'' && value.back() == '\''))) {
     return value.substr(1, value.size() - 2);
   }
   return value;
@@ -288,6 +288,10 @@ bool ShorebirdAotPatchKeyCallback(const char* key_id,
       key_buffer_length < static_cast<intptr_t>(state.key.size())) {
     return false;
   }
+  if (state.app_key_callback) {
+    return state.app_key_callback(key_id, key_buffer, key_buffer_length,
+                                  key_length);
+  }
   if (!state.key_id.empty() &&
       (key_id == nullptr || state.key_id != std::string(key_id))) {
     return false;
@@ -299,6 +303,14 @@ bool ShorebirdAotPatchKeyCallback(const char* key_id,
 
 class ScopedShorebirdAotPatchKeyCallback {
  public:
+  explicit ScopedShorebirdAotPatchKeyCallback(
+      shorebird::AotPatchKeyCallback app_key_callback) {
+    g_shorebird_aot_patch_key_state.app_key_callback =
+        std::move(app_key_callback);
+    g_shorebird_aot_patch_key_state.is_configured = true;
+    Dart_SetAotPatchKeyCallback(ShorebirdAotPatchKeyCallback);
+  }
+
   ScopedShorebirdAotPatchKeyCallback(std::string key_id,
                                      std::array<uint8_t, 32> key) {
     g_shorebird_aot_patch_key_state.key_id = std::move(key_id);
@@ -312,6 +324,7 @@ class ScopedShorebirdAotPatchKeyCallback {
     std::fill(g_shorebird_aot_patch_key_state.key.begin(),
               g_shorebird_aot_patch_key_state.key.end(), 0);
     g_shorebird_aot_patch_key_state.key_id.clear();
+    g_shorebird_aot_patch_key_state.app_key_callback = nullptr;
     g_shorebird_aot_patch_key_state.is_configured = false;
   }
 
@@ -331,17 +344,23 @@ std::shared_ptr<const fml::Mapping> InstallEncryptedShorebirdInterpreterPatch(
   }
 
   bool ok = true;
-  const std::string key_hex = YamlValue(*config, "aot_patch_key_hex");
+  const auto app_key_callback = config->aot_patch_key_callback;
   std::array<uint8_t, 32> key = {};
-  if (!ParseAes256KeyHex(key_hex, &key)) {
-    FML_LOG(ERROR) << "Shorebird updater: shorebird.yaml must provide "
-                      "aot_patch_key_hex as 64 hex characters to install "
-                      "encrypted interpreter patches.";
-    return nullptr;
-  }
-  std::string key_id = YamlValue(*config, "aot_patch_key_id");
-  if (key_id.empty()) {
-    key_id = RequiredJsonString(artifact, "key_id", path, &ok);
+  std::string key_id;
+  if (!app_key_callback) {
+    const std::string key_hex = YamlValue(*config, "aot_patch_key_hex");
+    if (!ParseAes256KeyHex(key_hex, &key)) {
+      FML_LOG(ERROR) << "Shorebird updater: configure an app-owned AOT patch "
+                        "key callback or provide a development-only "
+                        "aot_patch_key_hex value as 64 hex characters in "
+                        "shorebird.yaml to install encrypted interpreter "
+                        "patches.";
+      return nullptr;
+    }
+    key_id = YamlValue(*config, "aot_patch_key_id");
+    if (key_id.empty()) {
+      key_id = RequiredJsonString(artifact, "key_id", path, &ok);
+    }
   }
 
   std::string app_id = config->app_id.empty()
@@ -351,15 +370,13 @@ std::shared_ptr<const fml::Mapping> InstallEncryptedShorebirdInterpreterPatch(
       config->release_version.empty()
           ? RequiredJsonString(artifact, "app_build_id", path, &ok)
           : config->release_version;
-  std::string base_flavor_id =
-      YamlValue(*config, "aot_patch_base_flavor_id");
+  std::string base_flavor_id = YamlValue(*config, "aot_patch_base_flavor_id");
   std::string base_license_type =
       YamlValue(*config, "aot_patch_base_license_type");
   std::string flavor_id = YamlValueOrRequiredJson(
       *config, "aot_patch_flavor_id", artifact, "flavor_id", path, &ok);
-  std::string license_type =
-      YamlValueOrRequiredJson(*config, "aot_patch_license_type", artifact,
-                              "license_type", path, &ok);
+  std::string license_type = YamlValueOrRequiredJson(
+      *config, "aot_patch_license_type", artifact, "license_type", path, &ok);
   std::string sdk_hash = YamlValueOrRequiredJson(
       *config, "aot_patch_sdk_hash", artifact, "sdk_hash", path, &ok);
   std::string base_snapshot_hash =
@@ -404,7 +421,15 @@ std::shared_ptr<const fml::Mapping> InstallEncryptedShorebirdInterpreterPatch(
 
   uint8_t* patch_payload = nullptr;
   intptr_t patch_payload_length = 0;
-  {
+  if (app_key_callback) {
+    ScopedShorebirdAotPatchKeyCallback scoped_key(app_key_callback);
+    Dart_Handle install_result = Dart_InstallAotPatch(
+        artifact.GetMapping(), static_cast<intptr_t>(artifact.GetSize()),
+        &options, &patch_payload, &patch_payload_length);
+    if (tonic::CheckAndHandleError(install_result)) {
+      return nullptr;
+    }
+  } else {
     ScopedShorebirdAotPatchKeyCallback scoped_key(key_id, key);
     Dart_Handle install_result = Dart_InstallAotPatch(
         artifact.GetMapping(), static_cast<intptr_t>(artifact.GetSize()),
@@ -496,8 +521,7 @@ bool LoadShorebirdInterpreterPatchIfNeeded() {
 
   std::shared_ptr<const fml::Mapping> mapping(std::move(file_mapping));
   if (!Dart_IsBytecode(mapping->GetMapping(), mapping->GetSize())) {
-    mapping =
-        InstallEncryptedShorebirdInterpreterPatch(*mapping, active_path);
+    mapping = InstallEncryptedShorebirdInterpreterPatch(*mapping, active_path);
     if (!mapping) {
       WriteShorebirdInterpreterPatchStage(active_path,
                                           "reload_error: decrypt_failed");
