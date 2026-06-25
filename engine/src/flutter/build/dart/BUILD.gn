@@ -9,16 +9,11 @@ import("$dart_src/build/dart/copy_tree.gni")
 
 if (build_engine_artifacts) {
   if (flutter_prebuilt_dart_sdk) {
-    copy_trees("_copy_trees") {
-      sources = [
-        {
-          target = "copy_dart_sdk"
-          visibility = [ ":dart_sdk" ]
-          source = prebuilt_dart_sdk
-          dest = "$root_out_dir/dart-sdk"
-          ignore_patterns = "{}"
-        },
-      ]
+    copy_tree("copy_dart_sdk") {
+      visibility = [ ":dart_sdk" ]
+      source = prebuilt_dart_sdk
+      dest = "$root_out_dir/dart-sdk"
+      exclude = "{}"
     }
     group("dart_sdk") {
       public_deps = [ ":copy_dart_sdk" ]

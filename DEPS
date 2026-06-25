@@ -15,15 +15,14 @@ vars = {
   'flutter_git': 'https://flutter.googlesource.com',
   'skia_git': 'https://skia.googlesource.com',
   'llvm_git': 'https://llvm.googlesource.com',
+  # Our dart-sdk fork revision. Used for the third_party/dart source clone
+  # (gen_snapshot etc.). Open CI builds and packages the custom Dart SDK from
+  # source instead of consuming Shorebird's private prebuilt bucket.
+  "dart_sdk_revision": "bb9acb510b99427d6a30a45cfdf689a073e1e343",
+  "dart_sdk_git": "https://github.com/tony-cloud/dart-sdk.git",
+  "updater_git": "https://git.tonycloud.org/flutter/shorebird-updater.git",
+  "updater_rev": "6e9aab2ce7ede48b38472b7cfe9c8b53b5a98e5c",
   'skia_revision': 'e9ed4fc9f1544c58d8a9347c1fc9471d8dd7c465',
-  # Our dart-sdk fork revision. Used both for the third_party/dart source
-  # clone (gen_snapshot etc.) and to key the macos-arm64 prebuilt object in
-  # GCS, so source and prebuilt stay the same revision. A published prebuilt
-  # must exist for this sha (see the macos-arm64 dart-sdk gcs dep below).
-  "dart_sdk_revision": "db98bdaa9d8f8e2250ff83d24abcaf775807244c",
-  "dart_sdk_git": "git@github.com:shorebirdtech/dart-sdk.git",
-  "updater_git": "https://github.com/shorebirdtech/updater.git",
-  "updater_rev": "83df31b60e32e2a77ade4029d01df859c3db634f",
 
   # WARNING: DO NOT EDIT canvaskit_cipd_instance MANUALLY
   # See `lib/web_ui/README.md` for how to roll CanvasKit to a new version.
@@ -369,7 +368,7 @@ deps = {
    Var('dart_git') + '/external/github.com/google/webkit_inspection_protocol.dart.git' + '@' + Var('dart_webkit_inspection_protocol_rev'),
 
   'engine/src/flutter/third_party/dart/tools/sdks/dart-sdk':
-   {'dep_type': 'cipd', 'packages': [{'package': 'dart/dart-sdk/${{platform}}', 'version': 'git_revision:9ac06cdd18015c83a25921e26912c96e3fbe22c2'}]},
+   {'dep_type': 'cipd', 'packages': [{'package': 'dart/dart-sdk/${{platform}}', 'version': 'version:3.13.0-103.1.beta'}]},
 
   # WARNING: end of dart dependencies list that is cleaned up automatically - see create_updated_flutter_deps.py.
 
@@ -402,29 +401,6 @@ deps = {
       }
     ],
     'dep_type': 'cipd',
-    'condition': 'host_os == "mac" and download_dart_sdk'
-  },
-  # Consume Shorebird's own published Dart SDK (built from
-  # shorebirdtech/dart-sdk) from GCS instead of Google's CIPD prebuilt, so
-  # the engine builds against our Dart fork and skips rebuilding it from
-  # source (see shards/macos.json: mac-arm64 drops --no-prebuilt-dart-sdk).
-  # The object is keyed by Var('dart_sdk_revision') so it tracks the same
-  # fork revision as the source clone above; sha256sum/size_bytes pin the
-  # specific artifact's content and must be updated whenever that revision
-  # bumps. tar.gz (not zip) so gclient's extraction preserves the executable
-  # bit on bin/dart etc. The bot reads this private bucket via a keyless-WIF
-  # reader SA (shorebirdtech/_build_engine sync.yaml).
-  'engine/src/flutter/prebuilts/macos-arm64/dart-sdk': {
-    'bucket': 'shorebird-dart-sdk-prebuilt',
-    'objects': [
-      {
-        'object_name': Var('dart_sdk_revision') + '/dart-sdk-darwin-arm64.tar.gz',
-        'sha256sum': '7fd7de2d929d6729975bed3cb18ded754fcc023b35f00c61295fb772f63add6c',
-        'size_bytes': 205231858,
-        'generation': 1781242258444863,
-      }
-    ],
-    'dep_type': 'gcs',
     'condition': 'host_os == "mac" and download_dart_sdk'
   },
   'engine/src/flutter/prebuilts/windows-x64/dart-sdk': {
