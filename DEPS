@@ -18,7 +18,7 @@ vars = {
   # Our dart-sdk fork revision. Used for the third_party/dart source clone
   # (gen_snapshot etc.). Open CI builds and packages the custom Dart SDK from
   # source instead of consuming Shorebird's private prebuilt bucket.
-  "dart_sdk_revision": "0e6acdc83e3e35edc029cc5ba92b1f7a8713e6d1",
+  "dart_sdk_revision": "bb9acb510b99427d6a30a45cfdf689a073e1e343",
   "dart_sdk_git": "https://github.com/tony-cloud/dart-sdk.git",
   "updater_git": "https://git.tonycloud.org/flutter/shorebird-updater.git",
   "updater_rev": "a591b7f6b961430034defe379a8190c41b1c5dbf",
@@ -371,7 +371,7 @@ deps = {
    Var('dart_git') + '/external/github.com/google/webkit_inspection_protocol.dart.git' + '@' + Var('dart_webkit_inspection_protocol_rev'),
 
   'engine/src/flutter/third_party/dart/tools/sdks/dart-sdk':
-   {'dep_type': 'cipd', 'packages': [{'package': 'dart/dart-sdk/${{platform}}', 'version': 'git_revision:9ac06cdd18015c83a25921e26912c96e3fbe22c2'}]},
+   {'dep_type': 'cipd', 'packages': [{'package': 'dart/dart-sdk/${{platform}}', 'version': 'version:3.13.0-103.1.beta'}]},
 
   # WARNING: end of dart dependencies list that is cleaned up automatically - see create_updated_flutter_deps.py.
 
