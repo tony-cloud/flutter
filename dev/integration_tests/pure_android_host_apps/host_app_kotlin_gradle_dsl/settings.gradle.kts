@@ -16,7 +16,7 @@ dependencyResolutionManagement {
     repositories {
         google()
         mavenCentral()
-        val flutterStorageUrl = System.getenv("FLUTTER_STORAGE_BASE_URL") ?: "https://download.shorebird.dev"
+        val flutterStorageUrl = System.getenv("FLUTTER_STORAGE_BASE_URL") ?: "http://localhost:8080"
         maven("$flutterStorageUrl/download.flutter.io")
     }
 }

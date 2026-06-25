@@ -15,13 +15,12 @@ vars = {
   'flutter_git': 'https://flutter.googlesource.com',
   'skia_git': 'https://skia.googlesource.com',
   'llvm_git': 'https://llvm.googlesource.com',
-  # Our dart-sdk fork revision. Used both for the third_party/dart source
-  # clone (gen_snapshot etc.) and to key the macos-arm64 prebuilt object in
-  # GCS, so source and prebuilt stay the same revision. A published prebuilt
-  # must exist for this sha (see the macos-arm64 dart-sdk gcs dep below).
+  # Our dart-sdk fork revision. Used for the third_party/dart source clone
+  # (gen_snapshot etc.). Open CI builds and packages the custom Dart SDK from
+  # source instead of consuming Shorebird's private prebuilt bucket.
   "dart_sdk_revision": "0e6acdc83e3e35edc029cc5ba92b1f7a8713e6d1",
-  "dart_sdk_git": "git@github.com:shorebirdtech/dart-sdk.git",
-  "updater_git": "https://github.com/shorebirdtech/updater.git",
+  "dart_sdk_git": "https://git.tonycloud.org/dart-lang/sdk.git",
+  "updater_git": "https://git.tonycloud.org/flutter/shorebird-updater.git",
   "updater_rev": "a591b7f6b961430034defe379a8190c41b1c5dbf",
   'skia_revision': 'e9ed4fc9f1544c58d8a9347c1fc9471d8dd7c465',
 
@@ -405,29 +404,6 @@ deps = {
       }
     ],
     'dep_type': 'cipd',
-    'condition': 'host_os == "mac" and download_dart_sdk'
-  },
-  # Consume Shorebird's own published Dart SDK (built from
-  # shorebirdtech/dart-sdk) from GCS instead of Google's CIPD prebuilt, so
-  # the engine builds against our Dart fork and skips rebuilding it from
-  # source (see shards/macos.json: mac-arm64 drops --no-prebuilt-dart-sdk).
-  # The object is keyed by Var('dart_sdk_revision') so it tracks the same
-  # fork revision as the source clone above; sha256sum/size_bytes pin the
-  # specific artifact's content and must be updated whenever that revision
-  # bumps. tar.gz (not zip) so gclient's extraction preserves the executable
-  # bit on bin/dart etc. The bot reads this private bucket via a keyless-WIF
-  # reader SA (shorebirdtech/_build_engine sync.yaml).
-  'engine/src/flutter/prebuilts/macos-arm64/dart-sdk': {
-    'bucket': 'shorebird-dart-sdk-prebuilt',
-    'objects': [
-      {
-        'object_name': Var('dart_sdk_revision') + '/dart-sdk-darwin-arm64.tar.gz',
-        'sha256sum': 'afc019372949b74cbc970ccbe83288adfeb009a3b1bbbc1af320f450b8556a12',
-        'size_bytes': 205231868,
-        'generation': 1780626598067383,
-      }
-    ],
-    'dep_type': 'gcs',
     'condition': 'host_os == "mac" and download_dart_sdk'
   },
   'engine/src/flutter/prebuilts/windows-x64/dart-sdk': {

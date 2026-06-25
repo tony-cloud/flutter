@@ -11,6 +11,7 @@
 #include <cstring>
 #include <memory>
 #include <optional>
+#include <sstream>
 #include <string_view>
 #include <utility>
 
@@ -30,7 +31,6 @@
 #include "flutter/runtime/dart_vm_lifecycle.h"
 #include "flutter/runtime/isolate_configuration.h"
 #include "flutter/runtime/platform_isolate_manager.h"
-#include "flutter/shell/common/shorebird/shorebird.h"
 #include "flutter/shell/common/shorebird/updater.h"
 #include "fml/message_loop_task_queues.h"
 #include "fml/task_source.h"
@@ -188,9 +188,25 @@ std::string UnquoteYamlValue(std::string value) {
   return value;
 }
 
+std::string GetYamlValue(const std::string& yaml, const std::string& key) {
+  std::stringstream stream(yaml);
+  std::string line;
+  std::string prefix = key + ":";
+  while (std::getline(stream, line, '\n')) {
+    if (line.find(prefix) == std::string::npos) {
+      continue;
+    }
+    std::string value = line.substr(line.find(prefix) + prefix.size());
+    value.erase(0, value.find_first_not_of(" \t"));
+    value.erase(value.find_last_not_of(" \t\r") + 1);
+    return value;
+  }
+  return "";
+}
+
 std::string YamlValue(const shorebird::AppConfig& config,
                       const std::string& key) {
-  return UnquoteYamlValue(GetValueFromYaml(config.yaml_config, key));
+  return UnquoteYamlValue(GetYamlValue(config.yaml_config, key));
 }
 
 std::string RequiredJsonString(const fml::Mapping& artifact,

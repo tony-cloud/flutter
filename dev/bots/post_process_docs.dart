@@ -35,10 +35,16 @@ Future<void> postProcess() async {
   }
   final String checkoutPath = Platform.environment['SDK_CHECKOUT_PATH']!;
   final String docsPath = path.join(checkoutPath, 'dev', 'docs');
+  final String storageBaseUrl =
+      Platform.environment['FLUTTER_STORAGE_BASE_URL'] ??
+      'http://localhost:8080/download.flutter.io';
+  final String normalizedStorageBaseUrl = storageBaseUrl.endsWith('/')
+      ? storageBaseUrl
+      : '$storageBaseUrl/';
   await runProcessWithValidations(<String>[
     'curl',
     '-L',
-    'https://download.shorebird.dev/flutter_infra_release/flutter/$revision/api_docs.zip',
+    '${normalizedStorageBaseUrl}flutter_infra_release/flutter/$revision/api_docs.zip',
     '--output',
     zipDestination,
     '--fail',

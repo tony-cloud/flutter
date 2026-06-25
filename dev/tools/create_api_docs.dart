@@ -920,11 +920,17 @@ class PlatformDocGenerator {
   /// store and extracts them to the location used for Dartdoc.
   Future<void> generatePlatformDocs() async {
     final realm = engineRealm.isNotEmpty ? '$engineRealm/' : '';
+    final String storageBaseUrl =
+        Platform.environment['FLUTTER_STORAGE_BASE_URL'] ??
+        'http://localhost:8080/download.flutter.io';
+    final String normalizedStorageBaseUrl = storageBaseUrl.endsWith('/')
+        ? storageBaseUrl
+        : '$storageBaseUrl/';
 
     for (final String platform in kPlatformDocs.keys) {
       final String zipFile = kPlatformDocs[platform]!.zipName;
       final String url =
-          'https://download.shorebird.dev/${realm}flutter_infra_release/flutter/$engineRevision/$zipFile';
+          '${normalizedStorageBaseUrl}${realm}flutter_infra_release/flutter/$engineRevision/$zipFile';
       await _extractDocs(url, platform, kPlatformDocs[platform]!, outputDir);
     }
   }
