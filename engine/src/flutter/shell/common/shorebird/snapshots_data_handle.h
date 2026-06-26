@@ -8,9 +8,6 @@
 
 namespace flutter {
 
-size_t ShorebirdSnapshotDataSize(const uint8_t* ptr);
-size_t ShorebirdSnapshotInstructionsSize(const uint8_t* ptr);
-
 // An offset into an indexed collection of buffers. blob is the index of the
 // buffer, and offset is the offset into that buffer.
 struct BlobsIndex {

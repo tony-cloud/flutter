@@ -445,11 +445,9 @@ DartVM::DartVM(const std::shared_ptr<const DartVMData>& vm_data,
     TRACE_EVENT0("flutter", "Dart_Initialize");
     Dart_InitializeParams params = {};
     params.version = DART_INITIALIZE_PARAMS_CURRENT_VERSION;
-#if DART_INITIALIZE_PARAMS_CURRENT_VERSION < 0x0000000B
     params.vm_snapshot_data = vm_data_->GetVMSnapshot().GetDataMapping();
     params.vm_snapshot_instructions =
         vm_data_->GetVMSnapshot().GetInstructionsMapping();
-#endif
     params.create_group = reinterpret_cast<decltype(params.create_group)>(
         DartIsolate::DartIsolateGroupCreateCallback);
     params.initialize_isolate =

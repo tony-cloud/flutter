@@ -683,25 +683,7 @@ def to_gn_args(args):
     gn_args['arm_tune'] = args.arm_tune
 
   if args.dart_dynamic_modules:
-    raise Exception(
-        '--dart-dynamic-modules is not supported for Shorebird patching. '
-        'Use the no-DDM interpreter patch path for iOS.'
-    )
-
-  if args.dart_dynamic_modules is not None:
-    gn_args['dart_dynamic_modules'] = args.dart_dynamic_modules
-
-  if args.target_os == 'ios':
-    gn_args['dart_dynamic_modules'] = False
-    gn_args['dart_enable_aot_patching'] = True
-    gn_args['dart_enable_shorebird_interpreter'] = True
-    gn_args['shorebird_use_interpreter'] = True
-    gn_args['shorebird_enable_aot_patching'] = False
-  elif args.shorebird_interpreter:
-    gn_args['dart_dynamic_modules'] = False
-    gn_args['dart_enable_shorebird_interpreter'] = True
-    gn_args['shorebird_use_interpreter'] = True
-    gn_args['shorebird_enable_aot_patching'] = False
+    gn_args['dart_dynamic_modules'] = True
 
   if args.no_enable_unittests:
     gn_args['dart_dynamic_modules'] = False
@@ -1246,7 +1228,7 @@ def parse_args(args):
 
   parser.add_argument(
       '--dart-dynamic-modules',
-      default=None,
+      default=False,
       action='store_true',
       help='Whether to include the Dart dynamic module interpreter in the build.'
   )
@@ -1259,15 +1241,6 @@ def parse_args(args):
       default=False,
       action='store_true',
       help='(dangerous) Disable secure socket support in Dart.',
-  )
-
-  parser.add_argument(
-      '--shorebird-interpreter',
-      default=False,
-      action='store_true',
-      help='Enable Shorebird no-DDM bytecode interpreter support. Use this for '
-           'host gen_snapshot builds that produce iOS interpreter-patchable AOT '
-           'snapshots.',
   )
 
   parser.add_argument('--malioc-path', type=str, help='The path to the malioc tool.')
@@ -1337,14 +1310,6 @@ def validate_args(args):
       print(
           'Specified a non-default mac-cpu for a simulator build. Did you mean '
           'to use `--simulator-cpu`?'
-      )
-      valid = False
-
-  for gn_arg in args.gn_args or []:
-    if re.search(r'\bdart_dynamic_modules\s*=\s*true\b', gn_arg):
-      print(
-          'dart_dynamic_modules=true is not supported for Shorebird patching. '
-          'Use the no-DDM interpreter patch path for iOS.'
       )
       valid = False
 

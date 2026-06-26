@@ -29,18 +29,6 @@ declare_args() {
   # See [go/slimpeller-dashboard](https://github.com/orgs/flutter/projects/21)
   # for details.
   slimpeller = false
-
-  # Bytecode/interpreter based Shorebird patching. iOS uses this path because
-  # App Store-delivered patches must not be installed as newly executable AOT
-  # snapshot text.
-  shorebird_use_interpreter = is_ios
-}
-
-declare_args() {
-  # Whether to enable Shorebird-style native AOT isolate snapshot patch loading.
-  # This maps downloaded patch bytes as snapshot instructions and is not the
-  # iOS App Store path. Keep it off when the interpreter route is enabled.
-  shorebird_enable_aot_patching = is_ios && !shorebird_use_interpreter
 }
 
 # feature_defines_list ---------------------------------------------------------
@@ -83,11 +71,7 @@ if (is_android || is_ios || is_linux || is_mac || is_win) {
   feature_defines_list += [ "SHOREBIRD_PLATFORM_SUPPORTED=1" ]
 }
 
-if (shorebird_enable_aot_patching) {
-  feature_defines_list += [ "SHOREBIRD_ENABLE_AOT_PATCHING=1" ]
-}
-
-if (shorebird_use_interpreter) {
+if (is_ios) {
   feature_defines_list += [ "SHOREBIRD_USE_INTERPRETER=1" ]
 }
 

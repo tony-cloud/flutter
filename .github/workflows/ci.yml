@@ -24,6 +24,10 @@ jobs:
     env:
       FLUTTER_STORAGE_BASE_URL: https://download.shorebird.dev
 
+    defaults:
+      run:
+        shell: bash
+
     steps:
       - name: 📚 Git Checkout
         uses: actions/checkout@v4
@@ -31,13 +35,19 @@ jobs:
           # Fetch all branches and tags to ensure that Flutter can determine its version
           fetch-depth: 0
 
+      - name: 🏷️ Fetch Flutter release tag
+        run: git fetch --no-tags https://github.com/flutter/flutter.git +refs/tags/3.44.4:refs/tags/3.44.4
+
       - name: 🎯 Setup Dart
         uses: dart-lang/setup-dart@v1
 
       - name: 📦 Install Dependencies
         run: |
-          dart pub get -C ./dev/bots
-          dart pub get -C ./dev/tools
+          ./bin/flutter pub get -C ./dev/bots
+          ./bin/flutter pub get -C ./dev/tools
 
       - name: 🧪 Run Tests
-        run: dart ./dev/bots/test.dart
+        env:
+          SHARD: tool_tests
+          SUBSHARD: general
+        run: dart --enable-asserts ./dev/bots/test.dart

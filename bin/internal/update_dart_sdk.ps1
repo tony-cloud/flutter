@@ -41,7 +41,7 @@ if ((Test-Path $engineStamp) -and ($engineVersion -eq (Get-Content $engineStamp)
 
 $dartSdkBaseUrl = $Env:FLUTTER_STORAGE_BASE_URL
 if (-not $dartSdkBaseUrl) {
-    $dartSdkBaseUrl = "http://localhost:8080/download.flutter.io"
+    $dartSdkBaseUrl = "https://download.shorebird.dev"
 }
 if ($engineRealm) {
     $dartSdkBaseUrl = "$dartSdkBaseUrl/$engineRealm"

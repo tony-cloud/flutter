@@ -5,22 +5,18 @@
 #ifndef FLUTTER_RUNTIME_SHOREBIRD_PATCH_CACHE_H_
 #define FLUTTER_RUNTIME_SHOREBIRD_PATCH_CACHE_H_
 
-#include <cstdint>
 #include <map>
 #include <memory>
 #include <mutex>
 #include <string>
 #include <vector>
 
+#include <third_party/dart/runtime/bin/elf_loader.h>
+
 #include "flutter/fml/macros.h"
 #include "flutter/fml/mapping.h"
 
 namespace flutter {
-
-enum class PatchObjectFormat {
-  kElf,
-  kMachO,
-};
 
 /// A cache entry that holds a loaded patch file and its extracted snapshot
 /// pointers. The patch is automatically unloaded when the last reference to
@@ -44,14 +40,12 @@ class PatchCacheEntry {
 
  private:
   PatchCacheEntry(const std::string& path,
-                  PatchObjectFormat object_format,
-                  void* loaded_object,
+                  Dart_LoadedElf* elf,
                   const uint8_t* isolate_data,
                   const uint8_t* isolate_instrs);
 
   std::string path_;
-  PatchObjectFormat object_format_;
-  void* loaded_object_;
+  Dart_LoadedElf* elf_;
   const uint8_t* isolate_data_;
   const uint8_t* isolate_instrs_;
 
@@ -81,7 +75,7 @@ class PatchCache {
 
   std::mutex mutex_;
   // We store weak references so entries are automatically cleaned up when
-  // all patch mappings release their references.
+  // all ElfMapping instances release their references.
   std::map<std::string, std::weak_ptr<PatchCacheEntry>> cache_;
 
   FML_DISALLOW_COPY_AND_ASSIGN(PatchCache);

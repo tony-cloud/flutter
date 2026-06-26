@@ -1,5 +1,4 @@
 import("//flutter/common/config.gni")
-import("//flutter/build/dart/dart.gni")
 
 source_set("patch_cache") {
   sources = [

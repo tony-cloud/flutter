@@ -8,7 +8,6 @@
 #include <fcntl.h>
 
 #include <cstdint>
-#include <functional>
 #include <memory>
 #include <optional>
 #include <string>
@@ -82,10 +81,6 @@ using UnhandledExceptionCallback =
 using LogMessageCallback =
     std::function<void(const std::string& /* tag */,
                        const std::string& /* message */)>;
-using AotPatchKeyCallback = std::function<bool(const char* /* key_id */,
-                                               uint8_t* /* key_buffer */,
-                                               intptr_t /* key_buffer_length */,
-                                               intptr_t* /* key_length */)>;
 
 // TODO(26783): Deprecate all the "path" struct members in favor of the
 // callback that generates the mapping from these paths.
@@ -322,10 +317,6 @@ struct Settings {
   // thread and embedders must re-thread if necessary. Performing blocking
   // calls in this callback will cause applications to jank.
   LogMessageCallback log_message_callback;
-  // Resolves AES keys for encrypted Shorebird AOT/interpreter patch artifacts.
-  // Production iOS apps should use this instead of shipping a key in
-  // shorebird.yaml. The callback is invoked synchronously during patch install.
-  AotPatchKeyCallback shorebird_aot_patch_key_callback;
   bool enable_software_rendering = false;
   bool skia_deterministic_rendering_on_cpu = false;
   bool verbose_logging = false;

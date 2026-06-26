@@ -5,7 +5,6 @@
 #define FML_USED_ON_EMBEDDER
 #define RAPIDJSON_HAS_STDSTRING 1
 
-#include <algorithm>
 #include <cstring>
 #include <iostream>
 #include <memory>
@@ -25,10 +24,6 @@
 #include "third_party/skia/include/gpu/GpuTypes.h"
 #include "third_party/skia/include/gpu/ganesh/GrBackendSurface.h"
 #include "third_party/skia/include/gpu/ganesh/SkSurfaceGanesh.h"
-
-#if defined(FML_OS_MACOSX)
-#include "third_party/dart/runtime/bin/macho_loader.h"
-#endif
 
 #if !defined(FLUTTER_NO_EXPORT)
 #if FML_OS_WIN
@@ -52,7 +47,6 @@ extern const intptr_t kPlatformStrongDillSize;
 #include "flutter/fml/command_line.h"
 #include "flutter/fml/file.h"
 #include "flutter/fml/make_copyable.h"
-#include "flutter/fml/mapping.h"
 #include "flutter/fml/message_loop.h"
 #include "flutter/fml/paths.h"
 #include "flutter/fml/trace_event.h"
@@ -1704,62 +1698,8 @@ struct LoadedElfDeleter {
 
 using UniqueLoadedElf = std::unique_ptr<Dart_LoadedElf, LoadedElfDeleter>;
 
-#if defined(FML_OS_MACOSX)
-static bool HasMagic(const uint8_t* bytes,
-                     const uint8_t* magic,
-                     size_t magic_size) {
-  return memcmp(bytes, magic, magic_size) == 0;
-}
-
-static bool IsLoadableMachOMagic(const uint8_t* bytes) {
-  constexpr uint8_t kMachO32Le[] = {0xce, 0xfa, 0xed, 0xfe};
-  constexpr uint8_t kMachO32Be[] = {0xfe, 0xed, 0xfa, 0xce};
-  constexpr uint8_t kMachO64Le[] = {0xcf, 0xfa, 0xed, 0xfe};
-  constexpr uint8_t kMachO64Be[] = {0xfe, 0xed, 0xfa, 0xcf};
-  return HasMagic(bytes, kMachO32Le, sizeof(kMachO32Le)) ||
-         HasMagic(bytes, kMachO32Be, sizeof(kMachO32Be)) ||
-         HasMagic(bytes, kMachO64Le, sizeof(kMachO64Le)) ||
-         HasMagic(bytes, kMachO64Be, sizeof(kMachO64Be));
-}
-
-static bool FindLoadableMachOOffset(const char* path, uint64_t* file_offset) {
-  if (path == nullptr || file_offset == nullptr) {
-    return false;
-  }
-
-  auto mapping = fml::FileMapping::CreateReadOnly(path);
-  if (!mapping) {
-    return false;
-  }
-
-  const size_t search_size = std::min<size_t>(mapping->GetSize(), 64 * 1024);
-  const uint8_t* bytes = mapping->GetMapping();
-  for (size_t offset = 0; offset + 4 <= search_size; offset++) {
-    if (IsLoadableMachOMagic(bytes + offset)) {
-      *file_offset = offset;
-      return true;
-    }
-  }
-  return false;
-}
-
-struct LoadedMachODeleter {
-  void operator()(Dart_LoadedMachODylib* macho) {
-    if (macho) {
-      ::Dart_UnloadMachODylib(macho);
-    }
-  }
-};
-
-using UniqueLoadedMachO =
-    std::unique_ptr<Dart_LoadedMachODylib, LoadedMachODeleter>;
-#endif
-
 struct _FlutterEngineAOTData {
   UniqueLoadedElf loaded_elf = nullptr;
-#if defined(FML_OS_MACOSX)
-  UniqueLoadedMachO loaded_macho = nullptr;
-#endif
   const uint8_t* vm_snapshot_data = nullptr;
   const uint8_t* vm_snapshot_instrs = nullptr;
   const uint8_t* vm_isolate_data = nullptr;
@@ -1788,37 +1728,10 @@ FlutterEngineResult FlutterEngineCreateAOTData(
       auto aot_data = std::make_unique<_FlutterEngineAOTData>();
       const char* error = nullptr;
 
-#if defined(FML_OS_MACOSX)
-      uint64_t macho_offset = 0;
-      if (FindLoadableMachOOffset(source->elf_path, &macho_offset)) {
-        Dart_LoadedMachODylib* loaded_macho = Dart_LoadMachODylib(
-            source->elf_path,               // file path
-            macho_offset,                   // file offset
-            &error,                         // error (out)
-            &aot_data->vm_isolate_data,     // snapshot data (out)
-            &aot_data->vm_isolate_instrs);  // snapshot text (out)
-        if (loaded_macho == nullptr) {
-          return LOG_EMBEDDER_ERROR(kInvalidArguments, error);
-        }
-        aot_data->loaded_macho.reset(loaded_macho);
-        *data_out = aot_data.release();
-        return kSuccess;
-      }
-#endif
-
 #if OS_FUCHSIA
       // TODO(gw280): https://github.com/flutter/flutter/issues/50285
       // Dart doesn't implement Dart_LoadELF on Fuchsia
       Dart_LoadedElf* loaded_elf = nullptr;
-#else
-#if DART_INITIALIZE_PARAMS_CURRENT_VERSION >= 0x0000000B
-      Dart_LoadedElf* loaded_elf = Dart_LoadELF(
-          source->elf_path,              // file path
-          0,                             // file offset
-          &error,                        // error (out)
-          &aot_data->vm_isolate_data,    // snapshot data (out)
-          &aot_data->vm_isolate_instrs   // snapshot text (out)
-      );
 #else
       Dart_LoadedElf* loaded_elf = Dart_LoadELF(
           source->elf_path,               // file path
@@ -1829,7 +1742,6 @@ FlutterEngineResult FlutterEngineCreateAOTData(
           &aot_data->vm_isolate_data,     // vm isolate data (out)
           &aot_data->vm_isolate_instrs    // vm isolate instr (out)
       );
-#endif
 #endif
 
       if (loaded_elf == nullptr) {
@@ -1916,25 +1828,17 @@ void PopulateAOTSnapshotMappingCallbacks(
   };
 
   if (SAFE_ACCESS(args, aot_data, nullptr) != nullptr) {
-    if (args->aot_data->vm_snapshot_data != nullptr) {
-      settings.vm_snapshot_data =
-          make_mapping_callback(args->aot_data->vm_snapshot_data, 0);
-    }
+    settings.vm_snapshot_data =
+        make_mapping_callback(args->aot_data->vm_snapshot_data, 0);
 
-    if (args->aot_data->vm_snapshot_instrs != nullptr) {
-      settings.vm_snapshot_instr =
-          make_mapping_callback(args->aot_data->vm_snapshot_instrs, 0);
-    }
+    settings.vm_snapshot_instr =
+        make_mapping_callback(args->aot_data->vm_snapshot_instrs, 0);
 
-    if (args->aot_data->vm_isolate_data != nullptr) {
-      settings.isolate_snapshot_data =
-          make_mapping_callback(args->aot_data->vm_isolate_data, 0);
-    }
+    settings.isolate_snapshot_data =
+        make_mapping_callback(args->aot_data->vm_isolate_data, 0);
 
-    if (args->aot_data->vm_isolate_instrs != nullptr) {
-      settings.isolate_snapshot_instr =
-          make_mapping_callback(args->aot_data->vm_isolate_instrs, 0);
-    }
+    settings.isolate_snapshot_instr =
+        make_mapping_callback(args->aot_data->vm_isolate_instrs, 0);
   }
 
   if (SAFE_ACCESS(args, vm_snapshot_data, nullptr) != nullptr) {

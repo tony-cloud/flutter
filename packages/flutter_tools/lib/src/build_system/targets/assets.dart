@@ -186,12 +186,8 @@ Future<Depfile> copyAssets(
               );
           }
           if (doCopy) {
+            await (content.file as File).copy(file.path);
             if (file.basename == 'shorebird.yaml') {
-              final File projectShorebirdYaml = environment.projectDir.childFile('shorebird.yaml');
-              final File sourceFile = projectShorebirdYaml.existsSync()
-                  ? projectShorebirdYaml
-                  : content.file as File;
-              await sourceFile.copy(file.path);
               try {
                 updateShorebirdYaml(
                   environment.defines[kFlavor],
@@ -201,8 +197,6 @@ Future<Depfile> copyAssets(
               } on Exception catch (error) {
                 throw Exception('Failed to generate shorebird configuration. Error: $error');
               }
-            } else {
-              await (content.file as File).copy(file.path);
             }
           }
         } else {

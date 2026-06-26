@@ -158,8 +158,6 @@ app.*.symbols
 
 # Monorepo
 .cipd
-.gcs_entries
-_bad_scm/
 .gclient
 .gclient_entries
 .python-version

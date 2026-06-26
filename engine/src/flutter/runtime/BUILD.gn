@@ -120,7 +120,7 @@ source_set("runtime") {
     "//flutter/txt",
   ]
 
-  if (shorebird_enable_aot_patching) {
+  if (is_ios) {
     deps += [ "//flutter/runtime/shorebird:patch_cache" ]
   }
 }

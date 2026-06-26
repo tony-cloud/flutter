@@ -14,25 +14,18 @@
 #include "flutter/runtime/dart_vm.h"
 #include "third_party/dart/runtime/include/dart_api.h"
 
-#if SHOREBIRD_ENABLE_AOT_PATCHING
+#if SHOREBIRD_USE_INTERPRETER
 #include "flutter/runtime/shorebird/patch_cache.h"  // nogncheck
 #endif
 #include "flutter/shell/common/shorebird/updater.h"  // nogncheck
 
 namespace flutter {
 
-#if DART_INITIALIZE_PARAMS_CURRENT_VERSION >= 0x0000000B && !FLUTTER_JIT_RUNTIME
-const char* DartSnapshot::kVMDataSymbol = kSnapshotDataCSymbol;
-const char* DartSnapshot::kVMInstructionsSymbol = kSnapshotTextCSymbol;
-const char* DartSnapshot::kIsolateDataSymbol = kSnapshotDataCSymbol;
-const char* DartSnapshot::kIsolateInstructionsSymbol = kSnapshotTextCSymbol;
-#else
 const char* DartSnapshot::kVMDataSymbol = "kDartVmSnapshotData";
 const char* DartSnapshot::kVMInstructionsSymbol = "kDartVmSnapshotInstructions";
 const char* DartSnapshot::kIsolateDataSymbol = "kDartIsolateSnapshotData";
 const char* DartSnapshot::kIsolateInstructionsSymbol =
     "kDartIsolateSnapshotInstructions";
-#endif
 
 // On Windows and Android (in debug mode) the engine finds the Dart snapshot
 // data through symbols that are statically linked into the executable.
@@ -165,13 +158,13 @@ static std::shared_ptr<const fml::Mapping> ResolveIsolateData(
   // Updater class comment for why this matters in add-to-app and
   // FlutterEngineGroup scenarios.
   shorebird::Updater::Instance().ReportLaunchStart();
-#if SHOREBIRD_ENABLE_AOT_PATCHING
+#if SHOREBIRD_USE_INTERPRETER
   // Try loading from a Shorebird patch first.
   if (auto mapping = TryLoadFromPatch(settings.application_library_paths,
                                       DartSnapshot::kIsolateDataSymbol)) {
     return mapping;
   }
-#endif  // SHOREBIRD_ENABLE_AOT_PATCHING
+#endif  // SHOREBIRD_USE_INTERPRETER
   return SearchMapping(
       settings.isolate_snapshot_data,       // embedder_mapping_callback
       settings.isolate_snapshot_data_path,  // file_path
@@ -192,14 +185,14 @@ static std::shared_ptr<const fml::Mapping> ResolveIsolateInstructions(
       true      // dontneed_safe
   );
 #else  // DART_SNAPSHOT_STATIC_LINK
-#if SHOREBIRD_ENABLE_AOT_PATCHING
+#if SHOREBIRD_USE_INTERPRETER
   // Try loading from a Shorebird patch first.
   if (auto mapping =
           TryLoadFromPatch(settings.application_library_paths,
                            DartSnapshot::kIsolateInstructionsSymbol)) {
     return mapping;
   }
-#endif  // SHOREBIRD_ENABLE_AOT_PATCHING
+#endif  // SHOREBIRD_USE_INTERPRETER
   return SearchMapping(
       settings.isolate_snapshot_instr,           // embedder_mapping_callback
       settings.isolate_snapshot_instr_path,      // file_path

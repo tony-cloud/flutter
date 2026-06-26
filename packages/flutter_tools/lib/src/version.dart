@@ -1081,13 +1081,6 @@ class GitTagVersion {
       return parse(shorebirdFlutterVersion);
     }
 
-    final GitTagVersion? shorebirdCandidateVersion = _tryParseShorebirdCandidateVersion(
-      workingDirectory,
-    );
-    if (shorebirdCandidateVersion != null) {
-      return shorebirdCandidateVersion;
-    }
-
     // If we don't exist in a tag, use git to find the latest tag.
     return _useNewestTagAndCommitsPastFallback(
       git: git,
@@ -1127,28 +1120,6 @@ class GitTagVersion {
         .trim();
 
     return parse('$latestTag-$commitCount');
-  }
-
-  static GitTagVersion? _tryParseShorebirdCandidateVersion(String? workingDirectory) {
-    if (workingDirectory == null) {
-      return null;
-    }
-
-    final File candidateFile = globals.fs.file(
-      globals.fs.path.join(workingDirectory, 'bin', 'internal', 'release-candidate-branch.version'),
-    );
-    if (!candidateFile.existsSync()) {
-      return null;
-    }
-
-    final Match? match = RegExp(
-      r'^flutter-(\d+)\.(\d+)-candidate\.(\d+)$',
-    ).firstMatch(candidateFile.readAsStringSync().trim());
-    if (match == null) {
-      return null;
-    }
-
-    return parse('${match.group(1)}.${match.group(2)}.0-0.${match.group(3)}.pre');
   }
 
   /// Parse a version string.

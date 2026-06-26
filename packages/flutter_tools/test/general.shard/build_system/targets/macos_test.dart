@@ -11,6 +11,7 @@ import 'package:flutter_tools/src/build_info.dart';
 import 'package:flutter_tools/src/build_system/build_system.dart';
 import 'package:flutter_tools/src/build_system/targets/macos.dart';
 import 'package:flutter_tools/src/ios/xcodeproj.dart';
+import 'package:flutter_tools/src/project.dart';
 import 'package:test/fake.dart';
 import 'package:unified_analytics/unified_analytics.dart';
 
@@ -30,13 +31,6 @@ List<String> linkInfoArgsFor(String buildPath) => <String>[
   '--print_dispatch_table_link_debug_info_to=$buildPath/App.dispatch_table.json',
   '--print_dispatch_table_link_info_to=$buildPath/App.dt.link',
 ];
-
-FakeCommand linkInfoSupportProbe(String genSnapshotPath) {
-  return FakeCommand(
-    command: <String>[genSnapshotPath, '--help', '--verbose'],
-    stdout: '--print_class_table_link_info_to\n',
-  );
-}
 
 void main() {
   late Environment environment;
@@ -904,7 +898,6 @@ flavors:
       // interleave at each subsequent await point in the same order.
       processManager.addCommands(<FakeCommand>[
         // arm64 gen_snapshot runs first (iteration order).
-        linkInfoSupportProbe('Artifact.genSnapshotArm64.TargetPlatform.darwin.release'),
         FakeCommand(
           command: <String>[
             'Artifact.genSnapshotArm64.TargetPlatform.darwin.release',
@@ -916,7 +909,6 @@ flavors:
           ],
         ),
         // x86_64 gen_snapshot runs next.
-        linkInfoSupportProbe('Artifact.genSnapshotX64.TargetPlatform.darwin.release'),
         FakeCommand(
           command: <String>[
             'Artifact.genSnapshotX64.TargetPlatform.darwin.release',
@@ -1082,7 +1074,7 @@ class FakeXcodeProjectInterpreter extends Fake implements XcodeProjectInterprete
 
   @override
   Future<XcodeProjectInfo?> getInfo(
-    String projectPath, {
+    XcodeBasedProject xcodeProject, {
     required Directory buildDirectory,
     String? projectFilename,
   }) async {

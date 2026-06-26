@@ -238,7 +238,7 @@ class FakeNetworkInterfaceDelegate implements io.NetworkInterface {
   final List<FakeInternetAddress> _fakeAddresses;
 
   @override
-  List<io.InterfaceAddress> get addresses => _fakeAddresses;
+  List<io.InternetAddress> get addresses => _fakeAddresses;
 
   @override
   int get index => addresses.length;
@@ -247,16 +247,13 @@ class FakeNetworkInterfaceDelegate implements io.NetworkInterface {
   String get name => 'FakeNetworkInterfaceDelegate$index';
 }
 
-class FakeInternetAddress implements io.InterfaceAddress {
+class FakeInternetAddress implements io.InternetAddress {
   const FakeInternetAddress(this._fakeAddress);
 
   final String _fakeAddress;
 
   @override
   String get address => _fakeAddress;
-
-  @override
-  io.InternetAddress? get broadcast => throw UnimplementedError();
 
   @override
   String get host => throw UnimplementedError();
@@ -269,9 +266,6 @@ class FakeInternetAddress implements io.InterfaceAddress {
 
   @override
   bool get isMulticast => throw UnimplementedError();
-
-  @override
-  int get prefixLength => throw UnimplementedError();
 
   @override
   Uint8List get rawAddress => throw UnimplementedError();

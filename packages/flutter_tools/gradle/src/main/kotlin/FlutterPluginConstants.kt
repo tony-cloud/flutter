@@ -21,7 +21,7 @@ object FlutterPluginConstants {
 
     const val INTERMEDIATES_DIR = "intermediates"
     const val FLUTTER_STORAGE_BASE_URL = "FLUTTER_STORAGE_BASE_URL"
-    const val DEFAULT_MAVEN_HOST = "http://localhost:8080/download.flutter.io"
+    const val DEFAULT_MAVEN_HOST = "https://download.shorebird.dev"
 
     /** Maps platforms to ABI architectures. */
     @JvmStatic val PLATFORM_ARCH_MAP =

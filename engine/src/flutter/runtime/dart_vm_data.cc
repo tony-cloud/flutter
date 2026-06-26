@@ -6,15 +6,12 @@
 
 #include <utility>
 
-#include "third_party/dart/runtime/include/dart_api.h"
-
 namespace flutter {
 
 std::shared_ptr<const DartVMData> DartVMData::Create(
     const Settings& settings,
     fml::RefPtr<const DartSnapshot> vm_snapshot,
     fml::RefPtr<const DartSnapshot> isolate_snapshot) {
-#if DART_INITIALIZE_PARAMS_CURRENT_VERSION < 0x0000000B
   if (!vm_snapshot || !vm_snapshot->IsValid()) {
     // Caller did not provide a valid VM snapshot. Attempt to infer one
     // from the settings.
@@ -25,7 +22,6 @@ std::shared_ptr<const DartVMData> DartVMData::Create(
       return {};
     }
   }
-#endif
 
   if (!isolate_snapshot || !isolate_snapshot->IsValid()) {
     // Caller did not provide a valid isolate snapshot. Attempt to infer one
@@ -37,12 +33,6 @@ std::shared_ptr<const DartVMData> DartVMData::Create(
       return {};
     }
   }
-
-#if DART_INITIALIZE_PARAMS_CURRENT_VERSION >= 0x0000000B
-  if (!vm_snapshot || !vm_snapshot->IsValid()) {
-    vm_snapshot = isolate_snapshot;
-  }
-#endif
 
   fml::RefPtr<const DartSnapshot> service_isolate_snapshot =
       DartSnapshot::VMServiceIsolateSnapshotFromSettings(settings);

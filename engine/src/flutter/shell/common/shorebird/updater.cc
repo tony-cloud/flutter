@@ -79,8 +79,6 @@ void Updater::ReportLaunchFailure() {
 // RealUpdater implementation - wraps the Rust C API
 
 bool RealUpdater::Init(const AppConfig& config) {
-  config_ = config;
-
   // Convert paths to C strings
   std::vector<const char*> c_paths;
   c_paths.reserve(config.original_libapp_paths.size());
@@ -119,16 +117,6 @@ std::string RealUpdater::NextBootPatchPath() {
   return path;
 }
 
-std::optional<AppConfig> RealUpdater::LastAppConfig() const {
-  return config_;
-}
-
-void RealUpdater::SetAotPatchKeyCallback(AotPatchKeyCallback callback) {
-  if (config_.has_value()) {
-    config_->aot_patch_key_callback = std::move(callback);
-  }
-}
-
 void RealUpdater::DoReportLaunchStart() {
   shorebird_report_launch_start();
 }
@@ -154,9 +142,7 @@ void RealUpdater::StartUpdateThread() {
 
 bool MockUpdater::Init(const AppConfig& config) {
   init_count_++;
-  last_app_config_ = config;
   last_release_version_ = config.release_version;
-  last_app_id_ = config.app_id;
   last_yaml_config_ = config.yaml_config;
   call_log_.push_back("Init");
   return init_result_;
@@ -170,16 +156,6 @@ void MockUpdater::ValidateNextBootPatch() {
 std::string MockUpdater::NextBootPatchPath() {
   call_log_.push_back("NextBootPatchPath");
   return next_boot_patch_path_;
-}
-
-std::optional<AppConfig> MockUpdater::LastAppConfig() const {
-  return last_app_config_;
-}
-
-void MockUpdater::SetAotPatchKeyCallback(AotPatchKeyCallback callback) {
-  if (last_app_config_.has_value()) {
-    last_app_config_->aot_patch_key_callback = std::move(callback);
-  }
 }
 
 void MockUpdater::DoReportLaunchStart() {
@@ -218,9 +194,7 @@ void MockUpdater::Reset() {
   should_auto_update_ = false;
   next_boot_patch_path_.clear();
   last_release_version_.clear();
-  last_app_id_.clear();
   last_yaml_config_.clear();
-  last_app_config_.reset();
   call_log_.clear();
 }
 

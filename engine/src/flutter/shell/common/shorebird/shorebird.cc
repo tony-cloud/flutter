@@ -61,8 +61,8 @@ static fml::RefPtr<const DartSnapshot> isolate_snapshot;
 
 void SetBaseSnapshot(Settings& settings) {
   // These mappings happen to be to static data in the App.framework, but
-  // we still need to hold onto the DartSnapshot objects to keep the mappings
-  // alive for FileCallbacksImpl.
+  // we still need to seem to hold onto the DartSnapshot objects to keep
+  // the mappings alive.
   vm_snapshot = DartSnapshot::VMSnapshotFromSettings(settings);
   isolate_snapshot = DartSnapshot::IsolateSnapshotFromSettings(settings);
 
@@ -75,13 +75,13 @@ void SetBaseSnapshot(Settings& settings) {
   const uint8_t* vm_insns_ptr = vm_snapshot->GetInstructionsMapping();
   const uint8_t* iso_insns_ptr = isolate_snapshot->GetInstructionsMapping();
   intptr_t vm_data_size =
-      vm_data_ptr ? ShorebirdSnapshotDataSize(vm_data_ptr) : -1;
+      vm_data_ptr ? Dart_SnapshotDataSize(vm_data_ptr) : -1;
   intptr_t iso_data_size =
-      iso_data_ptr ? ShorebirdSnapshotDataSize(iso_data_ptr) : -1;
+      iso_data_ptr ? Dart_SnapshotDataSize(iso_data_ptr) : -1;
   intptr_t vm_insns_size =
-      vm_insns_ptr ? ShorebirdSnapshotInstructionsSize(vm_insns_ptr) : -1;
+      vm_insns_ptr ? Dart_SnapshotInstrSize(vm_insns_ptr) : -1;
   intptr_t iso_insns_size =
-      iso_insns_ptr ? ShorebirdSnapshotInstructionsSize(iso_insns_ptr) : -1;
+      iso_insns_ptr ? Dart_SnapshotInstrSize(iso_insns_ptr) : -1;
   FML_LOG(INFO) << "[shorebird] SetBaseSnapshot mappings: "
                 << "vm_data_size=" << vm_data_size
                 << " iso_data_size=" << iso_data_size
@@ -89,6 +89,11 @@ void SetBaseSnapshot(Settings& settings) {
                 << " iso_insns_size=" << iso_insns_size << " total="
                 << (vm_data_size + iso_data_size + vm_insns_size +
                     iso_insns_size);
+
+  Shorebird_SetBaseSnapshots(isolate_snapshot->GetDataMapping(),
+                             isolate_snapshot->GetInstructionsMapping(),
+                             vm_snapshot->GetDataMapping(),
+                             vm_snapshot->GetInstructionsMapping());
 }
 #endif  // SHOREBIRD_USE_INTERPRETER
 
@@ -166,7 +171,6 @@ bool ConfigureShorebird(const ShorebirdConfigArgs& args,
 
   shorebird::AppConfig config;
   config.release_version = release_version;
-  config.app_id = app_id;
   config.original_libapp_paths = {args.release_app_library_path};
   config.app_storage_dir = app_storage_dir;
   config.code_cache_dir = code_cache_dir;
@@ -190,10 +194,10 @@ bool ConfigureShorebird(const ShorebirdConfigArgs& args,
     FML_LOG(INFO) << "Shorebird updater: no active patch.";
   }
 
-  // Note: shorebird_report_launch_start() is called from ResolveIsolateData()
-  // in runtime/dart_snapshot.cc, when a Shell actually resolves the isolate
-  // snapshot. This fixes issues with FlutterEngineGroup and other cases where
-  // ConfigureShorebird() is called but no Shell is created.
+  // Note: shorebird_report_launch_start() is now called from TryLoadFromPatch()
+  // in runtime/shorebird/patch_cache.cc, right before the patched snapshot is
+  // actually loaded. This fixes issues with FlutterEngineGroup and other cases
+  // where ConfigureShorebird() is called but no Shell is created.
   if (!init_result) {
     return false;
   }
@@ -217,11 +221,12 @@ void ConfigureShorebird(std::string code_cache_path,
                         const std::string& shorebird_yaml,
                         const std::string& version,
                         const std::string& version_code) {
-  if (!DartSnapshot::VMSnapshotFromSettings(settings)) {
-    FML_LOG(INFO) << "Shorebird updater disabled: no AOT snapshot is linked "
-                     "into this build.";
-    return;
-  }
+  // If you are crashing here, you probably are running Shorebird in a Debug
+  // config, where the AOT snapshot won't be linked into the process, and thus
+  // lookups will fail.  Change your Scheme to Release to fix:
+  // https://github.com/flutter/flutter/wiki/Debugging-the-engine#debugging-ios-builds-with-xcode
+  FML_CHECK(DartSnapshot::VMSnapshotFromSettings(settings))
+      << "XCode Scheme must be set to Release to use Shorebird";
 
   auto shorebird_updater_dir_name = "shorebird_updater";
 
@@ -236,20 +241,13 @@ void ConfigureShorebird(std::string code_cache_path,
 
   // Combine version and version_code into a single string.
   // We could also pass these separately through to the updater if needed.
-  std::string app_id = GetValueFromYaml(shorebird_yaml, "app_id");
-  if (app_id.empty()) {
-    FML_LOG(ERROR) << "Shorebird updater: appid not found in shorebird.yaml";
-  }
-
   shorebird::AppConfig config;
   config.release_version = version + "+" + version_code;
-  config.app_id = app_id;
   config.original_libapp_paths = settings.application_library_paths;
   config.app_storage_dir = app_storage_dir;
   config.code_cache_dir = code_cache_dir;
   config.file_callbacks = ShorebirdFileCallbacks();
   config.yaml_config = shorebird_yaml;
-  config.aot_patch_key_callback = settings.shorebird_aot_patch_key_callback;
 
   bool init_result = shorebird::Updater::Instance().Init(config);
 
@@ -269,16 +267,9 @@ void ConfigureShorebird(std::string code_cache_path,
     FML_LOG(INFO) << "Shorebird updater: active path: " << active_path;
 
 #if SHOREBIRD_USE_INTERPRETER
-    // Interpreter patches are bytecode payloads installed by the updater. They
-    // must not be added to application_library_paths because that path is for
-    // native snapshot symbol lookup and would execute downloaded AOT text on
-    // iOS. The VM bytecode handoff is separate from snapshot resolution.
-    FML_LOG(INFO) << "Shorebird updater: selected interpreter patch: "
-                  << active_path;
-#elif SHOREBIRD_ENABLE_AOT_PATCHING
-    // Open AOT patches replace only the isolate snapshot. Keep the base
-    // application library paths after the patch so VM snapshot symbols still
-    // resolve from the signed App.framework in JIT-disabled iOS builds.
+    // On iOS we add the patch to the front of the list instead of clearing
+    // the list, to allow dart_snapshot.cc to still find the base snapshot
+    // for the vm isolate.
     settings.application_library_paths.insert(
         settings.application_library_paths.begin(), active_path);
 #else
@@ -289,10 +280,10 @@ void ConfigureShorebird(std::string code_cache_path,
     FML_LOG(INFO) << "Shorebird updater: no active patch.";
   }
 
-  // Note: shorebird_report_launch_start() is called from ResolveIsolateData()
-  // in runtime/dart_snapshot.cc, when a Shell actually resolves the isolate
-  // snapshot. This fixes issues with FlutterEngineGroup and other cases where
-  // ConfigureShorebird() is called but no Shell is created.
+  // Note: shorebird_report_launch_start() is now called from TryLoadFromPatch()
+  // in runtime/shorebird/patch_cache.cc, right before the patched snapshot is
+  // actually loaded. This fixes issues with FlutterEngineGroup and other cases
+  // where ConfigureShorebird() is called but no Shell is created.
 
   if (!init_result) {
     return;

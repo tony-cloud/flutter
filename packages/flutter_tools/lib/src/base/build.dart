@@ -47,29 +47,6 @@ class GenSnapshot {
     );
   }
 
-  bool supportsShorebirdLinkInfoDumps({
-    required SnapshotType snapshotType,
-    DarwinArch? darwinArch,
-  }) {
-    final Artifact artifact =
-        (snapshotType.platform == TargetPlatform.ios ||
-            snapshotType.platform == TargetPlatform.darwin)
-        ? (darwinArch == DarwinArch.arm64 ? Artifact.genSnapshotArm64 : Artifact.genSnapshotX64)
-        : Artifact.genSnapshot;
-    final String snapshotterPath = getSnapshotterPath(snapshotType, artifact);
-    try {
-      final RunResult result = _processUtils.runSync(<String>[
-        snapshotterPath,
-        '--help',
-        '--verbose',
-      ]);
-      final String helpText = '${result.stdout}\n${result.stderr}';
-      return helpText.contains('--print_class_table_link_info_to');
-    } on Exception {
-      return false;
-    }
-  }
-
   /// Ignored warning messages from gen_snapshot.
   static const kIgnoredWarnings = <String>{
     // --strip on elf snapshot.
@@ -228,23 +205,11 @@ class AOTSnapshotter {
     final Directory outputDir = _fileSystem.directory(outputPath);
     outputDir.createSync(recursive: true);
 
-    final bool targetingApplePlatform =
-        platform == TargetPlatform.ios || platform == TargetPlatform.darwin;
-    _logger.printTrace('targetingApplePlatform = $targetingApplePlatform');
-
-    // Currently we only use the linker on iOS/macOS when the selected
-    // gen_snapshot supports the Shorebird supplement dump flags.
-    final snapshotType = SnapshotType(platform, buildMode);
-    final bool supportsShorebirdLinkInfoDumps =
-        targetingApplePlatform &&
-        _genSnapshot.supportsShorebirdLinkInfoDumps(
-          snapshotType: snapshotType,
-          darwinArch: darwinArch,
-        );
-    if (targetingApplePlatform && !supportsShorebirdLinkInfoDumps) {
-      _logger.printTrace('gen_snapshot does not support Shorebird link info dumps.');
-    }
-    final bool usesLinker = targetingApplePlatform && supportsShorebirdLinkInfoDumps;
+    // Currently we only use the linker on iOS, but we will eventually split out
+    // the concept of "optimizes patch snapshot" from "uses linker" and probably
+    // only uses the linker on iOS, but optimize patch snapshots everywhere.
+    // TODO(eseidel): TargetPlatform.darwin doesn't use the linker.
+    bool usesLinker = (platform == TargetPlatform.ios || platform == TargetPlatform.darwin);
     final dumpLinkInfoArgs = <String>[
       // Shorebird dumps the class table information during snapshot compilation which is later used during linking.
       '--print_class_table_link_debug_info_to=${_fileSystem.path.join(outputDir.parent.path, 'App.class_table.json')}',
@@ -261,6 +226,10 @@ class AOTSnapshotter {
       // Only save LinkInfo if we're using the linker.
       if (usesLinker) ...dumpLinkInfoArgs,
     ];
+
+    final bool targetingApplePlatform =
+        platform == TargetPlatform.ios || platform == TargetPlatform.darwin;
+    _logger.printTrace('targetingApplePlatform = $targetingApplePlatform');
 
     final bool extractAppleDebugSymbols =
         buildMode == BuildMode.profile || buildMode == BuildMode.release;
@@ -334,6 +303,8 @@ class AOTSnapshotter {
     ]);
 
     genSnapshotArgs.add(mainPath);
+
+    final snapshotType = SnapshotType(platform, buildMode);
 
     final int ddMaxBytes = _readDdMaxBytes();
     // DD pass requires:

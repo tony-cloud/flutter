@@ -48,13 +48,6 @@ const kLinkInfoArgs = <String>[
   '--print_dispatch_table_link_info_to=build/App.dt.link',
 ];
 
-FakeCommand linkInfoSupportProbe(String genSnapshotPath) {
-  return FakeCommand(
-    command: <String>[genSnapshotPath, '--help', '--verbose'],
-    stdout: '--print_class_table_link_info_to\n',
-  );
-}
-
 void main() {
   group('GenSnapshot', () {
     late GenSnapshot genSnapshot;
@@ -218,7 +211,6 @@ void main() {
         mode: BuildMode.profile,
       );
       processManager.addCommands(<FakeCommand>[
-        linkInfoSupportProbe(genSnapshotPath),
         FakeCommand(
           command: <String>[
             genSnapshotPath,
@@ -295,7 +287,6 @@ void main() {
         mode: BuildMode.profile,
       );
       processManager.addCommands(<FakeCommand>[
-        linkInfoSupportProbe(genSnapshotPath),
         FakeCommand(
           command: <String>[
             genSnapshotPath,
@@ -368,7 +359,6 @@ void main() {
         mode: BuildMode.release,
       );
       processManager.addCommands(<FakeCommand>[
-        linkInfoSupportProbe(genSnapshotPath),
         FakeCommand(
           command: <String>[
             genSnapshotPath,

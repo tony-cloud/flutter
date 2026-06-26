@@ -15,6 +15,7 @@ import 'package:flutter_tools/src/build_system/targets/ios.dart';
 import 'package:flutter_tools/src/compile.dart';
 import 'package:flutter_tools/src/convert.dart';
 import 'package:flutter_tools/src/ios/xcodeproj.dart';
+import 'package:flutter_tools/src/project.dart';
 import 'package:test/fake.dart';
 
 import '../../../src/common.dart';
@@ -34,13 +35,6 @@ List<String> linkInfoArgsFor(String buildPath) => <String>[
   '--print_dispatch_table_link_debug_info_to=$buildPath/App.dispatch_table.json',
   '--print_dispatch_table_link_info_to=$buildPath/App.dt.link',
 ];
-
-FakeCommand linkInfoSupportProbe(String genSnapshotPath) {
-  return FakeCommand(
-    command: <String>[genSnapshotPath, '--help', '--verbose'],
-    stdout: '--print_class_table_link_info_to\n',
-  );
-}
 
 final Platform macPlatform = FakePlatform(
   operatingSystem: 'macos',
@@ -815,7 +809,6 @@ void main() {
       iosEnvironment.defines[kSdkRoot] = 'path/to/iPhoneOS.sdk';
       final String build = iosEnvironment.buildDir.path;
       processManager.addCommands(<FakeCommand>[
-        linkInfoSupportProbe('Artifact.genSnapshotArm64.TargetPlatform.ios.profile'),
         FakeCommand(
           command: <String>[
             // This path is not known by the cache due to the iOS gen_snapshot split.
@@ -954,7 +947,7 @@ class FakeXcodeProjectInterpreter extends Fake implements XcodeProjectInterprete
 
   @override
   Future<XcodeProjectInfo?> getInfo(
-    String projectPath, {
+    XcodeBasedProject xcodeProject, {
     required Directory buildDirectory,
     String? projectFilename,
   }) async {

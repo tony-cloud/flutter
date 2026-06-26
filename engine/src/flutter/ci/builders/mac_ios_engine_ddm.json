@@ -33,7 +33,7 @@
         "--rbe",
         "--no-goma",
         "--xcode-symlinks",
-        "--gn-args=dart_dynamic_modules=false"
+        "--gn-args=dart_dynamic_modules=true"
       ],
       "name": "ci/ios_debug_sim_ddm",
       "description": "Produces debug mode artifacts to target the x64 iOS simulator.",
@@ -51,7 +51,7 @@
           "--no-lto",
           "--no-rbe",
           "--no-goma",
-          "--gn-args=dart_dynamic_modules=false"
+          "--gn-args=dart_dynamic_modules=true"
         ]
       },
       "properties": {
@@ -83,7 +83,7 @@
         "--rbe",
         "--no-goma",
         "--xcode-symlinks",
-        "--gn-args=dart_dynamic_modules=false"
+        "--gn-args=dart_dynamic_modules=true"
       ],
       "name": "ci/ios_debug_sim_arm64_ddm",
       "description": "Produces debug mode artifacts to target the arm64 iOS simulator.",
@@ -102,7 +102,7 @@
           "--no-lto",
           "--no-rbe",
           "--no-goma",
-          "--gn-args=dart_dynamic_modules=false"
+          "--gn-args=dart_dynamic_modules=true"
         ]
       },
       "properties": {
@@ -131,7 +131,7 @@
         "--rbe",
         "--no-goma",
         "--xcode-symlinks",
-        "--gn-args=dart_dynamic_modules=false"
+        "--gn-args=dart_dynamic_modules=true"
       ],
       "name": "ci/ios_debug_ddm",
       "description": "Produces debug mode artifacts to target iOS.",
@@ -151,7 +151,7 @@
           "debug",
           "--no-rbe",
           "--no-goma",
-          "--gn-args=dart_dynamic_modules=false"
+          "--gn-args=dart_dynamic_modules=true"
         ]
       },
       "properties": {
@@ -180,7 +180,7 @@
         "--rbe",
         "--no-goma",
         "--xcode-symlinks",
-        "--gn-args=dart_dynamic_modules=false"
+        "--gn-args=dart_dynamic_modules=true"
       ],
       "name": "ci/ios_release_ddm",
       "description": "Produces release mode artifacts to target iOS.",
@@ -200,7 +200,7 @@
           "release",
           "--no-rbe",
           "--no-goma",
-          "--gn-args=dart_dynamic_modules=false"
+          "--gn-args=dart_dynamic_modules=true"
         ]
       },
       "properties": {
