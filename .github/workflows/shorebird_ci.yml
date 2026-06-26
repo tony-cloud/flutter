@@ -9,6 +9,7 @@ on:
   push:
     branches:
       - shorebird/dev
+      - tonycloud/dev
 
 env:
   FLUTTER_STORAGE_BASE_URL: https://download.shorebird.dev
