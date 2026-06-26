@@ -10,6 +10,9 @@ on:
     branches:
       - shorebird/dev
 
+env:
+  FLUTTER_STORAGE_BASE_URL: https://download.shorebird.dev
+
 jobs:
   # NOTE: Windows is not included because shorebird_tests depends on
   # flutter_flavorizr which requires Xcode. Additionally, flutter_tools
@@ -31,6 +34,9 @@ jobs:
         with:
           fetch-depth: 0
 
+      - name: 🏷️ Fetch Flutter release tag
+        run: git fetch --no-tags https://github.com/flutter/flutter.git +refs/tags/3.44.4:refs/tags/3.44.4
+
       - name: 🎯 Setup Dart
         uses: dart-lang/setup-dart@v1
 
@@ -49,6 +55,9 @@ jobs:
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
+
+      - name: 🏷️ Fetch Flutter release tag
+        run: git fetch --no-tags https://github.com/flutter/flutter.git +refs/tags/3.44.4:refs/tags/3.44.4
 
       - name: 🎯 Setup Dart
         uses: dart-lang/setup-dart@v1
@@ -83,6 +92,9 @@ jobs:
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
+
+      - name: 🏷️ Fetch Flutter release tag
+        run: git fetch --no-tags https://github.com/flutter/flutter.git +refs/tags/3.44.4:refs/tags/3.44.4
 
       - name: 🎯 Setup Dart
         uses: dart-lang/setup-dart@v1

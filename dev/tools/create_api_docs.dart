@@ -922,7 +922,7 @@ class PlatformDocGenerator {
     final realm = engineRealm.isNotEmpty ? '$engineRealm/' : '';
     final String storageBaseUrl =
         Platform.environment['FLUTTER_STORAGE_BASE_URL'] ??
-        'http://localhost:8080/download.flutter.io';
+        'https://download.shorebird.dev';
     final String normalizedStorageBaseUrl = storageBaseUrl.endsWith('/')
         ? storageBaseUrl
         : '$storageBaseUrl/';
