@@ -47,4 +47,7 @@ jobs:
           ./bin/flutter pub get -C ./dev/tools
 
       - name: 🧪 Run Tests
-        run: dart ./dev/bots/test.dart
+        env:
+          SHARD: tool_tests
+          SUBSHARD: general
+        run: dart --enable-asserts ./dev/bots/test.dart
