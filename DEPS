@@ -18,12 +18,11 @@ vars = {
   # Our dart-sdk fork revision. Used for the third_party/dart source clone
   # (gen_snapshot etc.). Open CI builds and packages the custom Dart SDK from
   # source instead of consuming Shorebird's private prebuilt bucket.
-  "dart_sdk_revision": "bb9acb510b99427d6a30a45cfdf689a073e1e343",
+  "dart_sdk_revision": "142849fc16ad6f2cb4dd4ffbd7bb37943024dc74",
   "dart_sdk_git": "https://github.com/tony-cloud/dart-sdk.git",
   "updater_git": "https://git.tonycloud.org/flutter/shorebird-updater.git",
-  "updater_rev": "6e9aab2ce7ede48b38472b7cfe9c8b53b5a98e5c",
+  "updater_rev": "479de106d77039328bdd30dafccefa6d78ea981b",
   'skia_revision': 'e9ed4fc9f1544c58d8a9347c1fc9471d8dd7c465',
-
   # WARNING: DO NOT EDIT canvaskit_cipd_instance MANUALLY
   # See `lib/web_ui/README.md` for how to roll CanvasKit to a new version.
   'canvaskit_cipd_instance': '61aeJQ9laGfEFF_Vlc_u0MCkqB6xb2hAYHRBxKH-Uw4C',

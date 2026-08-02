@@ -540,8 +540,8 @@ class Cache {
     String? overrideUrl = _platform.environment[kFlutterStorageBaseUrl];
     if (overrideUrl == null) {
       return storageRealm.isEmpty
-          ? kOpenFlutterStorageUrl
-          : 'https://storage.googleapis.com/$storageRealm';
+        ? kOpenFlutterStorageUrl
+        : 'https://storage.googleapis.com/$storageRealm';
     }
     // The open workspace artifact proxy is a trusted source.
     if (overrideUrl == kOpenFlutterStorageUrl) {
