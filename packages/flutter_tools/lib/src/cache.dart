@@ -37,7 +37,7 @@ import 'base/utils.dart' show getElapsedAsSeconds, getSizeAsPlatformMB;
 import 'convert.dart';
 import 'features.dart';
 
-const kShorebirdStorageUrl = 'https://download.shorebird.dev';
+const kOpenFlutterStorageUrl = 'http://localhost:8080/download.flutter.io';
 const kFlutterRootEnvironmentVariableName =
     'FLUTTER_ROOT'; // should point to //flutter/ (root of flutter/flutter repo)
 const kFlutterEngineEnvironmentVariableName =
@@ -527,9 +527,10 @@ class Cache {
   /// The base for URLs that store Flutter engine artifacts that are fetched
   /// during the installation of the Flutter SDK.
   ///
-  /// By default the base URL is https://download.shorebird.dev. However, if
-  /// `FLUTTER_STORAGE_BASE_URL` environment variable ([kFlutterStorageBaseUrl])
-  /// is provided, the environment variable value is returned instead.
+  /// By default the base URL is http://localhost:8080/download.flutter.io.
+  /// However, if `FLUTTER_STORAGE_BASE_URL` environment variable
+  /// ([kFlutterStorageBaseUrl]) is provided, the environment variable value is
+  /// returned instead.
   ///
   /// See also:
   ///
@@ -539,11 +540,11 @@ class Cache {
     String? overrideUrl = _platform.environment[kFlutterStorageBaseUrl];
     if (overrideUrl == null) {
       return storageRealm.isEmpty
-          ? 'https://download.shorebird.dev'
+          ? kOpenFlutterStorageUrl
           : 'https://storage.googleapis.com/$storageRealm';
     }
-    // Shorebird's artifact proxy is a trusted source.
-    if (overrideUrl == kShorebirdStorageUrl) {
+    // The open workspace artifact proxy is a trusted source.
+    if (overrideUrl == kOpenFlutterStorageUrl) {
       return overrideUrl;
     }
     // verify that this is a valid URI.

@@ -37,7 +37,7 @@ Future<void> postProcess() async {
   final String docsPath = path.join(checkoutPath, 'dev', 'docs');
   final String storageBaseUrl =
       Platform.environment['FLUTTER_STORAGE_BASE_URL'] ??
-      'https://download.shorebird.dev';
+      'http://localhost:8080/download.flutter.io';
   final String normalizedStorageBaseUrl = storageBaseUrl.endsWith('/')
       ? storageBaseUrl
       : '$storageBaseUrl/';

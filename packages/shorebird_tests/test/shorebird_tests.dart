@@ -47,7 +47,7 @@ Future<ProcessResult> _runFlutterCommand(
     arguments,
     workingDirectory: workingDirectory.path,
     environment: {
-      'FLUTTER_STORAGE_BASE_URL': 'https://download.shorebird.dev',
+      'FLUTTER_STORAGE_BASE_URL': 'http://localhost:8080/download.flutter.io',
       if (environment != null) ...environment,
     },
   );
