@@ -1,3 +1,4 @@
+import("//flutter/build/dart/dart.gni")
 import("//flutter/common/config.gni")
 
 source_set("patch_cache") {
