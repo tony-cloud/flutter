@@ -146,7 +146,7 @@ if (enable_unittests) {
       ":libdart",
       ":runtime",
       ":runtime_fixtures",
-      "$dart_src/runtime/bin:elf_loader",
+      "$dart_src/runtime/bin:shared_object_loaders",
       "//flutter/common",
       "//flutter/fml",
       "//flutter/lib/snapshot",

@@ -287,7 +287,7 @@ if (enable_unittests) {
       ":ui",
       ":ui_testing_mocks",
       ":ui_unittests_fixtures",
-      "$dart_src/runtime/bin:elf_loader",
+      "$dart_src/runtime/bin:shared_object_loaders",
       "//flutter/common",
       "//flutter/impeller",
       "//flutter/impeller/renderer/testing:mocks",

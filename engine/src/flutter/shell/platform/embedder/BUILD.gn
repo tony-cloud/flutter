@@ -302,7 +302,7 @@ if (enable_unittests) {
       ":embedder",
       ":embedder_gpu_configuration",
       ":fixtures",
-      "$dart_src/runtime/bin:elf_loader",
+      "$dart_src/runtime/bin:shared_object_loaders",
       "//flutter/flow",
       "//flutter/lib/snapshot",
       "//flutter/lib/ui",
