@@ -127,8 +127,17 @@ if [ ! -f "$ENGINE_STAMP" ] || [ "$ENGINE_VERSION" != "$(< "$ENGINE_STAMP")" ]; 
     FIND=find
   fi
 
-  DART_SDK_BASE_URL="${FLUTTER_STORAGE_BASE_URL:-http://localhost:8080/download.flutter.io}${ENGINE_REALM:+/$ENGINE_REALM}"
-  DART_SDK_URL="$DART_SDK_BASE_URL/flutter_infra_release/flutter/$ENGINE_VERSION/$DART_ZIP_NAME"
+  # Prefer a workspace GitHub Release asset when Flutter's storage base URL
+  # has not been explicitly configured. This keeps direct Flutter SDK refreshes
+  # independent of Shorebird's hosted artifact service while preserving the
+  # normal Flutter storage layout for explicit mirrors.
+  if [[ -n "${FLUTTER_STORAGE_BASE_URL:-}" ]]; then
+    DART_SDK_BASE_URL="$FLUTTER_STORAGE_BASE_URL${ENGINE_REALM:+/$ENGINE_REALM}"
+    DART_SDK_URL="$DART_SDK_BASE_URL/flutter_infra_release/flutter/$ENGINE_VERSION/$DART_ZIP_NAME"
+  else
+    DART_SDK_RELEASE_BASE_URL="${SHOREBIRD_DART_SDK_RELEASE_BASE_URL:-https://github.com/tony-cloud/shorebird-workspace/releases/latest/download}"
+    DART_SDK_URL="$DART_SDK_RELEASE_BASE_URL/$DART_ZIP_NAME"
+  fi
 
   # if the sdk path exists, copy it to a temporary location
   if [ -d "$DART_SDK_PATH" ]; then

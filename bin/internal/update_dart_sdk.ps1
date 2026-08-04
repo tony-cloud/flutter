@@ -40,11 +40,15 @@ if ((Test-Path $engineStamp) -and ($engineVersion -eq (Get-Content $engineStamp)
 }
 
 $dartSdkBaseUrl = $Env:FLUTTER_STORAGE_BASE_URL
-if (-not $dartSdkBaseUrl) {
-    $dartSdkBaseUrl = "http://localhost:8080/download.flutter.io"
-}
-if ($engineRealm) {
+$usesFlutterStorageLayout = [bool]$dartSdkBaseUrl
+if ($usesFlutterStorageLayout -and $engineRealm) {
     $dartSdkBaseUrl = "$dartSdkBaseUrl/$engineRealm"
+}
+if (-not $usesFlutterStorageLayout) {
+    $dartSdkBaseUrl = $Env:SHOREBIRD_DART_SDK_RELEASE_BASE_URL
+    if (-not $dartSdkBaseUrl) {
+        $dartSdkBaseUrl = "https://github.com/tony-cloud/shorebird-workspace/releases/latest/download"
+    }
 }
 
 # It's important to use the native Dart SDK as the default target architecture
@@ -53,7 +57,11 @@ $dartZipNameX64 = "dart-sdk-windows-x64.zip"
 $dartZipNameArm64 = "dart-sdk-windows-arm64.zip"
 $dartZipName = $dartZipNameX64
 if ($env:PROCESSOR_ARCHITECTURE -eq "ARM64") {
-    $dartSdkArm64Url = "$dartSdkBaseUrl/flutter_infra_release/flutter/$engineVersion/$dartZipNameArm64"
+    if ($usesFlutterStorageLayout) {
+        $dartSdkArm64Url = "$dartSdkBaseUrl/flutter_infra_release/flutter/$engineVersion/$dartZipNameArm64"
+    } else {
+        $dartSdkArm64Url = "$dartSdkBaseUrl/$dartZipNameArm64"
+    }
     Try {
         Invoke-WebRequest -Uri $dartSdkArm64Url -UseBasicParsing -Method Head | Out-Null
         $dartZipName = $dartZipNameArm64
@@ -62,7 +70,11 @@ if ($env:PROCESSOR_ARCHITECTURE -eq "ARM64") {
         Write-Host "The current channel's Dart SDK does not support Windows Arm64, falling back to Windows x64..."
     }
 }
-$dartSdkUrl = "$dartSdkBaseUrl/flutter_infra_release/flutter/$engineVersion/$dartZipName"
+if ($usesFlutterStorageLayout) {
+    $dartSdkUrl = "$dartSdkBaseUrl/flutter_infra_release/flutter/$engineVersion/$dartZipName"
+} else {
+    $dartSdkUrl = "$dartSdkBaseUrl/$dartZipName"
+}
 
 if ((Test-Path $dartSdkPath) -or (Test-Path $dartSdkLicense)) {
     # Move old SDK to a new location instead of deleting it in case it is still in use (e.g. by IntelliJ).
