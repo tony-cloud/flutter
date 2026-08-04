@@ -43,9 +43,7 @@ ELFAOTSymbols LoadELFSymbolFromFixturesIfNeccessary(std::string elf_filename) {
                    0,                            // file offset
                    &error,                       // error (out)
                    &symbols.vm_snapshot_data,    // vm snapshot data (out)
-                   &symbols.vm_snapshot_instrs,  // vm snapshot instrs (out)
-                   &symbols.vm_isolate_data,     // vm isolate data (out)
-                   &symbols.vm_isolate_instrs    // vm isolate instr (out)
+                   &symbols.vm_snapshot_instrs   // vm snapshot instrs (out)
       );
 
   if (loaded_elf == nullptr) {
@@ -93,9 +91,7 @@ ELFAOTSymbols LoadELFSplitSymbolFromFixturesIfNeccessary(
                    0,                            // file offset
                    &error,                       // error (out)
                    &symbols.vm_snapshot_data,    // vm snapshot data (out)
-                   &symbols.vm_snapshot_instrs,  // vm snapshot instrs (out)
-                   &symbols.vm_isolate_data,     // vm isolate data (out)
-                   &symbols.vm_isolate_instrs    // vm isolate instr (out)
+                   &symbols.vm_snapshot_instrs   // vm snapshot instrs (out)
       );
 
   if (loaded_elf == nullptr) {
