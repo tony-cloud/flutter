@@ -5,6 +5,7 @@
 #ifndef FLUTTER_RUNTIME_DART_SNAPSHOT_H_
 #define FLUTTER_RUNTIME_DART_SNAPSHOT_H_
 
+#include <cstddef>
 #include <memory>
 
 #include "flutter/common/settings.h"
@@ -152,12 +153,24 @@ class DartSnapshot : public fml::RefCountedThreadSafe<DartSnapshot> {
   const uint8_t* GetDataMapping() const;
 
   //----------------------------------------------------------------------------
+  /// Returns the size of the heap snapshot mapping.
+  ///
+  /// This is obtained from Flutter's mapping object rather than from a
+  /// Shorebird-specific Dart API, so it is available when using a public Dart
+  /// SDK.
+  size_t GetDataSize() const;
+
+  //----------------------------------------------------------------------------
   /// @brief      Get a pointer to the read-execute mapping to the instructions
   ///             snapshot.
   ///
   /// @return     The instructions mapping.
   ///
   const uint8_t* GetInstructionsMapping() const;
+
+  //----------------------------------------------------------------------------
+  /// Returns the size of the instructions snapshot mapping.
+  size_t GetInstructionsSize() const;
 
   //----------------------------------------------------------------------------
   /// @brief      Returns whether both the data and instructions mappings are

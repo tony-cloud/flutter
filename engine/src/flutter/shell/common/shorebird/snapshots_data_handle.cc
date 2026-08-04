@@ -1,20 +1,17 @@
 #include "flutter/shell/common/shorebird/snapshots_data_handle.h"
 
-#include "third_party/dart/runtime/include/dart_native_api.h"
-
 namespace flutter {
 
 static std::unique_ptr<fml::Mapping> DataMapping(const DartSnapshot& snapshot) {
   auto ptr = snapshot.GetDataMapping();
-  return std::make_unique<fml::NonOwnedMapping>(ptr,
-                                                Dart_SnapshotDataSize(ptr));
+  return std::make_unique<fml::NonOwnedMapping>(ptr, snapshot.GetDataSize());
 }
 
 static std::unique_ptr<fml::Mapping> InstructionsMapping(
     const DartSnapshot& snapshot) {
   auto ptr = snapshot.GetInstructionsMapping();
-  return std::make_unique<fml::NonOwnedMapping>(ptr,
-                                                Dart_SnapshotInstrSize(ptr));
+  return std::make_unique<fml::NonOwnedMapping>(
+      ptr, snapshot.GetInstructionsSize());
 }
 
 // The size of the snapshot data is the sum of the sizes of the blobs.

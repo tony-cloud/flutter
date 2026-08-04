@@ -23,7 +23,6 @@
 #include "flutter/shell/common/switches.h"
 #include "fml/logging.h"
 #include "shell/platform/embedder/embedder.h"
-#include "third_party/dart/runtime/include/dart_native_api.h"
 #include "third_party/dart/runtime/include/dart_tools_api.h"
 
 // Namespaced to avoid Google style warnings.
@@ -70,18 +69,10 @@ void SetBaseSnapshot(Settings& settings) {
   // so customer syslogs include the exact sizes the on-device base reader
   // exposes — directly comparable to the host's `aot_tools dump_blobs`
   // extraction the patch was generated against.
-  const uint8_t* vm_data_ptr = vm_snapshot->GetDataMapping();
-  const uint8_t* iso_data_ptr = isolate_snapshot->GetDataMapping();
-  const uint8_t* vm_insns_ptr = vm_snapshot->GetInstructionsMapping();
-  const uint8_t* iso_insns_ptr = isolate_snapshot->GetInstructionsMapping();
-  intptr_t vm_data_size =
-      vm_data_ptr ? Dart_SnapshotDataSize(vm_data_ptr) : -1;
-  intptr_t iso_data_size =
-      iso_data_ptr ? Dart_SnapshotDataSize(iso_data_ptr) : -1;
-  intptr_t vm_insns_size =
-      vm_insns_ptr ? Dart_SnapshotInstrSize(vm_insns_ptr) : -1;
-  intptr_t iso_insns_size =
-      iso_insns_ptr ? Dart_SnapshotInstrSize(iso_insns_ptr) : -1;
+  size_t vm_data_size = vm_snapshot->GetDataSize();
+  size_t iso_data_size = isolate_snapshot->GetDataSize();
+  size_t vm_insns_size = vm_snapshot->GetInstructionsSize();
+  size_t iso_insns_size = isolate_snapshot->GetInstructionsSize();
   FML_LOG(INFO) << "[shorebird] SetBaseSnapshot mappings: "
                 << "vm_data_size=" << vm_data_size
                 << " iso_data_size=" << iso_data_size

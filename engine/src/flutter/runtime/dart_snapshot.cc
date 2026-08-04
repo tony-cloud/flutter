@@ -278,8 +278,16 @@ const uint8_t* DartSnapshot::GetDataMapping() const {
   return data_ ? data_->GetMapping() : nullptr;
 }
 
+size_t DartSnapshot::GetDataSize() const {
+  return data_ ? data_->GetSize() : 0;
+}
+
 const uint8_t* DartSnapshot::GetInstructionsMapping() const {
   return instructions_ ? instructions_->GetMapping() : nullptr;
+}
+
+size_t DartSnapshot::GetInstructionsSize() const {
+  return instructions_ ? instructions_->GetSize() : 0;
 }
 
 bool DartSnapshot::IsDontNeedSafe() const {
