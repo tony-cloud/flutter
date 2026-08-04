@@ -18,7 +18,7 @@ vars = {
   # Our dart-sdk fork revision. Used for the third_party/dart source clone
   # (gen_snapshot etc.). Open CI builds and packages the custom Dart SDK from
   # source instead of consuming Shorebird's private prebuilt bucket.
-  "dart_sdk_revision": "0ce1e81dceb7b9d35f97202a3cd68bab756ee2b0",
+  "dart_sdk_revision": "0ce1e81dceb3b80b260b1b2a7907e2bcde2955df",
   "dart_sdk_git": "https://github.com/tony-cloud/dart-sdk.git",
   "updater_git": "https://git.tonycloud.org/flutter/shorebird-updater.git",
   "updater_rev": "479de106d77039328bdd30dafccefa6d78ea981b",
