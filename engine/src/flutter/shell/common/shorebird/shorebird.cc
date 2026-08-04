@@ -23,7 +23,6 @@
 #include "flutter/shell/common/switches.h"
 #include "fml/logging.h"
 #include "shell/platform/embedder/embedder.h"
-#include "third_party/dart/runtime/include/dart_tools_api.h"
 
 // Namespaced to avoid Google style warnings.
 namespace flutter {
@@ -81,10 +80,9 @@ void SetBaseSnapshot(Settings& settings) {
                 << (vm_data_size + iso_data_size + vm_insns_size +
                     iso_insns_size);
 
-  Shorebird_SetBaseSnapshots(isolate_snapshot->GetDataMapping(),
-                             isolate_snapshot->GetInstructionsMapping(),
-                             vm_snapshot->GetDataMapping(),
-                             vm_snapshot->GetInstructionsMapping());
+  // The public Dart API does not expose the private interpreter hook that
+  // older Shorebird Dart builds used to register these mappings. Flutter
+  // still retains the snapshots above for the updater's file callback stream.
 }
 #endif  // SHOREBIRD_USE_INTERPRETER
 
