@@ -64,8 +64,8 @@ dependencies:
   # within the monorepo.
   shorebird_build_trace:
     git:
-      url: https://git.tonycloud.org/flutter/shorebird.git
-      ref: 58b0873684ae04fb01185bdc723c9149fb452915
+      url: https://github.com/tony-cloud/shorebird.git
+      ref: 2d7371367eeac06eb21065cca757ab68882dd8db
       path: packages/shorebird_build_trace
   hooks_runner: 1.1.1
   hooks: 1.0.2

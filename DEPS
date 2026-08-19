@@ -20,7 +20,7 @@ vars = {
   # source instead of consuming Shorebird's private prebuilt bucket.
   "dart_sdk_revision": "89615fb4377fe0fbb2f2cee972566995fb5f51d8",
   "dart_sdk_git": "https://github.com/tony-cloud/dart-sdk.git",
-  "updater_git": "https://git.tonycloud.org/flutter/shorebird-updater.git",
+  "updater_git": "https://github.com/tony-cloud/shorebird-updater.git",
   "updater_rev": "479de106d77039328bdd30dafccefa6d78ea981b",
   'skia_revision': 'e9ed4fc9f1544c58d8a9347c1fc9471d8dd7c465',
   # WARNING: DO NOT EDIT canvaskit_cipd_instance MANUALLY
