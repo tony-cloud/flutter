@@ -105,6 +105,7 @@ class CocoaPods {
     required Logger logger,
     required Platform platform,
     required Analytics analytics,
+    Abi? currentAbi,
   }) : _fileSystem = fileSystem,
        _processManager = processManager,
        _xcodeProjectInterpreter = xcodeProjectInterpreter,
@@ -116,6 +117,7 @@ class CocoaPods {
          logger: logger,
          platform: platform,
          processManager: processManager,
+         currentAbi: currentAbi,
        );
 
   final FileSystem _fileSystem;

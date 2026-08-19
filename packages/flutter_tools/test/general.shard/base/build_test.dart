@@ -49,6 +49,13 @@ const kLinkInfoArgs = <String>[
 ];
 
 void main() {
+  const kWhichSysctlCommand = FakeCommand(command: <String>['which', 'sysctl']);
+
+  // x64 host.
+  const kx64CheckCommand = FakeCommand(
+    command: <String>['sysctl', 'hw.optional.arm64'],
+    exitCode: 1,
+  );
   group('GenSnapshot', () {
     late GenSnapshot genSnapshot;
     late Artifacts artifacts;

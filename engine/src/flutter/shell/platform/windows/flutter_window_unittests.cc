@@ -192,15 +192,15 @@ TEST_F(FlutterWindowTest, OnPointerStarSendsDeviceType) {
   // Move
   EXPECT_CALL(delegate,
               OnPointerMove(10.0, 10.0, kFlutterPointerDeviceKindMouse,
-                            kDefaultPointerDeviceId, 0, 0, 0))
+                            kDefaultPointerDeviceId, 0, 0, 0, 0))
       .Times(1);
   EXPECT_CALL(delegate,
               OnPointerMove(10.0, 10.0, kFlutterPointerDeviceKindTouch,
-                            kDefaultPointerDeviceId, 0, 0, 0))
+                            kDefaultPointerDeviceId, 0, 0, 0, 0))
       .Times(1);
   EXPECT_CALL(delegate,
               OnPointerMove(10.0, 10.0, kFlutterPointerDeviceKindStylus,
-                            kDefaultPointerDeviceId, 0, 0, 0))
+                            kDefaultPointerDeviceId, 0, 0, 0, 0))
       .Times(1);
 
   // Down
@@ -249,31 +249,37 @@ TEST_F(FlutterWindowTest, OnPointerStarSendsDeviceType) {
       .Times(1);
 
   win32window.OnPointerMove(10.0, 10.0, kFlutterPointerDeviceKindMouse,
-                            kDefaultPointerDeviceId, 0, 0, 0);
+                            kDefaultPointerDeviceId, 0, 0, 0, 0);
   win32window.OnPointerDown(10.0, 10.0, kFlutterPointerDeviceKindMouse,
-                            kDefaultPointerDeviceId, WM_LBUTTONDOWN, 0, 0);
+                            kDefaultPointerDeviceId,
+                            kFlutterPointerButtonMousePrimary, 0, 0);
   win32window.OnPointerUp(10.0, 10.0, kFlutterPointerDeviceKindMouse,
-                          kDefaultPointerDeviceId, WM_LBUTTONDOWN);
+                          kDefaultPointerDeviceId,
+                          kFlutterPointerButtonMousePrimary);
   win32window.OnPointerLeave(10.0, 10.0, kFlutterPointerDeviceKindMouse,
                              kDefaultPointerDeviceId);
 
   // Touch
   win32window.OnPointerMove(10.0, 10.0, kFlutterPointerDeviceKindTouch,
-                            kDefaultPointerDeviceId, 0, 0, 0);
+                            kDefaultPointerDeviceId, 0, 0, 0, 0);
   win32window.OnPointerDown(10.0, 10.0, kFlutterPointerDeviceKindTouch,
-                            kDefaultPointerDeviceId, WM_LBUTTONDOWN, 0, 0);
+                            kDefaultPointerDeviceId,
+                            kFlutterPointerButtonMousePrimary, 0, 0);
   win32window.OnPointerUp(10.0, 10.0, kFlutterPointerDeviceKindTouch,
-                          kDefaultPointerDeviceId, WM_LBUTTONDOWN);
+                          kDefaultPointerDeviceId,
+                          kFlutterPointerButtonMousePrimary);
   win32window.OnPointerLeave(10.0, 10.0, kFlutterPointerDeviceKindTouch,
                              kDefaultPointerDeviceId);
 
   // Pen
   win32window.OnPointerMove(10.0, 10.0, kFlutterPointerDeviceKindStylus,
-                            kDefaultPointerDeviceId, 0, 0, 0);
+                            kDefaultPointerDeviceId, 0, 0, 0, 0);
   win32window.OnPointerDown(10.0, 10.0, kFlutterPointerDeviceKindStylus,
-                            kDefaultPointerDeviceId, WM_LBUTTONDOWN, 0, 0);
+                            kDefaultPointerDeviceId,
+                            kFlutterPointerButtonMousePrimary, 0, 0);
   win32window.OnPointerUp(10.0, 10.0, kFlutterPointerDeviceKindStylus,
-                          kDefaultPointerDeviceId, WM_LBUTTONDOWN);
+                          kDefaultPointerDeviceId,
+                          kFlutterPointerButtonMousePrimary);
   win32window.OnPointerLeave(10.0, 10.0, kFlutterPointerDeviceKindStylus,
                              kDefaultPointerDeviceId);
 
@@ -300,7 +306,8 @@ TEST_F(FlutterWindowTest, OnStylusPointerDown) {
       .WillRepeatedly([](UINT32 pointer_id, POINTER_PEN_INFO* pen_info) {
         if (pen_info != nullptr) {
           pen_info->pressure = 720;  // Non-zero pressure for contact events
-          pen_info->rotation = 0;
+          pen_info->rotation = 10;
+          pen_info->penFlags = 0;
         }
         return TRUE;
       });
@@ -316,7 +323,7 @@ TEST_F(FlutterWindowTest, OnStylusPointerDown) {
   EXPECT_CALL(delegate,
               OnPointerDown(10.0, 10.0, kFlutterPointerDeviceKindStylus,
                             kDefaultPointerDeviceId,
-                            kFlutterPointerButtonMousePrimary, 720, 0))
+                            kFlutterPointerButtonStylusContact, 10, 720))
       .Times(1);
 
   UINT32 pointerId = 1;
@@ -344,6 +351,7 @@ TEST_F(FlutterWindowTest, OnStylusPointerMove) {
         if (pen_info != nullptr) {
           pen_info->pressure = 720;  // Non-zero pressure for contact events
           pen_info->rotation = 10;   // This is PRE-transformation to radians.
+          pen_info->penFlags = 0;
         }
         return TRUE;
       });
@@ -352,8 +360,10 @@ TEST_F(FlutterWindowTest, OnStylusPointerMove) {
   MockWindowBindingHandlerDelegate delegate;
   win32window.SetView(&delegate);
 
-  EXPECT_CALL(delegate, OnPointerMove(15, 20, kFlutterPointerDeviceKindStylus,
-                                      kDefaultPointerDeviceId, 10, 720, 0))
+  EXPECT_CALL(delegate,
+              OnPointerMove(15, 20, kFlutterPointerDeviceKindStylus,
+                            kDefaultPointerDeviceId,
+                            kFlutterPointerButtonStylusContact, 10, 720, 0))
       .Times(1);
 
   UINT32 pointerId = 1;
@@ -366,7 +376,15 @@ TEST_F(FlutterWindowTest, OnStylusPointerUp) {
   auto mock_proc_table = std::make_shared<MockWindowsProcTable>();
 
   EXPECT_CALL(*mock_proc_table, GetPointerInfo(_, _))
-      .WillRepeatedly([](UINT32 pointer_id, POINTER_INFO* pointer_info) {
+      .WillOnce([](UINT32 pointer_id, POINTER_INFO* pointer_info) {
+        if (pointer_info != nullptr) {
+          pointer_info->pointerType = PT_PEN;
+          pointer_info->pointerId = pointer_id;
+          pointer_info->pointerFlags = POINTER_FLAG_INCONTACT;
+        }
+        return TRUE;
+      })
+      .WillOnce([](UINT32 pointer_id, POINTER_INFO* pointer_info) {
         if (pointer_info != nullptr) {
           pointer_info->pointerType = PT_PEN;
           pointer_info->pointerId = pointer_id;
@@ -380,6 +398,7 @@ TEST_F(FlutterWindowTest, OnStylusPointerUp) {
         if (pen_info != nullptr) {
           pen_info->pressure = 720;
           pen_info->rotation = 0;
+          pen_info->penFlags = 0;
         }
         return TRUE;
       });
@@ -388,9 +407,13 @@ TEST_F(FlutterWindowTest, OnStylusPointerUp) {
   MockWindowBindingHandlerDelegate delegate;
   win32window.SetView(&delegate);
 
+  EXPECT_CALL(delegate,
+              OnPointerDown(25, 30, kFlutterPointerDeviceKindStylus,
+                            kDefaultPointerDeviceId,
+                            kFlutterPointerButtonStylusContact, 0, 720))
+      .Times(1);
   EXPECT_CALL(delegate, OnPointerUp(25, 30, kFlutterPointerDeviceKindStylus,
-                                    kDefaultPointerDeviceId,
-                                    kFlutterPointerButtonMousePrimary))
+                                    kDefaultPointerDeviceId, 0))
       .Times(1);
 
   UINT32 pointerId = 1;
@@ -417,6 +440,7 @@ TEST_F(FlutterWindowTest, OnStylusPointerLeave) {
         if (pen_info != nullptr) {
           pen_info->pressure = 720;
           pen_info->rotation = 0;
+          pen_info->penFlags = 0;
         }
         return TRUE;
       });
@@ -441,7 +465,17 @@ TEST_F(FlutterWindowTest, OnStylusPointerHover) {
   auto mock_proc_table = std::make_shared<MockWindowsProcTable>();
 
   EXPECT_CALL(*mock_proc_table, GetPointerInfo(_, _))
-      .WillRepeatedly([](UINT32 pointer_id, POINTER_INFO* pointer_info) {
+      .WillOnce([](UINT32 pointer_id, POINTER_INFO* pointer_info) {
+        if (pointer_info != nullptr) {
+          pointer_info->pointerId = 1;
+          pointer_info->pointerType = PT_PEN;
+          pointer_info->pointerFlags = POINTER_FLAG_INCONTACT;
+          pointer_info->ptPixelLocation.x = 45;
+          pointer_info->ptPixelLocation.y = 50;
+        }
+        return TRUE;
+      })
+      .WillOnce([](UINT32 pointer_id, POINTER_INFO* pointer_info) {
         if (pointer_info != nullptr) {
           pointer_info->pointerId = 1;
           pointer_info->pointerType = PT_PEN;
@@ -458,6 +492,7 @@ TEST_F(FlutterWindowTest, OnStylusPointerHover) {
         if (pen_info != nullptr) {
           pen_info->pressure = 0;
           pen_info->rotation = 0;
+          pen_info->penFlags = 0;
         }
         return TRUE;
       });
@@ -469,7 +504,7 @@ TEST_F(FlutterWindowTest, OnStylusPointerHover) {
   // First establish the pointer with WM_POINTERDOWN
   EXPECT_CALL(delegate,
               OnPointerDown(45, 50, kFlutterPointerDeviceKindStylus, 0,
-                            kFlutterPointerButtonMousePrimary, 0, 0))
+                            kFlutterPointerButtonStylusContact, 0, 0))
       .Times(1);
 
   UINT32 pointerId = 1;
@@ -479,7 +514,7 @@ TEST_F(FlutterWindowTest, OnStylusPointerHover) {
 
   // Now expect OnPointerMove to be called for hover events
   EXPECT_CALL(delegate, OnPointerMove(45, 50, kFlutterPointerDeviceKindStylus,
-                                      0, 0, 0, 0))
+                                      0, 0, 0, 0, 0))
       .Times(1);
 
   // Inject WM_POINTERUPDATE message (hover event)
@@ -495,7 +530,9 @@ TEST_F(FlutterWindowTest, OnMousePointerDown) {
         if (pointer_info != nullptr) {
           pointer_info->pointerType = PT_MOUSE;
           pointer_info->pointerId = pointer_id;
-          pointer_info->pointerFlags = POINTER_FLAG_INCONTACT;
+          pointer_info->pointerFlags = POINTER_FLAG_INCONTACT |
+                                       POINTER_FLAG_FIRSTBUTTON |
+                                       POINTER_FLAG_DOWN;
         }
         return TRUE;
       });
@@ -523,7 +560,9 @@ TEST_F(FlutterWindowTest, OnTouchPointerDown) {
         if (pointer_info != nullptr) {
           pointer_info->pointerType = PT_TOUCH;
           pointer_info->pointerId = pointer_id;
-          pointer_info->pointerFlags = POINTER_FLAG_INCONTACT;
+          pointer_info->pointerFlags = POINTER_FLAG_INCONTACT |
+                                       POINTER_FLAG_FIRSTBUTTON |
+                                       POINTER_FLAG_DOWN;
         }
         return TRUE;
       });

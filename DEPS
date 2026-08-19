@@ -18,7 +18,7 @@ vars = {
   # Our dart-sdk fork revision. Used for the third_party/dart source clone
   # (gen_snapshot etc.). Open CI builds and packages the custom Dart SDK from
   # source instead of consuming Shorebird's private prebuilt bucket.
-  "dart_sdk_revision": "c3b8a489b7df2f73535a305f1ea61b2654621e60",
+  "dart_sdk_revision": "89615fb4377fe0fbb2f2cee972566995fb5f51d8",
   "dart_sdk_git": "https://github.com/tony-cloud/dart-sdk.git",
   "updater_git": "https://git.tonycloud.org/flutter/shorebird-updater.git",
   "updater_rev": "479de106d77039328bdd30dafccefa6d78ea981b",
@@ -79,13 +79,12 @@ vars = {
   'dart_i18n_rev': 'de7e11b7cc231d8daf6e49dc12690d7339241691',
   'dart_perfetto_rev': '13ce0c9e13b0940d2476cd0cff2301708a9a2e2b',
   'dart_protobuf_rev': '84079e8b8531309e06ba7276b1c28bdca9210ad6',
-  'dart_pub_rev': '74408212b5348003381bc63f3b59274aaa23cfa3',
+  'dart_pub_rev': 'ec276d10a7fa0f6c6ec005340fb9ad29f3b012d0',
   'dart_sync_http_rev': '6666fff944221891182e1f80bf56569338164d72',
-  'dart_tools_rev': '7f986eaa15f493dd2da081ba0daa49be22fcc2fb',
-  'dart_vector_math_rev': '7bf60fb95e0fbbd7648944071de9ab5e32ce7387',
-  'dart_web_rev': 'e0ea82dd5e737b0c06fcaad6194731fb6f414791',
-  'dart_webdev_rev': '5b7299f5b85706536aeac1c9f470b869ddb39fef',
-  'dart_webdriver_rev': '26326d37c0279f201a59c4114c1389977928c0ca',
+  'dart_tools_rev': '7fec8be9af0cd0367d03dbec29b66b3f46565720',
+  'dart_vector_math_rev': 'cf3b5db7340d317dd3489e5a35434b408020a852',
+  'dart_web_rev': 'eb8c3fc61a1e35f48f865836c7c7342897d91bcc',
+  'dart_webdriver_rev': '3a711ebb36871eac997c5d5d2429f7414873dc63',
   'dart_webkit_inspection_protocol_rev': '762115a971d1968bc940454ad1e88d506d8c5640',
 
   'ocmock_rev': 'c4ec0e3a7a9f56cfdbd0aa01f4f97bb4b75c5ef8', # v3.7.1
@@ -113,7 +112,7 @@ vars = {
   # logic or condition may not work if this flag is False.
   # TODO(zijiehe): Make this condition more strict to only download fuchsia
   # dependencies when necessary: b/40935282
-  'download_fuchsia_deps': 'host_os == "linux"',
+  'download_fuchsia_deps': 'host_os == "linux" and host_cpu == "x64"',
   # Downloads the fuchsia SDK as listed in fuchsia_sdk_path var. This variable
   # is currently only used for the Fuchsia LSC process and is not intended for
   # local development.
@@ -129,6 +128,9 @@ vars = {
   # So by default we will not download prebuilts. This variable is needed in
   # the flutter engine to ensure that Dart gn has access to it as well.
   "checkout_llvm": False,
+
+  # Use prebuilt Dart DevTools sources.
+  'build_devtools_from_sources': False,
 
   # Setup Git hooks by default.
   'setup_githooks': True,
@@ -209,16 +211,17 @@ vars = {
   # The version / instance id of the cipd:chromium/fuchsia/test-scripts which
   # will be used altogether with fuchsia-sdk to setup the build / test
   # environment.
-  'fuchsia_test_scripts_version': 'R2EllDf4DgBXVNuiND77UsIc5t36TtLMwB1a92BF4-oC',
+  'fuchsia_test_scripts_version': 's5_gZFJ8De9AJalTwS3VILkwjTVBmULlkblMqcXLheYC',
 
   # The version / instance id of the cipd:chromium/fuchsia/gn-sdk which will be
   # used altogether with fuchsia-sdk to generate gn based build rules.
-  'fuchsia_gn_sdk_version': 'JLBh4Z9PKsjIJcqDUDzEL8Q7whJ3CGRd4QmUL6IzizUC',
+  'fuchsia_gn_sdk_version': 'a87CbQSWEjkPUK1ZY_zsy8aZ9W-3Z2v73ohzhrWbDQ4C',
 }
 
 gclient_gn_args_file = 'engine/src/flutter/third_party/dart/build/config/gclient_args.gni'
 gclient_gn_args = [
-  'checkout_llvm'
+  'checkout_llvm',
+  'build_devtools_from_sources',
 ]
 
 # Only these hosts are allowed for dependencies in this DEPS file.
@@ -266,7 +269,7 @@ deps = {
    Var('chromium_git') + '/external/github.com/google/flatbuffers' + '@' + '067bfdbde9b10c1beb5d6b02d67ae9db8b96f736',
 
   'engine/src/flutter/third_party/icu':
-   Var('chromium_git') + '/chromium/deps/icu.git' + '@' + 'ee5f27adc28bd3f15b2c293f726d14d2e336cbd5',
+   Var('chromium_git') + '/chromium/deps/icu.git' + '@' + 'd578f2e8b7bd5938e21cfb6bf15c079e0aa5b738',
 
    'engine/src/flutter/third_party/gtest-parallel':
    Var('chromium_git') + '/external/github.com/google/gtest-parallel' + '@' + '38191e2733d7cbaeaef6a3f1a942ddeb38a2ad14',
@@ -289,6 +292,9 @@ deps = {
   'engine/src/flutter/third_party/boringssl/src':
   'https://boringssl.googlesource.com/boringssl.git' + '@' + Var('dart_boringssl_rev'),
 
+  'engine/src/flutter/third_party/ai':
+   Var('dart_git') + '/ai.git' + '@' + Var('dart_ai_rev'),
+
   'engine/src/flutter/third_party/dart':
    Var('dart_sdk_git') + '@' + Var('dart_sdk_revision'),
 
@@ -298,13 +304,10 @@ deps = {
    Var('chromium_git') + '/external/github.com/WebAssembly/binaryen.git' + '@' + Var('dart_binaryen_rev'),
 
   'engine/src/flutter/third_party/dart/third_party/devtools':
-   {'dep_type': 'cipd', 'packages': [{'package': 'dart/third_party/flutter/devtools', 'version': 'git_revision:fa063f322c03cc7a690d819db124c196a69cff56'}]},
+   {'dep_type': 'cipd', 'packages': [{'package': 'dart/third_party/flutter/devtools', 'version': 'git_revision:12d595649f189f1896722623f72599077f476848'}]},
 
   'engine/src/flutter/third_party/dart/third_party/perfetto/src':
    Var('chromium_git') + '/external/github.com/google/perfetto' + '@' + Var('dart_perfetto_rev'),
-
-  'engine/src/flutter/third_party/dart/third_party/pkg/ai':
-   Var('dart_git') + '/ai.git' + '@' + Var('dart_ai_rev'),
 
   'engine/src/flutter/third_party/dart/third_party/pkg/core':
    Var('dart_git') + '/core.git' + '@' + Var('dart_core_rev'),
@@ -313,7 +316,7 @@ deps = {
    Var('dart_git') + '/dart_style.git@20ab21773a526f480ca5948f32cf8c77e37d0dc9',
 
   'engine/src/flutter/third_party/dart/third_party/pkg/dartdoc':
-   Var('dart_git') + '/dartdoc.git@a57f497ae9df6e6073b5eb7ddf253d0b2eb470c3',
+   Var('dart_git') + '/dartdoc.git@1d56f263955f329b6701d8f84f069eb0aef353a4',
 
   'engine/src/flutter/third_party/dart/third_party/pkg/ecosystem':
    Var('dart_git') + '/ecosystem.git' + '@' + Var('dart_ecosystem_rev'),
@@ -328,7 +331,7 @@ deps = {
    Var('dart_git') + '/leak_tracker.git@f5620600a5ce1c44f65ddaa02001e200b096e14c',
 
   'engine/src/flutter/third_party/dart/third_party/pkg/native':
-   Var('dart_git') + '/native.git@debb5bddc4ce0aef9d70bb949495e0c65cc976d4',
+   Var('dart_git') + '/native.git@81e464e7ff06aa66246b38a326025e3dba6928d3',
 
   'engine/src/flutter/third_party/dart/third_party/pkg/protobuf':
    Var('dart_git') + '/protobuf.git' + '@' + Var('dart_protobuf_rev'),
@@ -337,7 +340,7 @@ deps = {
    Var('dart_git') + '/pub.git' + '@' + Var('dart_pub_rev'),
 
   'engine/src/flutter/third_party/dart/third_party/pkg/shelf':
-   Var('dart_git') + '/shelf.git@c4b94d3879e627c0b1fe95d9e1ce5f93ebf122d3',
+   Var('dart_git') + '/shelf.git@71248e727317930f244c4b4535e9733bcfc66677',
 
   'engine/src/flutter/third_party/dart/third_party/pkg/sync_http':
    Var('dart_git') + '/sync_http.git' + '@' + Var('dart_sync_http_rev'),
@@ -346,7 +349,7 @@ deps = {
    Var('dart_git') + '/external/github.com/simolus3/tar.git@13479f7c2a18f499e840ad470cfcca8c579f6909',
 
   'engine/src/flutter/third_party/dart/third_party/pkg/test':
-   Var('dart_git') + '/test.git@bcc5228370ba909e5774441398b8585ba9874423',
+   Var('dart_git') + '/test.git@bd92e633e7f05edc3301865bdc00d1ae181cb1f1',
 
   'engine/src/flutter/third_party/dart/third_party/pkg/tools':
    Var('dart_git') + '/tools.git' + '@' + Var('dart_tools_rev'),
@@ -356,9 +359,6 @@ deps = {
 
   'engine/src/flutter/third_party/dart/third_party/pkg/web':
    Var('dart_git') + '/web.git' + '@' + Var('dart_web_rev'),
-
-  'engine/src/flutter/third_party/dart/third_party/pkg/webdev':
-   Var('dart_git') + '/webdev.git' + '@' + Var('dart_webdev_rev'),
 
   'engine/src/flutter/third_party/dart/third_party/pkg/webdriver':
    Var('dart_git') + '/external/github.com/google/webdriver.dart.git' + '@' + Var('dart_webdriver_rev'),
@@ -629,6 +629,7 @@ deps = {
         'version': 'version:21'
        }
      ],
+     'condition': 'not (host_os == "linux" and host_cpu == "arm64")',
      # Always download the JDK since java is required for running the formatter.
      'dep_type': 'cipd',
    },
@@ -799,7 +800,7 @@ deps = {
      'packages': [
        {
         'package': 'fuchsia/sdk/core/linux-amd64',
-        'version': 'pDXMXRIjEHTw7B0skTRDSpKChNTGz9I7h61kTq_jD64C'
+        'version': 'QcRFUtvCw2EobfJ8s6m4hND8ABvb6gRzd8JQLrdpVsQC'
        }
      ],
      'condition': 'download_fuchsia_deps and not download_fuchsia_sdk',

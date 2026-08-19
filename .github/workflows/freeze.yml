@@ -5,7 +5,9 @@
 name: Material and Cupertino Code Freeze
 
 on:
-  pull_request_target:
+  # Safe because this workflow does not check out code or run arbitrary scripts.
+  # It only runs a metadata-based path filter to enforce freeze restrictions.
+  pull_request_target: # zizmor: ignore[dangerous-triggers]
     types: [opened, reopened, synchronize, ready_for_review, labeled, unlabeled]
     branches:
       - master

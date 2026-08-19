@@ -16,6 +16,7 @@ import 'package:flutter_tools/src/build_info.dart';
 import 'package:flutter_tools/src/ios/xcode_build_settings.dart';
 import 'package:flutter_tools/src/ios/xcodeproj.dart';
 import 'package:flutter_tools/src/macos/xcode.dart';
+import 'package:flutter_tools/src/plugins.dart';
 import 'package:flutter_tools/src/project.dart';
 import 'package:test/fake.dart';
 import 'package:unified_analytics/unified_analytics.dart';
@@ -814,6 +815,77 @@ Information about project "Runner":
     ]);
   });
 
+  testWithoutContext('getInfo filters Swift package schemes from project schemes', () async {
+    const workingDirectory = '/';
+    final Directory buildDirectory = fileSystem.directory('build/ios');
+    buildDirectory
+        .childDirectory(kSwiftPackageCacheDirectoryName)
+        .childDirectory('checkouts')
+        .childDirectory('purchases-ios')
+        .childDirectory('.swiftpm')
+        .childDirectory('xcode')
+        .childDirectory('xcshareddata')
+        .childDirectory('xcschemes')
+        .childFile('RevenueCatUI.xcscheme')
+        .createSync(recursive: true);
+    fakeProcessManager.addCommands(const <FakeCommand>[
+      kWhichSysctlCommand,
+      kx64CheckCommand,
+      kResolvePackagesCommand,
+      FakeCommand(
+        command: <String>[
+          'xcrun',
+          'xcodebuild',
+          '-clonedSourcePackagesDirPath',
+          '/build/ios/SourcePackages',
+          '-skipPackageUpdates',
+          '-skipPackagePluginValidation',
+          '-skipPackageSignatureValidation',
+          '-list',
+        ],
+        stdout: '''
+Information about project "Runner":
+    Targets:
+        Runner
+
+    Build Configurations:
+        Debug
+        Release
+
+    Schemes:
+        Runner
+        FlutterGeneratedPluginSwiftPackage
+        FlutterFramework
+        advertising-id
+        advertising_id
+        Patrol
+        RevenueCatUI
+        WatchScheme
+
+''',
+      ),
+    ]);
+
+    final xcodeProjectInterpreter = XcodeProjectInterpreter(
+      logger: logger,
+      fileSystem: fileSystem,
+      platform: platform,
+      processManager: fakeProcessManager,
+      analytics: const NoOpAnalytics(),
+    );
+
+    final XcodeProjectInfo? info = await xcodeProjectInterpreter.getInfo(
+      FakeXcodeBasedProject(workingDirectory, fileSystem, <Plugin>[
+        FakePlugin('advertising_id'),
+        FakePlugin('patrol'),
+      ]),
+      buildDirectory: buildDirectory,
+    );
+
+    expect(info!.schemes, <String>['Runner', 'WatchScheme']);
+    expect(fakeProcessManager, hasNoRemainingExpectations);
+  });
+
   testWithoutContext('expected scheme for non-flavored build is Runner', () {
     expect(XcodeProjectInfo.expectedSchemeFor(BuildInfo.debug), 'Runner');
     expect(XcodeProjectInfo.expectedSchemeFor(BuildInfo.profile), 'Runner');
@@ -1149,6 +1221,69 @@ Information about project "Runner":
           'PREMIUM',
         ),
         'release-premium',
+      );
+    },
+  );
+
+  testWithoutContext(
+    'build configuration for flavored project falls back to BuildMode when flavor match is unavailable',
+    () {
+      final info = XcodeProjectInfo(
+        <String>['Runner'],
+        <String>['Debug', 'Profile', 'Release'],
+        <String>['Banana'],
+        logger,
+      );
+
+      expect(
+        info.buildConfigurationFor(
+          const BuildInfo(
+            BuildMode.debug,
+            'banana',
+            treeShakeIcons: false,
+            packageConfigPath: '.dart_tool/package_config.json',
+          ),
+          'Banana',
+        ),
+        'Debug',
+      );
+
+      expect(
+        info.buildConfigurationFor(
+          const BuildInfo(
+            BuildMode.release,
+            'banana',
+            treeShakeIcons: false,
+            packageConfigPath: '.dart_tool/package_config.json',
+          ),
+          'Banana',
+        ),
+        'Release',
+      );
+    },
+  );
+
+  testWithoutContext(
+    "build configuration doesn't fall back when multiple matches for mode and flavor are available",
+    () {
+      final info = XcodeProjectInfo(
+        <String>['Runner'],
+        <String>['Debug', 'Profile', 'Release', 'DebugBanana', 'banana debug'],
+        <String>['Banana'],
+        logger,
+      );
+
+      expect(
+        info.buildConfigurationFor(
+          const BuildInfo(
+            BuildMode.debug,
+            'banana',
+            treeShakeIcons: false,
+            packageConfigPath: '.dart_tool/package_config.json',
+          ),
+          'Banana',
+        ),
+        null,
       );
     },
   );
@@ -1540,9 +1675,14 @@ Build settings for action build and target good_plugin:
           );
 
           final File config = fs.file('path/to/project/ios/Flutter/Generated.xcconfig');
+          final String configContents = config.readAsStringSync();
           expect(logger.warningText, isEmpty);
-          expect(config.readAsStringSync(), contains('EXCLUDED_ARCHS[sdk=iphonesimulator*]=i386'));
-          expect(config.readAsStringSync(), contains('EXCLUDED_ARCHS[sdk=iphoneos*]=armv7'));
+          expect(configContents, contains('EXCLUDED_ARCHS[sdk=iphonesimulator*]=i386'));
+          expect(
+            configContents,
+            isNot(contains('EXCLUDED_ARCHS[sdk=iphonesimulator*]=i386 arm64')),
+          );
+          expect(configContents, contains('EXCLUDED_ARCHS[sdk=iphoneos*]=armv7'));
           expect(fakeProcessManager, hasNoRemainingExpectations);
         },
         overrides: <Type, Generator>{
@@ -2421,4 +2561,38 @@ class FakeXcodeBasedProject extends IosProject {
 
   @override
   bool get flutterPluginSwiftPackageInProjectSettings => true;
+}
+
+class FakeFlutterProject extends Fake implements FlutterProject {}
+
+class FakeXcodeBasedProject extends IosProject {
+  FakeXcodeBasedProject(this.path, [FileSystem? fileSystem, this.plugins = const <Plugin>[]])
+    : fs = fileSystem ?? MemoryFileSystem.test(),
+      super.fromFlutter(FakeFlutterProject());
+
+  final String path;
+  final FileSystem fs;
+  final List<Plugin> plugins;
+
+  @override
+  Directory get hostAppRoot => fs.directory(path);
+
+  @override
+  Directory get xcodeProject => fs.directory(path);
+
+  @override
+  bool get usesSwiftPackageManager => true;
+
+  @override
+  bool get flutterPluginSwiftPackageInProjectSettings => true;
+
+  @override
+  Future<List<Plugin>> getPlugins() async => plugins;
+}
+
+class FakePlugin extends Fake implements Plugin {
+  FakePlugin(this.name);
+
+  @override
+  final String name;
 }

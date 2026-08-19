@@ -36,7 +36,7 @@ jobs:
           fetch-depth: 0
 
       - name: 🏷️ Fetch Flutter release tag
-        run: git fetch --no-tags https://github.com/flutter/flutter.git +refs/tags/3.44.8:refs/tags/3.44.8
+        run: git fetch --no-tags https://github.com/flutter/flutter.git +refs/tags/3.47.0:refs/tags/3.47.0
 
       - name: 🎯 Setup Dart
         uses: dart-lang/setup-dart@v1
@@ -58,7 +58,7 @@ jobs:
           fetch-depth: 0
 
       - name: 🏷️ Fetch Flutter release tag
-        run: git fetch --no-tags https://github.com/flutter/flutter.git +refs/tags/3.44.8:refs/tags/3.44.8
+        run: git fetch --no-tags https://github.com/flutter/flutter.git +refs/tags/3.47.0:refs/tags/3.47.0
 
       - name: 🎯 Setup Dart
         uses: dart-lang/setup-dart@v1
@@ -95,7 +95,7 @@ jobs:
           fetch-depth: 0
 
       - name: 🏷️ Fetch Flutter release tag
-        run: git fetch --no-tags https://github.com/flutter/flutter.git +refs/tags/3.44.8:refs/tags/3.44.8
+        run: git fetch --no-tags https://github.com/flutter/flutter.git +refs/tags/3.47.0:refs/tags/3.47.0
 
       - name: 🎯 Setup Dart
         uses: dart-lang/setup-dart@v1

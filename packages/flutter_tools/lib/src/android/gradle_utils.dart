@@ -187,7 +187,7 @@ final gradleOrgVersionMatch = RegExp(
 );
 
 // This matches uncommented minSdkVersion lines in the module-level build.gradle
-// file which have minSdkVersion 16, 17, 18, 19, 20, 21, 22, 23 set with space sytax,
+// file which have minSdkVersion 16, 17, 18, 19, 20, 21, 22, 23 set with space syntax,
 // equals syntax and when using minSdk or minSdkVersion.
 // Matches uncommented minSdkVersion lines using equals syntax (=)
 final tooOldMinSdkVersionEqualsMatch = RegExp(
@@ -331,16 +331,11 @@ String? parseGradleVersionFromDistributionUrl(String? distributionUrl) {
   return zipParts[1];
 }
 
-/// Returns either the gradle-wrapper.properties value from the passed in
-/// [directory] or if not present the version available in local path.
+/// Returns the gradle-wrapper.properties value from the passed in [directory].
 ///
-/// If gradle version is not found null is returned.
-/// [directory] should be an android directory with a build.gradle file.
-Future<String?> getGradleVersion(
-  Directory directory,
-  Logger logger,
-  ProcessManager processManager,
-) async {
+/// If gradle version is not found in the file, null is returned.
+/// [directory] should be an android directory.
+Future<String?> getGradleVersionFromFile(Directory directory, Logger logger) async {
   final File propertiesFile = getGradleWrapperFile(directory);
 
   if (propertiesFile.existsSync()) {
@@ -357,14 +352,30 @@ Future<String?> getGradleVersion(
       }
     } else {
       // If no distributionUrl log then treat as if there was no propertiesFile.
-      logger.printTrace(
-        '$propertiesFile does not provide a Gradle version falling back to system gradle.',
-      );
+      logger.printTrace('$propertiesFile does not provide a Gradle version.');
     }
   } else {
     // Could not find properties file.
-    logger.printTrace('$propertiesFile does not exist falling back to system gradle');
+    logger.printTrace('$propertiesFile does not exist.');
   }
+  return null;
+}
+
+/// Returns either the gradle-wrapper.properties value from the passed in
+/// [directory] or if not present the version available in local path.
+///
+/// If gradle version is not found null is returned.
+/// [directory] should be an android directory with a build.gradle file.
+Future<String?> getGradleVersion(
+  Directory directory,
+  Logger logger,
+  ProcessManager processManager,
+) async {
+  final String? gradleVersion = await getGradleVersionFromFile(directory, logger);
+  if (gradleVersion != null) {
+    return gradleVersion;
+  }
+  logger.printTrace('Falling back to system gradle');
   // System installed Gradle version.
   // TODO(reidbaker): Modify this gradle execution to use gradlew.
   if (processManager.canRun('gradle')) {
@@ -420,10 +431,10 @@ Future<String?> getKgpVersion(
   // gradle --version or ./gradlew --version will print the kotlin dsl version.
   // This version normally changes with the version of gradle.
   // https://github.com/gradle/gradle/blob/cefbee263181a924ac4efcaace6bda97a55bc0f7/platforms/core-runtime/gradle-cli/src/main/java/org/gradle/launcher/cli/DefaultCommandLineActionFactory.java#L260
-  // This vesion is NOT the version of KGP that the project uses.
+  // This version is NOT the version of KGP that the project uses.
   //
-  // Instead the kgpVersion task is a custom flutter task dynamiclly added that can
-  // print the kgp version if gradle can run successfuly.
+  // Instead the kgpVersion task is a custom flutter task dynamically added that can
+  // print the kgp version if gradle can run successfully.
 
   if (processManager.canRun('./gradlew', workingDirectory: androidDirectory.path)) {
     final ProcessResult command = await processManager.run(<String>[
@@ -577,16 +588,20 @@ bool validateGradleAndKGP(Logger logger, {required String? kgpV, required String
   }
 
   // https://kotlinlang.org/docs/gradle-configure-project.html#apply-the-plugin
-  // Documenation is non continuous, past versions are known to the
+  // Documentation is non continuous, past versions are known to the
   // publishers of KGP. When covering version ranges beyond what is documented
   // add a comment with the documented value.
-  // Continuous KGP version handling is prefered in case an emergency patch to a
+  // Continuous KGP version handling is preferred in case an emergency patch to a
   // past release is shipped this code will assume the version range that is closest.
 
+  // Documented max is 2.4.0, using 2.4.29 covers patch versions.
+  if (isWithinVersionRange(kgpV, min: '2.4.0', max: '2.4.29')) {
+    return isWithinVersionRange(gradleV, min: '8.5', max: '9.5.99', inclusiveMax: false);
+  }
   // Documented max is 2.3.10, using 2.3.29 covers patch versions.
   if (isWithinVersionRange(kgpV, min: '2.3.0', max: '2.3.29')) {
-    // Documented max is 9.0.0, using 9.0.99 non inclusive covers patch versions.
-    return isWithinVersionRange(gradleV, min: '7.6.3', max: '9.0.99', inclusiveMax: false);
+    // Documented max is 9.5.0, using 9.5.99 non inclusive covers patch versions.
+    return isWithinVersionRange(gradleV, min: '7.6.3', max: '9.5.99', inclusiveMax: false);
   }
   // Documented max is 2.2.21, using 2.3.0 covers patch versions.
   if (isWithinVersionRange(kgpV, min: '2.2.20', max: '2.3.0')) {
@@ -691,16 +706,20 @@ bool validateAgpAndKgp(Logger logger, {required String? kgpV, required String? a
   }
 
   // https://kotlinlang.org/docs/gradle-configure-project.html#apply-the-plugin
-  // Documenation is non continuous, past versions are known to the
+  // Documentation is non continuous, past versions are known to the
   // publishers of KGP. When covering version ranges beyond what is documented
   // add a comment with the documented value.
-  // Continuous KGP version handling is prefered in case an emergency patch to a
+  // Continuous KGP version handling is preferred in case an emergency patch to a
   // past release is shipped this code will assume the version range that is closest.
 
+  // Documented max is 2.4.0, using 2.4.29 covers patch versions.
+  if (isWithinVersionRange(kgpV, min: '2.4.0', max: '2.4.29')) {
+    return isWithinVersionRange(agpV, min: '8.2.2', max: '9.2.99', inclusiveMax: false);
+  }
   // Documented max is 2.3.10
   if (isWithinVersionRange(kgpV, min: '2.3.10', max: '2.3.29')) {
-    // Documented max is 9.0.0
-    return isWithinVersionRange(agpV, min: '8.2.2', max: '9.0.99', inclusiveMax: false);
+    // Documented max is 9.2.0
+    return isWithinVersionRange(agpV, min: '8.2.2', max: '9.2.99', inclusiveMax: false);
   }
   // Documented max is 2.3.0
   if (isWithinVersionRange(kgpV, min: '2.3.0', max: '2.3.10', inclusiveMax: false)) {
@@ -803,10 +822,13 @@ bool validateGradleAndAgp(Logger logger, {required String? gradleV, required Str
   if (isWithinVersionRange(agpV, min: '9.0', max: '9.0.99')) {
     return isWithinVersionRange(gradleV, min: '9.0', max: maxKnownAndSupportedGradleVersion);
   }
+  if (isWithinVersionRange(agpV, min: '9.1.0', max: '9.1.99')) {
+    return isWithinVersionRange(gradleV, min: '9.3.1', max: maxKnownAndSupportedGradleVersion);
+  }
   // Check if versions are newer than the max known versions.
   if (isWithinVersionRange(agpV, min: maxKnownAndSupportedAgpVersion, max: '100.100')) {
     // Assume versions we do not know about are valid but log.
-    final bool validGradle = isWithinVersionRange(gradleV, min: '9.1.0', max: '100.00');
+    final bool validGradle = isWithinVersionRange(gradleV, min: '9.3.1', max: '100.00');
     logger.printTrace(
       'Newer than known AGP version ($agpV), gradle ($gradleV).'
       '\n Treating as valid configuration.',

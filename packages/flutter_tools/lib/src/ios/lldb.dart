@@ -165,7 +165,10 @@ return False
     }
     try {
       _lldbProcess = _LLDBProcess(
-        process: await _processUtils.start(<String>['lldb']),
+        process: await _processUtils.start(<String>[
+          ..._xcodeProjectInterpreter.xcrunCommand(),
+          'lldb',
+        ]),
         appProcessId: appProcessId,
         logger: _logger,
       );
@@ -372,7 +375,7 @@ class _LLDBLogPatternCompleter {
   }
 }
 
-/// A container class for associating a [Process] that is is running LLDB with
+/// A container class for associating a [Process] that is running LLDB with
 /// the iOS device process of an application.
 class _LLDBProcess {
   _LLDBProcess({required Process process, required this.appProcessId, required Logger logger})

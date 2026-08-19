@@ -565,7 +565,7 @@ class _DefaultProcessUtils implements ProcessUtils {
     );
     onStart?.call(process);
     final StreamSubscription<String> stdoutSubscription = process.stdout
-        .transform(utf8LineDecoder)
+        .transform(utf8AllowMalformedLineDecoder)
         .where((String line) => filter == null || filter.hasMatch(line))
         .listen((String line) {
           String? mappedLine = line;
@@ -584,7 +584,7 @@ class _DefaultProcessUtils implements ProcessUtils {
           }
         });
     final StreamSubscription<String> stderrSubscription = process.stderr
-        .transform(utf8LineDecoder)
+        .transform(utf8AllowMalformedLineDecoder)
         .where((String line) => filter == null || filter.hasMatch(line))
         .listen((String line) {
           String? mappedLine = line;
