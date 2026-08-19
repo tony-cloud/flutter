@@ -11,6 +11,7 @@
 #include <vector>
 
 #include "flutter/common/constants.h"
+#include "flutter/fml/logging.h"
 #include "flutter/fml/paths.h"
 #include "flutter/shell/common/shorebird/shorebird.h"
 #include "flutter/shell/platform/common/app_lifecycle_state.h"
@@ -714,6 +715,10 @@ static void SetThreadPriority(FlutterThreadPriority priority) {
   } else if (_project.enableImpeller || std::find(switches.begin(), switches.end(),
                                                   "--enable-impeller=true") != switches.end()) {
     switches.push_back("--enable-impeller=true");
+  }
+
+  if (std::find(switches.begin(), switches.end(), "--enable-impeller=true") == switches.end()) {
+    FML_LOG(IMPORTANT) << "Using the Skia rendering backend (Metal).";
   }
 
   if (_project.enableSDFs ||

@@ -28,3 +28,4 @@ struct ConnectionCollectionTest {
     #expect(55 == ConnectionCollection.makeErrorConnection(errorCode: -55))
   }
 }
+

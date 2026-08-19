@@ -33,7 +33,7 @@ The service manages its own state independently of the main application's UI cyc
 *   **Manages downloads:** It handles the actual HTTP requests, ensuring we don't overwhelm the user's connection by limiting how many fonts download at once.
 
 ### 3. The Smart Retry & Recovery System
-This is the "brain" of the fix. If a font fails to download, the service doesn't just give up or loop forever.
+This is the "brain" of the fix. If a font fails to download, the service doesn't just give up or loop forever. 
 *   **Transient Errors:** If the network blips, it waits 1 second and tries again (up to 3 times).
 *   **Permanent Failures:** If a font is simply not there (a 404 error) or fails all retries, the service marks that font as "Permanently Unavailable."
 *   **Self-Healing:** The service then immediately re-evaluates the missing characters. Because it knows which fonts are broken, it will automatically look for the "next best" font to cover those characters. If no other fonts exist, it marks those characters as "Unsupported" and stops trying. This is what finally breaks the infinite loop.
@@ -51,7 +51,7 @@ This feature sits deep within the "Web Engine" layer of Flutter. It bridges the 
 During the design process, we explored several other approaches but ultimately ruled them out in favor of the more robust `FallbackFontService` model.
 
 ### 1. Immediate "Best-Effort" Replacement
-We considered a strategy where, if the primary font (Font A) failed even once, the service would immediately start downloading the secondary font (Font B).
+We considered a strategy where, if the primary font (Font A) failed even once, the service would immediately start downloading the secondary font (Font B). 
 *   **Why we ruled it out:** This was deemed too aggressive and wasteful of the user's bandwidth. In many cases, a single network blip is temporary. By jumping to Font B immediately, we risked downloading multiple large fonts for the same set of characters, potentially causing "layout jitter" where text changes its appearance multiple times as different fonts arrive. We decided it was better to give the primary font a fair chance to succeed through retries before looking for a substitute.
 
 ### 2. Dependency on the Framework for Retries
@@ -82,7 +82,7 @@ This section outlines the surgical changes required to implement the `FallbackFo
 ### 2. Renderer Interface Updates
 
 *   **File: `lib/src/engine/canvaskit/canvaskit_api.dart`**
-    *   **Rationale:** Add the missing JS-Interop binding for `getUnresolvedCodepoints()` to the `SkParagraph` extension type.
+    *   **Rationale:** Add the missing JS-Interop binding for `getUnresolvedCodepoints()` to the `SkParagraph` extension type. 
     *   **Technical Detail:** The underlying JS/WASM method on the `SkParagraph` object takes **no arguments** and returns a `JSArray<JSNumber>` representing the Unicode code points.
     *   **Usage:** This is the "source of truth" required to move away from string-based discovery.
 *   **File: `lib/src/engine/skwasm/skwasm_impl/raw/text/raw_paragraph.dart`**
@@ -96,7 +96,7 @@ This section outlines the surgical changes required to implement the `FallbackFo
 *   **File: `lib/src/engine/skwasm/skwasm_impl/font_collection.dart` (`SkwasmFontCollection`)**
     *   **Rationale:** Both font collections now implement the unified `FlutterFontCollection` interface, which mandates the presence of a `FontFallbackManager` and a `FallbackFontRegistry`.
     *   **Architecture:** Each collection now owns its respective registry implementation (`SkiaFallbackRegistry` and `SkwasmFallbackRegistry`) and initializes a `FontFallbackManager` to bridge the gap between the `FallbackFontService` and the renderer-specific font stack.
-    *   **State Management:**
+    *   **State Management:** 
         *   `SkiaFontCollection` was updated to maintain a `registeredFallbackFonts` list, and its `_registerWithFontProvider()` method now rebuilds the Skia font provider by combining both asset fonts and dynamically loaded fallback fonts.
         *   `SkwasmFontCollection` now utilizes `setDefaultFontFamilies()` to synchronize the renderer's default font stack with the global fallback list managed by the service.
     *   **Lifecycle:** Added `debugResetFallbackFonts()` to both implementations to ensure clean state during unit and golden testing, allowing the `FallbackFontService` to be reset independently of the main font stack.
@@ -104,7 +104,7 @@ This section outlines the surgical changes required to implement the `FallbackFo
 *   **File: `lib/src/engine/canvaskit/fonts.dart` (`SkiaFallbackRegistry`)**
 *   **File: `lib/src/engine/skwasm/skwasm_impl/font_collection.dart` (`SkwasmFallbackRegistry`)**
     *   **Rationale:** These new registry classes implement the `FallbackFontRegistry` interface, providing the concrete logic for injecting font bytes into the respective WASM heaps and triggering the necessary font-provider updates.
-    *   **Technical Detail:**
+    *   **Technical Detail:** 
         *   `loadFallbackFont(name, bytes)` handles the creation of a typeface from raw bytes.
         *   `updateFallbackFontFamilies(families)` triggers the renderer-specific logic to update the font-matching order (e.g., rebuilding the `TypefaceFontProvider` in Skia or updating the default text style in Skwasm).
 *   **File: `lib/src/engine/canvaskit/text.dart` (`CkParagraph.layout`)**

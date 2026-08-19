@@ -107,14 +107,13 @@ Scalar AttractToOne(Scalar x) {
 
 }  // namespace
 
-void TextContents::ComputeVertexData(
-    VS::PerVertexData* vtx_contents,
-    const Matrix& entity_offset_transform,
-    const std::shared_ptr<TextFrame>& frame,
-    Point position,
-    const Matrix& screen_transform,
-    std::optional<GlyphProperties> glyph_properties,
-    const std::shared_ptr<GlyphAtlas>& atlas) {
+void TextContents::ComputeVertexData(VS::PerVertexData* vtx_contents,
+                                     const Matrix& entity_offset_transform,
+                                     const std::shared_ptr<TextFrame>& frame,
+                                     Point position,
+                                     const Matrix& screen_transform,
+                                     GlyphProperties glyph_properties,
+                                     const std::shared_ptr<GlyphAtlas>& atlas) {
   // Common vertex information for all glyphs.
   // All glyphs are given the same vertex information in the form of a
   // unit-sized quad. The size of the glyph is specified in per instance data

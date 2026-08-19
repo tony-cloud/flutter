@@ -277,12 +277,14 @@ bool TextureGLES::OnSetContents(std::shared_ptr<const fml::Mapping> mapping,
     return false;
   }
 
-  ReactorGLES::Operation texture_upload = [handle = handle_.Get(),        //
-                                           mapping,                       //
-                                           format = gles_format.value(),  //
-                                           size = tex_descriptor.size,    //
-                                           texture_type,                  //
-                                           texture_target                 //
+  ReactorGLES::Operation texture_upload =
+      [handle = handle_.Get(),                                   //
+       mapping,                                                  //
+       format = gles_format.value(),                             //
+       size = tex_descriptor.size,                               //
+       image_size = tex_descriptor.GetByteSizeOfBaseMipLevel(),  //
+       texture_type,                                             //
+       texture_target                                            //
   ](const auto& reactor) {
         auto gl_handle = reactor.GetGLHandle(handle);
         if (!gl_handle.has_value()) {
@@ -770,6 +772,16 @@ void TextureGLES::SetCachedFBO(HandleGLES fbo) {
 
 const HandleGLES& TextureGLES::GetCachedFBO() const {
   return cached_fbo_.Get();
+}
+
+void TextureGLES::SetCachedFBOSubresource(uint32_t mip_level, uint32_t slice) {
+  cached_fbo_mip_level_ = mip_level;
+  cached_fbo_slice_ = slice;
+}
+
+bool TextureGLES::CachedFBOMatchesSubresource(uint32_t mip_level,
+                                              uint32_t slice) const {
+  return cached_fbo_mip_level_ == mip_level && cached_fbo_slice_ == slice;
 }
 
 }  // namespace impeller

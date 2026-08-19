@@ -43,3 +43,4 @@ struct LaunchEngineTest {
     #expect(launchEngine.acquireEngine() == nil, "Accessing engine after take should return nil.")
   }
 }
+

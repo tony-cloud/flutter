@@ -181,11 +181,22 @@ class TextureGLES final : public Texture,
   std::shared_ptr<ReactorGLES> reactor_;
   const Type type_;
   UniqueHandleGLES handle_;
-  mutable UniqueHandleGLES fence_;
-  mutable std::bitset<6> slices_initialized_ = 0;
+  UniqueHandleGLES fence_;
+  // Tracks which `(slice, mip_level)` pairs have had their storage allocated
+  // by a `glTexImage2D` call. Allocation is performed lazily on first write
+  // to a level so the only-renders-then-mipmaps path (Impeller's snapshot
+  // pipeline) keeps its single base-level allocation, and per-level uploads
+  // only pay for the levels they actually touch.
+  //
+  // Sized for up to 6 cubemap faces × 16 mip levels (covers a 32k base
+  // dimension); requested levels above this are simply not tracked.
+  static constexpr size_t kMaxTrackedMipLevels = 16;
+  std::array<std::bitset<kMaxTrackedMipLevels>, 6> slice_mip_initialized_ = {};
   const bool is_wrapped_;
   const std::optional<GLuint> wrapped_fbo_;
   UniqueHandleGLES cached_fbo_;
+  uint32_t cached_fbo_mip_level_ = 0;
+  uint32_t cached_fbo_slice_ = 0;
   bool is_valid_ = false;
 
   TextureGLES(std::shared_ptr<ReactorGLES> reactor,
