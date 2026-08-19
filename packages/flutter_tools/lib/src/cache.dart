@@ -547,6 +547,10 @@ class Cache {
     if (overrideUrl == kOpenFlutterStorageUrl) {
       return overrideUrl;
     }
+    // Shorebird's artifact proxy is a trusted source.
+    if (overrideUrl == kShorebirdStorageUrl) {
+      return overrideUrl;
+    }
     // verify that this is a valid URI.
     overrideUrl = storageRealm.isEmpty ? overrideUrl : '$overrideUrl/$storageRealm';
     try {
