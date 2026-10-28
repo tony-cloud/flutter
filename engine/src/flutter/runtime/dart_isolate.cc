@@ -21,7 +21,6 @@
 #include "flutter/runtime/isolate_configuration.h"
 #include "flutter/runtime/platform_isolate_manager.h"
 #include "flutter/runtime/shorebird/interpreter_patch.h"
-#include "flutter/shell/common/shorebird/updater.h"
 #include "fml/message_loop_task_queues.h"
 #include "fml/task_source.h"
 #include "fml/time/time_point.h"
@@ -161,7 +160,9 @@ std::weak_ptr<DartIsolate> DartIsolate::CreateRunningRootIsolate(
     if (!installed) {
       FML_LOG(ERROR) << "Shorebird interpreter patch rejected: " << error;
       shorebird::RejectInterpreterPatchForProcess();
-      shorebird::Updater::Instance().ReportLaunchFailure();
+      if (settings.shorebird_launch_failure_callback) {
+        settings.shorebird_launch_failure_callback();
+      }
       // shutdown_on_error destroys this entire transient isolate group. A
       // caller may start a fresh base group, but cannot reuse mutated state.
       return {};
@@ -202,11 +203,15 @@ std::weak_ptr<DartIsolate> DartIsolate::CreateRunningRootIsolate(
                                std::move(dart_entrypoint),          //
                                dart_entrypoint_args)) {
     FML_LOG(ERROR) << "Could not run the run main Dart entrypoint.";
-    shorebird::Updater::Instance().ReportLaunchFailure();
+    if (settings.shorebird_launch_failure_callback) {
+      settings.shorebird_launch_failure_callback();
+    }
     return {};
   }
 
-  shorebird::Updater::Instance().ReportLaunchSuccess();
+  if (settings.shorebird_launch_success_callback) {
+    settings.shorebird_launch_success_callback();
+  }
 
   if (settings.root_isolate_shutdown_callback) {
     isolate->AddIsolateShutdownCallback(

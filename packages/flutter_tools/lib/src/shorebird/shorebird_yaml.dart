@@ -94,6 +94,16 @@ Map<String, dynamic> compileShorebirdYaml(
   for (final String key in interpreterFields) {
     final String? override = environment['SHOREBIRD_${key.toUpperCase()}'];
     if (override != null) {
+      // A patch build can restore the release's absent optional restriction
+      // even when its source YAML names the desired upgrade target.
+      if (override.isEmpty &&
+          const <String>{
+            'aot_patch_flavor_id',
+            'aot_patch_license_type',
+            'aot_patch_obfuscation_map_hash',
+          }.contains(key)) {
+        continue;
+      }
       compiled[key] = override;
     } else {
       copyIfSet(key);

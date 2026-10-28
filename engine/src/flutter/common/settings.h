@@ -139,6 +139,9 @@ struct Settings {
   // Encrypted iOS bytecode is data, never a native snapshot library.
   std::shared_ptr<const shorebird::InterpreterPatchConfig>
       shorebird_interpreter_patch;
+  // Supplied by the shell; runtime startup stays independent of updater APIs.
+  fml::closure shorebird_launch_success_callback;
+  fml::closure shorebird_launch_failure_callback;
 
   // Path to a library containing compiled Dart code usable for launching
   // the VM service isolate.

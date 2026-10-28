@@ -109,6 +109,13 @@ void RegisterCodecsWithSkia() {
 // that cause shell initialization failures will still lead to some of their
 // settings being applied.
 void PerformInitializationTasks(Settings& settings) {
+  settings.shorebird_launch_success_callback = [] {
+    shorebird::Updater::Instance().ReportLaunchSuccess();
+  };
+  settings.shorebird_launch_failure_callback = [] {
+    shorebird::Updater::Instance().ReportLaunchFailure();
+  };
+
   {
     fml::LogSettings log_settings;
     log_settings.min_log_level =

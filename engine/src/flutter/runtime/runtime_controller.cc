@@ -16,7 +16,6 @@
 #include "flutter/runtime/isolate_configuration.h"
 #include "flutter/runtime/runtime_delegate.h"
 #include "flutter/runtime/shorebird/interpreter_patch.h"
-#include "flutter/shell/common/shorebird/updater.h"
 #include "third_party/tonic/dart_message_handler.h"
 
 namespace flutter {
@@ -580,7 +579,9 @@ bool RuntimeController::LaunchRootIsolate(
     // The rejected transient group has shut down before this call. Recreate
     // all base state; never continue in a group the bytecode loader touched.
     shorebird::RejectInterpreterPatchForProcess();
-    shorebird::Updater::Instance().ReportLaunchFailure();
+    if (settings.shorebird_launch_failure_callback) {
+      settings.shorebird_launch_failure_callback();
+    }
     Settings base_settings(settings);
     base_settings.shorebird_interpreter_patch.reset();
     strong_root_isolate =

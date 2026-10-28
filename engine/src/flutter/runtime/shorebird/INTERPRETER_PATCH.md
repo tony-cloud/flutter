@@ -13,6 +13,12 @@ rolls back. Launch success is reported only after the root entrypoint invocation
 succeeds. This is not a first-frame watchdog. An existing shared isolate group
 uses its original installation and is never patched a second time.
 
+The current VM supports a restricted set of retained function replacements.
+A full-snapshot payload does not mean arbitrary library/class/closure/signature
+changes are supported. The release and patch compilers must preserve the same
+interpreter-compatible metadata and reachability policy; unsupported changes
+must be rejected rather than advertised as installed.
+
 ## Native key provisioning
 
 Register once before creating any Flutter project or engine. Swift imports the

@@ -168,6 +168,26 @@ aot_patch_base_snapshot_hash: stale-source-hash
         throwsException,
       );
     });
+    test('patch builds can retain absent baseline target restrictions', () {
+      final yaml =
+          loadYamlDocument('''
+app_id: app
+aot_patch_flavor_id: pro
+aot_patch_license_type: pro
+aot_patch_obfuscation_map_hash: patch-map
+''').contents
+              as YamlMap;
+      final compiled = compileShorebirdYaml(
+        yaml,
+        flavor: null,
+        environment: <String, String>{
+          'SHOREBIRD_AOT_PATCH_FLAVOR_ID': '',
+          'SHOREBIRD_AOT_PATCH_LICENSE_TYPE': '',
+          'SHOREBIRD_AOT_PATCH_OBFUSCATION_MAP_HASH': '',
+        },
+      );
+      expect(compiled, <String, dynamic>{'app_id': 'app'});
+    });
     test('native legacy builds can explicitly retain optional responses', () {
       final yaml =
           loadYamlDocument('app_id: app\npatch_response_verification: optional\n').contents
