@@ -75,7 +75,7 @@ mixin ShorebirdInterpreterKernelBuildKey on Target {
   String? buildKeyFor(Environment environment) {
     final bool enabled =
         environment.defines[kTargetPlatform] == 'ios' &&
-        shorebirdInterpreterDisablesTfa(
+        shorebirdUsesIosBytecodeInterpreter(
           environment.fileSystem,
           'ios',
           projectDirectory: environment.projectDir,

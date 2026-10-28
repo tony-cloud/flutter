@@ -365,7 +365,7 @@ class KernelCompiler {
           if (!linkPlatformKernelIn) '--no-link-platform',
           if (aot) ...<String>[
             '--aot',
-            if (shorebirdInterpreterDisablesTfa(_fileSystem, targetOS)) '--no-tfa' else '--tfa',
+            if (shorebirdUsesIosBytecodeInterpreter(_fileSystem, targetOS)) '--no-tfa' else '--tfa',
             // The --target-os flag only makes sense for whole program compilation.
             if (targetOS != null) ...<String>['--target-os', targetOS],
           ],

@@ -9,6 +9,7 @@ import '../build_info.dart';
 import '../darwin/darwin.dart';
 import '../macos/xcode.dart';
 import '../shorebird/shorebird_dd.dart';
+import '../shorebird/shorebird_interpreter.dart';
 import 'file_system.dart';
 import 'logger.dart';
 import 'platform.dart';
@@ -213,7 +214,17 @@ class AOTSnapshotter {
     // the concept of "optimizes patch snapshot" from "uses linker" and probably
     // only uses the linker on iOS, but optimize patch snapshots everywhere.
     // TODO(eseidel): TargetPlatform.darwin doesn't use the linker.
-    final bool usesLinker = platform == TargetPlatform.ios || platform == TargetPlatform.darwin;
+    // Interpreter updates replace bytecode bodies and need only a normal AOT
+    // baseline, without the private native linker flags or DD analysis pass.
+    final bool usesInterpreter = shorebirdUsesIosBytecodeInterpreter(
+      _fileSystem,
+      platform.getName(),
+    );
+    final bool usesLinker =
+        !usesInterpreter && (platform == TargetPlatform.ios || platform == TargetPlatform.darwin);
+    if (usesInterpreter) {
+      shorebirdRemoveNativeLinkOutputs(outputDir.parent);
+    }
     final dumpLinkInfoArgs = <String>[
       // Shorebird dumps the class table information during snapshot compilation which is later used during linking.
       '--print_class_table_link_debug_info_to=${_fileSystem.path.join(outputDir.parent.path, 'App.class_table.json')}',

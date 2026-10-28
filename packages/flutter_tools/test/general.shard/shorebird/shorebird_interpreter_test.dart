@@ -9,17 +9,17 @@ import 'package:flutter_tools/src/shorebird/shorebird_interpreter.dart';
 import '../../src/common.dart';
 
 void main() {
-  testWithoutContext('only explicitly configured iOS interpreter builds disable TFA', () {
+  testWithoutContext('only explicit iOS interpreter mode selects the public AOT baseline', () {
     final fileSystem = MemoryFileSystem.test();
-    expect(shorebirdInterpreterDisablesTfa(fileSystem, 'ios'), isFalse);
+    expect(shorebirdUsesIosBytecodeInterpreter(fileSystem, 'ios'), isFalse);
     final File config = fileSystem.file('shorebird.yaml');
     config.writeAsStringSync('app_id: test\n');
-    expect(shorebirdInterpreterDisablesTfa(fileSystem, 'ios'), isFalse);
+    expect(shorebirdUsesIosBytecodeInterpreter(fileSystem, 'ios'), isFalse);
     config.writeAsStringSync('aot_patch_runtime_mode: native-aot\n');
-    expect(shorebirdInterpreterDisablesTfa(fileSystem, 'ios'), isFalse);
+    expect(shorebirdUsesIosBytecodeInterpreter(fileSystem, 'ios'), isFalse);
     config.writeAsStringSync('aot_patch_runtime_mode: dart-bytecode-interpreter\n');
-    expect(shorebirdInterpreterDisablesTfa(fileSystem, 'ios'), isTrue);
-    expect(shorebirdInterpreterDisablesTfa(fileSystem, 'android'), isFalse);
-    expect(shorebirdInterpreterDisablesTfa(fileSystem, null), isFalse);
+    expect(shorebirdUsesIosBytecodeInterpreter(fileSystem, 'ios'), isTrue);
+    expect(shorebirdUsesIosBytecodeInterpreter(fileSystem, 'android'), isFalse);
+    expect(shorebirdUsesIosBytecodeInterpreter(fileSystem, null), isFalse);
   });
 }

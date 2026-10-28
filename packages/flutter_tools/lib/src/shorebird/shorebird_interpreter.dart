@@ -6,11 +6,12 @@ import 'package:yaml/yaml.dart';
 
 import '../base/file_system.dart';
 
-/// Keeps ordinary function bodies available for no-JIT interpreter updates.
+/// Selects the public AOT baseline for no-JIT bytecode interpreter updates.
 ///
-/// AOT type-flow analysis can inline/remove patch targets and their callers.
-/// Only an explicit interpreter baseline disables that optimization on iOS.
-bool shorebirdInterpreterDisablesTfa(
+/// This route disables type-flow analysis to preserve ordinary patch targets
+/// and skips the native linker metadata and DD pass. Other routes keep their
+/// existing compiler behavior.
+bool shorebirdUsesIosBytecodeInterpreter(
   FileSystem fileSystem,
   String? targetOS, {
   Directory? projectDirectory,
@@ -24,4 +25,27 @@ bool shorebirdInterpreterDisablesTfa(
   }
   final Object? yaml = loadYaml(config.readAsStringSync());
   return yaml is YamlMap && yaml['aot_patch_runtime_mode'] == 'dart-bytecode-interpreter';
+}
+
+/// Prevents LinkSupplement from collecting stale private native linker tables
+/// when a previous build used a different patch runtime.
+void shorebirdRemoveNativeLinkOutputs(Directory buildDirectory) {
+  for (final name in const <String>[
+    'App.class_table.json',
+    'App.ct.link',
+    'App.field_table.json',
+    'App.ft.link',
+    'App.dispatch_table.json',
+    'App.dt.link',
+    'App.dd_identity.link',
+    'App.dd.link',
+    'App.dd_callers.link',
+    'App.dd_slots.link',
+    'App.dd_resolution.tsv',
+  ]) {
+    final File file = buildDirectory.childFile(name);
+    if (file.existsSync()) {
+      file.deleteSync();
+    }
+  }
 }

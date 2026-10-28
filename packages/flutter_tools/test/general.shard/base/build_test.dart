@@ -8,6 +8,7 @@ import 'package:flutter_tools/src/base/build.dart';
 import 'package:flutter_tools/src/base/file_system.dart';
 import 'package:flutter_tools/src/base/io.dart';
 import 'package:flutter_tools/src/base/logger.dart';
+import 'package:flutter_tools/src/base/platform.dart';
 import 'package:flutter_tools/src/build_info.dart';
 import 'package:flutter_tools/src/macos/xcode.dart';
 
@@ -364,77 +365,121 @@ void main() {
       expect(processManager, hasNoRemainingExpectations);
     });
 
-    testWithoutContext('builds iOS snapshot', () async {
-      final String outputPath = fileSystem.path.join('build', 'foo');
-      final String genSnapshotPath = artifacts.getArtifactPath(
-        Artifact.genSnapshotArm64,
-        platform: TargetPlatform.ios,
-        mode: BuildMode.release,
-      );
-      processManager.addCommands(<FakeCommand>[
-        FakeCommand(
-          command: <String>[
-            genSnapshotPath,
-            '--deterministic',
-            ...kLinkInfoArgs,
-            '--snapshot_kind=app-aot-assembly',
-            '--assembly=${fileSystem.path.join(outputPath, 'snapshot_assembly.S')}',
-            'main.dill',
-          ],
-        ),
-        kWhichSysctlCommand,
-        kARMCheckCommand,
-        const FakeCommand(
-          command: <String>[
-            'xcrun',
-            'cc',
-            '-arch',
-            'arm64',
-            '-miphoneos-version-min=15.0',
-            '-isysroot',
-            'path/to/sdk',
-            '-c',
-            'build/foo/snapshot_assembly.S',
-            '-o',
-            'build/foo/snapshot_assembly.o',
-          ],
-        ),
-        const FakeCommand(command: <String>['xcrun', 'clang', '-arch', 'arm64', ...kDefaultClang]),
-        const FakeCommand(
-          command: <String>[
-            'xcrun',
-            'dsymutil',
-            '-o',
-            'build/foo/App.framework.dSYM',
-            'build/foo/App.framework/App',
-          ],
-        ),
-        const FakeCommand(
-          command: <String>[
-            'xcrun',
-            'strip',
-            '-x',
-            'build/foo/App.framework/App',
-            '-o',
-            'build/foo/App.framework/App',
-          ],
-        ),
-      ]);
+    for (final interpreterDdMaxBytes in <int?>[null, 0, 10000]) {
+      testWithoutContext(
+        interpreterDdMaxBytes == null
+            ? 'builds native iOS snapshot with linker metadata'
+            : 'builds public interpreter iOS snapshot with DD setting $interpreterDdMaxBytes',
+        () async {
+          final interpreter = interpreterDdMaxBytes != null;
+          final privateOutputs = <String>[
+            ...kLinkInfoArgs.map((String argument) => argument.split('=').last),
+            'build/App.dd_identity.link',
+            'build/App.dd.link',
+            'build/App.dd_callers.link',
+            'build/App.dd_slots.link',
+            'build/App.dd_resolution.tsv',
+          ];
+          if (interpreter) {
+            fileSystem
+                .file('shorebird.yaml')
+                .writeAsStringSync('aot_patch_runtime_mode: dart-bytecode-interpreter\n');
+            for (final path in privateOutputs) {
+              fileSystem.file(path).createSync(recursive: true);
+            }
+            fileSystem.file('build/app.dill').writeAsStringSync('kernel input');
+            snapshotter = AOTSnapshotter(
+              fileSystem: fileSystem,
+              logger: logger,
+              xcode: Xcode.test(processManager: processManager),
+              artifacts: artifacts,
+              processManager: processManager,
+              platform: FakePlatform(
+                environment: <String, String>{'SHOREBIRD_DD_MAX_BYTES': '$interpreterDdMaxBytes'},
+              ),
+            );
+          }
+          final String outputPath = fileSystem.path.join('build', 'foo');
+          final String genSnapshotPath = artifacts.getArtifactPath(
+            Artifact.genSnapshotArm64,
+            platform: TargetPlatform.ios,
+            mode: BuildMode.release,
+          );
+          processManager.addCommands(<FakeCommand>[
+            FakeCommand(
+              command: <String>[
+                genSnapshotPath,
+                '--deterministic',
+                if (!interpreter) ...kLinkInfoArgs,
+                '--snapshot_kind=app-aot-assembly',
+                '--assembly=${fileSystem.path.join(outputPath, 'snapshot_assembly.S')}',
+                'main.dill',
+              ],
+            ),
+            kWhichSysctlCommand,
+            kARMCheckCommand,
+            const FakeCommand(
+              command: <String>[
+                'xcrun',
+                'cc',
+                '-arch',
+                'arm64',
+                '-miphoneos-version-min=15.0',
+                '-isysroot',
+                'path/to/sdk',
+                '-c',
+                'build/foo/snapshot_assembly.S',
+                '-o',
+                'build/foo/snapshot_assembly.o',
+              ],
+            ),
+            const FakeCommand(
+              command: <String>['xcrun', 'clang', '-arch', 'arm64', ...kDefaultClang],
+            ),
+            const FakeCommand(
+              command: <String>[
+                'xcrun',
+                'dsymutil',
+                '-o',
+                'build/foo/App.framework.dSYM',
+                'build/foo/App.framework/App',
+              ],
+            ),
+            const FakeCommand(
+              command: <String>[
+                'xcrun',
+                'strip',
+                '-x',
+                'build/foo/App.framework/App',
+                '-o',
+                'build/foo/App.framework/App',
+              ],
+            ),
+          ]);
 
-      final int genSnapshotExitCode = await snapshotter.build(
-        platform: TargetPlatform.ios,
-        buildMode: BuildMode.release,
-        mainPath: 'main.dill',
-        outputPath: outputPath,
-        darwinArch: DarwinArch.arm64,
-        sdkRoot: 'path/to/sdk',
-        dartObfuscation: false,
-      );
+          final int genSnapshotExitCode = await snapshotter.build(
+            platform: TargetPlatform.ios,
+            buildMode: BuildMode.release,
+            mainPath: 'main.dill',
+            outputPath: outputPath,
+            darwinArch: DarwinArch.arm64,
+            sdkRoot: 'path/to/sdk',
+            dartObfuscation: false,
+          );
 
-      expect(genSnapshotExitCode, 0);
-      expect(fileSystem.directory('foo').existsSync(), isFalse);
-      expect(processManager, hasNoRemainingExpectations);
-    });
+          expect(genSnapshotExitCode, 0);
+          expect(fileSystem.directory('foo').existsSync(), isFalse);
+          if (interpreter) {
+            for (final path in privateOutputs) {
+              expect(fileSystem.file(path).existsSync(), isFalse, reason: path);
+            }
+            expect(fileSystem.file('build/app.dill').readAsStringSync(), 'kernel input');
+            expect(logger.traceText, isNot(contains('DD 2-pass build')));
+          }
+          expect(processManager, hasNoRemainingExpectations);
+        },
+      );
+    }
 
     testWithoutContext('iOS build without DD deletes tables from an earlier DD pass', () async {
       // An earlier build with SHOREBIRD_DD_MAX_BYTES left these next to the
