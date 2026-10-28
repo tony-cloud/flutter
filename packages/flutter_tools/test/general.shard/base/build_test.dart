@@ -164,6 +164,7 @@ void main() {
         xcode: Xcode.test(processManager: processManager),
         artifacts: artifacts,
         processManager: processManager,
+        platform: FakePlatform(environment: <String, String>{}),
       );
     });
 
@@ -228,7 +229,6 @@ void main() {
           command: <String>[
             genSnapshotPath,
             '--deterministic',
-            ...kLinkInfoArgs,
             '--snapshot_kind=app-aot-assembly',
             '--assembly=$assembly',
             '--dwarf-stack-traces',
@@ -305,7 +305,6 @@ void main() {
           command: <String>[
             genSnapshotPath,
             '--deterministic',
-            ...kLinkInfoArgs,
             '--snapshot_kind=app-aot-assembly',
             '--assembly=$assembly',
             '--obfuscate',
@@ -365,13 +364,15 @@ void main() {
       expect(processManager, hasNoRemainingExpectations);
     });
 
-    for (final interpreterDdMaxBytes in <int?>[null, 0, 10000]) {
+    for (final (bool interpreter, int ddMaxBytes) in <(bool, int)>[
+      (false, 0),
+      (false, 10000),
+      (true, 0),
+      (true, 10000),
+    ]) {
       testWithoutContext(
-        interpreterDdMaxBytes == null
-            ? 'builds native iOS snapshot with linker metadata'
-            : 'builds public interpreter iOS snapshot with DD setting $interpreterDdMaxBytes',
+        'builds public iOS snapshot interpreter=$interpreter DD=$ddMaxBytes',
         () async {
-          final interpreter = interpreterDdMaxBytes != null;
           final privateOutputs = <String>[
             ...kLinkInfoArgs.map((String argument) => argument.split('=').last),
             'build/App.dd_identity.link',
@@ -384,21 +385,24 @@ void main() {
             fileSystem
                 .file('shorebird.yaml')
                 .writeAsStringSync('aot_patch_runtime_mode: dart-bytecode-interpreter\n');
-            for (final path in privateOutputs) {
-              fileSystem.file(path).createSync(recursive: true);
-            }
-            fileSystem.file('build/app.dill').writeAsStringSync('kernel input');
-            snapshotter = AOTSnapshotter(
-              fileSystem: fileSystem,
-              logger: logger,
-              xcode: Xcode.test(processManager: processManager),
-              artifacts: artifacts,
-              processManager: processManager,
-              platform: FakePlatform(
-                environment: <String, String>{'SHOREBIRD_DD_MAX_BYTES': '$interpreterDdMaxBytes'},
-              ),
-            );
           }
+          for (final path in privateOutputs) {
+            fileSystem.file(path).createSync(recursive: true);
+          }
+          fileSystem.file('build/app.dill').writeAsStringSync('kernel input');
+          snapshotter = AOTSnapshotter(
+            fileSystem: fileSystem,
+            logger: logger,
+            xcode: Xcode.test(processManager: processManager),
+            artifacts: artifacts,
+            processManager: processManager,
+            platform: FakePlatform(
+              environment: <String, String>{
+                'SHOREBIRD_DD_MAX_BYTES': '$ddMaxBytes',
+                if (interpreter) 'SHOREBIRD_ENABLE_LEGACY_AOT_TOOLS': '1',
+              },
+            ),
+          );
           final String outputPath = fileSystem.path.join('build', 'foo');
           final String genSnapshotPath = artifacts.getArtifactPath(
             Artifact.genSnapshotArm64,
@@ -410,7 +414,6 @@ void main() {
               command: <String>[
                 genSnapshotPath,
                 '--deterministic',
-                if (!interpreter) ...kLinkInfoArgs,
                 '--snapshot_kind=app-aot-assembly',
                 '--assembly=${fileSystem.path.join(outputPath, 'snapshot_assembly.S')}',
                 'main.dill',
@@ -469,19 +472,27 @@ void main() {
 
           expect(genSnapshotExitCode, 0);
           expect(fileSystem.directory('foo').existsSync(), isFalse);
-          if (interpreter) {
-            for (final path in privateOutputs) {
-              expect(fileSystem.file(path).existsSync(), isFalse, reason: path);
-            }
-            expect(fileSystem.file('build/app.dill').readAsStringSync(), 'kernel input');
-            expect(logger.traceText, isNot(contains('DD 2-pass build')));
+          for (final path in privateOutputs) {
+            expect(fileSystem.file(path).existsSync(), isFalse, reason: path);
           }
+          expect(fileSystem.file('build/app.dill').readAsStringSync(), 'kernel input');
+          expect(logger.traceText, isNot(contains('DD 2-pass build')));
           expect(processManager, hasNoRemainingExpectations);
         },
       );
     }
 
     testWithoutContext('iOS build without DD deletes tables from an earlier DD pass', () async {
+      snapshotter = AOTSnapshotter(
+        fileSystem: fileSystem,
+        logger: logger,
+        xcode: Xcode.test(processManager: processManager),
+        artifacts: artifacts,
+        processManager: processManager,
+        platform: FakePlatform(
+          environment: <String, String>{'SHOREBIRD_ENABLE_LEGACY_AOT_TOOLS': '1'},
+        ),
+      );
       // An earlier build with SHOREBIRD_DD_MAX_BYTES left these next to the
       // output directory, where LinkSupplement would ship them.
       const ddFiles = <String>[
@@ -587,7 +598,6 @@ void main() {
           command: <String>[
             genSnapshotPath,
             '--deterministic',
-            ...kLinkInfoArgs,
             '--snapshot_kind=app-aot-assembly',
             '--assembly=$assembly',
             '--dwarf-stack-traces',
@@ -668,7 +678,6 @@ void main() {
           command: <String>[
             genSnapshotPath,
             '--deterministic',
-            ...kLinkInfoArgs,
             '--snapshot_kind=app-aot-assembly',
             '--assembly=$assembly',
             '--dwarf-stack-traces',
@@ -767,7 +776,6 @@ void main() {
           command: <String>[
             genSnapshotPath,
             '--deterministic',
-            ...kLinkInfoArgs,
             '--snapshot_kind=app-aot-assembly',
             '--assembly=$assembly',
             '--dwarf-stack-traces',
@@ -849,7 +857,6 @@ void main() {
           command: <String>[
             genSnapshotPath,
             '--deterministic',
-            ...kLinkInfoArgs,
             '--strip',
             '--snapshot_kind=app-aot-assembly',
             '--assembly=$assembly',
@@ -925,7 +932,6 @@ void main() {
           command: <String>[
             genSnapshotPath,
             '--deterministic',
-            ...kLinkInfoArgs,
             '--snapshot_kind=app-aot-assembly',
             '--assembly=$assembly',
             '--dwarf-stack-traces',
@@ -997,7 +1003,6 @@ void main() {
           command: <String>[
             genSnapshotPath,
             '--deterministic',
-            ...kLinkInfoArgs,
             '--snapshot_kind=app-aot-assembly',
             '--assembly=$assembly',
             '--dwarf-stack-traces',

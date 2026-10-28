@@ -210,19 +210,18 @@ class AOTSnapshotter {
     final Directory outputDir = _fileSystem.directory(outputPath);
     outputDir.createSync(recursive: true);
 
-    // Currently we only use the linker on iOS, but we will eventually split out
-    // the concept of "optimizes patch snapshot" from "uses linker" and probably
-    // only uses the linker on iOS, but optimize patch snapshots everywhere.
-    // TODO(eseidel): TargetPlatform.darwin doesn't use the linker.
-    // Interpreter updates replace bytecode bodies and need only a normal AOT
-    // baseline, without the private native linker flags or DD analysis pass.
+    // Public native updates use full snapshots; interpreter updates replace
+    // bytecode bodies. Neither needs private native linker flags or DD. Keep
+    // the legacy compiler route behind the CLI's explicit development opt-in.
     final bool usesInterpreter = shorebirdUsesIosBytecodeInterpreter(
       _fileSystem,
       platform.getName(),
     );
     final bool usesLinker =
-        !usesInterpreter && (platform == TargetPlatform.ios || platform == TargetPlatform.darwin);
-    if (usesInterpreter) {
+        !usesInterpreter &&
+        shorebirdLegacyAotToolsEnabled(_platform.environment) &&
+        (platform == TargetPlatform.ios || platform == TargetPlatform.darwin);
+    if (!usesLinker && (platform == TargetPlatform.ios || platform == TargetPlatform.darwin)) {
       shorebirdRemoveNativeLinkOutputs(outputDir.parent);
     }
     final dumpLinkInfoArgs = <String>[

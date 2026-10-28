@@ -28,7 +28,7 @@ bool shorebirdUsesIosBytecodeInterpreter(
 }
 
 /// Prevents LinkSupplement from collecting stale private native linker tables
-/// when a previous build used a different patch runtime.
+/// when a previous build used the legacy native linker.
 void shorebirdRemoveNativeLinkOutputs(Directory buildDirectory) {
   for (final name in const <String>[
     'App.class_table.json',

@@ -143,6 +143,7 @@ void main() {
     final withKey = <String, String>{kShorebirdPublicKeyEnvVar: _keyA};
     final withDd = <String, String>{kShorebirdDdMaxBytesEnvVar: '100000'};
     final withToken = <String, String>{'SHOREBIRD_TOKEN': _token};
+    final withLegacyLinker = <String, String>{kShorebirdLegacyAotToolsEnvVar: '1'};
 
     bool changes(Target target, Map<String, String> processEnvironment) =>
         target.buildKeyFor(environmentWith(processEnvironment)) !=
@@ -193,13 +194,24 @@ void main() {
       }
     });
 
-    test('iOS AOT tracks SHOREBIRD_DD_MAX_BYTES only', () {
+    test('iOS AOT tracks SHOREBIRD_DD_MAX_BYTES', () {
       const target = AotAssemblyRelease();
       expect(changes(target, withDd), isTrue);
       expect(changes(target, <String, String>{kShorebirdDdMaxBytesEnvVar: '0'}), isFalse);
       expect(changes(target, withKey), isFalse);
       expect(changes(target, withToken), isFalse);
       expect(target.buildKeyFor(environmentWith(withDd)), isNot(contains('100000')));
+    });
+
+    test('Apple AOT tracks the explicit legacy native linker opt-in', () {
+      for (final target in const <Target>[AotAssemblyRelease(), CompileMacOSFramework()]) {
+        expect(changes(target, withLegacyLinker), isTrue, reason: target.name);
+        expect(
+          changes(target, <String, String>{kShorebirdLegacyAotToolsEnvVar: '0'}),
+          isFalse,
+          reason: target.name,
+        );
+      }
     });
 
     test('compilation targets track neither', () {
@@ -212,6 +224,9 @@ void main() {
       for (final target in otherTargets) {
         for (final processEnvironment in <Map<String, String>>[withKey, withDd, withToken]) {
           expect(changes(target, processEnvironment), isFalse, reason: target.name);
+        }
+        if (target is! CompileMacOSFramework) {
+          expect(changes(target, withLegacyLinker), isFalse, reason: target.name);
         }
       }
     });

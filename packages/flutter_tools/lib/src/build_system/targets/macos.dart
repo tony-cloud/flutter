@@ -259,7 +259,7 @@ static const int Moo = 88;
   List<Source> get outputs => const <Source>[Source.pattern('{BUILD_DIR}/App.framework/App')];
 }
 
-class CompileMacOSFramework extends Target {
+class CompileMacOSFramework extends Target with ShorebirdLegacyNativeLinkerBuildKey {
   const CompileMacOSFramework();
 
   @override

@@ -21,17 +21,6 @@ import '../../../src/fake_process_manager.dart';
 import '../../../src/fakes.dart';
 import '../../../src/package_config.dart';
 
-/// Generate Shorebird link info arguments for iOS/macOS AOT builds.
-/// The [buildPath] should be the build directory path (outputDir.parent.path).
-List<String> linkInfoArgsFor(String buildPath) => <String>[
-  '--print_class_table_link_debug_info_to=$buildPath/App.class_table.json',
-  '--print_class_table_link_info_to=$buildPath/App.ct.link',
-  '--print_field_table_link_debug_info_to=$buildPath/App.field_table.json',
-  '--print_field_table_link_info_to=$buildPath/App.ft.link',
-  '--print_dispatch_table_link_debug_info_to=$buildPath/App.dispatch_table.json',
-  '--print_dispatch_table_link_info_to=$buildPath/App.dt.link',
-];
-
 void main() {
   late Environment environment;
   late MemoryFileSystem fileSystem;
@@ -886,9 +875,7 @@ flavors:
           .childFile('x86_64/App.framework.dSYM/Contents/Resources/DWARF/App')
           .createSync(recursive: true);
 
-      final String build = environment.buildDir.path;
-      // Both archs go through the same code path now (the DD-pass is gated on
-      // SHOREBIRD_DD_MAX_BYTES which isn't set in this test), so neither
+      // Public builds omit native linker metadata and the DD pass, so neither
       // architecture has an extra async hop. With concurrent Future.wait, the
       // archs reach gen_snapshot in iteration order: arm64 first
       // (`kDarwinArchs = 'arm64 x86_64'`), x86_64 second. They then
@@ -899,7 +886,6 @@ flavors:
           command: <String>[
             'Artifact.genSnapshotArm64.TargetPlatform.darwin.release',
             '--deterministic',
-            ...linkInfoArgsFor(build),
             '--snapshot_kind=app-aot-assembly',
             '--assembly=${environment.buildDir.childFile('arm64/snapshot_assembly.S').path}',
             environment.buildDir.childFile('app.dill').path,
@@ -910,7 +896,6 @@ flavors:
           command: <String>[
             'Artifact.genSnapshotX64.TargetPlatform.darwin.release',
             '--deterministic',
-            ...linkInfoArgsFor(build),
             '--snapshot_kind=app-aot-assembly',
             '--assembly=${environment.buildDir.childFile('x86_64/snapshot_assembly.S').path}',
             environment.buildDir.childFile('app.dill').path,

@@ -68,6 +68,16 @@ mixin ShorebirdDdMaxBytesBuildKey on Target {
   }
 }
 
+/// Reruns Apple AOT targets when opting into or out of private linker metadata.
+mixin ShorebirdLegacyNativeLinkerBuildKey on Target {
+  @override
+  String? buildKeyFor(Environment environment) =>
+      _withShorebirdDigest(super.buildKeyFor(environment), <String, String>{
+        if (shorebirdLegacyAotToolsEnabled(environment.platform.environment))
+          kShorebirdLegacyAotToolsEnvVar: 'true',
+      });
+}
+
 /// Invalidates cached kernel when an explicit iOS interpreter baseline enables
 /// declaration-preserving compilation instead of type-flow analysis.
 mixin ShorebirdInterpreterKernelBuildKey on Target {
