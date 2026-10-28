@@ -20,7 +20,7 @@ vars = {
   "dart_sdk_revision": "07f2a352d8a5839e84860668c0464537b1c778cc",
   "dart_sdk_git": "https://github.com/tony-cloud/dart-sdk.git",
   "updater_git": "https://github.com/tony-cloud/shorebird-updater.git",
-  "updater_rev": "68289f59eaa8d91bf03a35fb881fc9d3457d393c",
+  "updater_rev": "7894c9d26f29e6f07f8a4d0796f6e87ccb4a8d36",
 
   # Do not download the Emscripten SDK by default.
   # This prevents us from downloading the Emscripten toolchain for builds
