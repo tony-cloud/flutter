@@ -160,19 +160,10 @@ bool ConfigureShorebird(const ShorebirdConfigArgs& args,
   config.file_callbacks = ShorebirdFileCallbacks();
   config.yaml_config = args.shorebird_yaml;
 
-#if FML_OS_MACOSX && !FML_OS_IOS
-  // macOS patches are diffed against the Dart snapshot regions of
-  // App.framework/App rather than the whole file, so re-signing the app after
-  // release (notarization, Mac App Store) doesn't invalidate them.
-  // Resolved through the VM path, which never returns a patch.
-  Settings base_settings;
-  base_settings.application_library_paths = {args.release_app_library_path};
-  vm_snapshot = DartSnapshot::VMSnapshotFromSettings(base_settings);
-  if (!vm_snapshot) {
-    FML_LOG(ERROR) << "Shorebird updater: failed to resolve base snapshot from "
-                   << args.release_app_library_path;
-  }
-#endif  // FML_OS_MACOSX && !FML_OS_IOS
+  // The open CLI diffs desktop patches against the complete release library.
+  // Leave the snapshot callback unopened so the updater reads that same file.
+  // Snapshot-region macOS diffs require a matching public CLI extractor before
+  // both ends of this contract can change together.
 
   bool init_result = shorebird::Updater::Instance().Init(config);
 
@@ -289,7 +280,7 @@ void ConfigureShorebird(std::string code_cache_path,
 }
 
 void* FileCallbacksImpl::Open() {
-  // Only iOS and macOS set a base snapshot. Their patches are generated from
+  // Only iOS sets a base snapshot. Its patches are generated from
   // just the Dart parts of the snapshot, excluding the Mach-O headers and code
   // signature, which change on every build and whenever the app is re-signed.
   if (!vm_snapshot) {

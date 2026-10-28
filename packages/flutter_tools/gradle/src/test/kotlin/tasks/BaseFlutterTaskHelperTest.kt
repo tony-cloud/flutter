@@ -191,6 +191,7 @@ class BaseFlutterTaskHelperTest {
         every { baseFlutterTask.verbose } returns true
         every { baseFlutterTask.intermediateDir } returns BaseFlutterTaskPropertiesTest.intermediateDirFileTest
         every { baseFlutterTask.performanceMeasurementFile } returns BaseFlutterTaskPropertiesTest.PERFORMANCE_MEASUREMENT_FILE_TEST
+        every { baseFlutterTask.shorebirdTraceFile } returns "trace.json"
 
         every { baseFlutterTask.buildMode } returns buildModeString
         every { baseFlutterTask.flutterRoot } returns BaseFlutterTaskPropertiesTest.flutterRootTest
@@ -244,6 +245,7 @@ class BaseFlutterTaskHelperTest {
         verify { mockExecSpec.args("--depfile", "${BaseFlutterTaskPropertiesTest.intermediateDirFileTest}/flutter_build.d") }
         verify { mockExecSpec.args("--output", "${BaseFlutterTaskPropertiesTest.intermediateDirFileTest}") }
         verify { mockExecSpec.args("--performance-measurement-file=${BaseFlutterTaskPropertiesTest.PERFORMANCE_MEASUREMENT_FILE_TEST}") }
+        verify { mockExecSpec.args("--shorebird-trace-file=trace.json") }
         verify { mockExecSpec.args("-dTargetFile=${BaseFlutterTaskPropertiesTest.FLUTTER_TARGET_FILE_PATH}") }
         verify { mockExecSpec.args("-dTargetPlatform=android") }
         verify { mockExecSpec.args("-dBuildMode=$buildModeString") }
@@ -292,6 +294,7 @@ class BaseFlutterTaskHelperTest {
         every { baseFlutterTask.verbose } returns true
         every { baseFlutterTask.intermediateDir } returns BaseFlutterTaskPropertiesTest.intermediateDirFileTest
         every { baseFlutterTask.performanceMeasurementFile } returns null
+        every { baseFlutterTask.shorebirdTraceFile } returns null
 
         every { baseFlutterTask.buildMode } returns buildModeString
         every { baseFlutterTask.flutterRoot } returns BaseFlutterTaskPropertiesTest.flutterRootTest
