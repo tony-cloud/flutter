@@ -5240,7 +5240,7 @@ class ShorebirdStartupOutcomeTest : public ShellTest {
     fml::AutoResetWaitableEvent& outcome_;
   };
 
-  void CheckMainOutcome(const char* entrypoint,
+  void CheckMainOutcome(const char* main_name,
                         bool succeeds,
                         bool pending = false) {
     fml::AutoResetWaitableEvent entered;
@@ -5280,7 +5280,7 @@ class ShorebirdStartupOutcomeTest : public ShellTest {
               Dart_StringToCString(Dart_GetNativeArgument(args, 1), &stack)));
           EXPECT_NE(std::string(error).find("shorebird-main-failure"),
                     std::string::npos);
-          EXPECT_NE(std::string(stack).find(entrypoint), std::string::npos);
+          EXPECT_NE(std::string(stack).find(main_name), std::string::npos);
           EXPECT_EQ(mock_ptr->launch_success_count(), 0);
           EXPECT_EQ(mock_ptr->launch_failure_count(), 1);
           error_observed.Signal();
@@ -5290,7 +5290,7 @@ class ShorebirdStartupOutcomeTest : public ShellTest {
     ASSERT_TRUE(shell);
     EXPECT_EQ(mock_ptr->launch_success_count(), 0);
     auto configuration = RunConfiguration::InferFromSettings(settings);
-    configuration.SetEntrypoint(entrypoint);
+    configuration.SetEntrypoint(main_name);
     RunEngine(shell.get(), std::move(configuration));
     const auto timeout = fml::TimeDelta::FromSeconds(5);
     EXPECT_FALSE(entered.WaitWithTimeout(timeout));
