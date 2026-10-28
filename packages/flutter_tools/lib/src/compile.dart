@@ -24,6 +24,7 @@ import 'build_info.dart';
 import 'bundle.dart';
 import 'convert.dart';
 import 'dart/package_map.dart';
+import 'shorebird/shorebird_interpreter.dart';
 
 /// Opt-in changes to the dart compilers.
 const kDartCompilerExperiments = <String>[];
@@ -364,7 +365,7 @@ class KernelCompiler {
           if (!linkPlatformKernelIn) '--no-link-platform',
           if (aot) ...<String>[
             '--aot',
-            '--tfa',
+            if (shorebirdInterpreterDisablesTfa(_fileSystem, targetOS)) '--no-tfa' else '--tfa',
             // The --target-os flag only makes sense for whole program compilation.
             if (targetOS != null) ...<String>['--target-os', targetOS],
           ],

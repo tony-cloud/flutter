@@ -137,7 +137,7 @@ class ReleaseCopyFlutterBundle extends CopyFlutterBundle {
 }
 
 /// Generate a snapshot of the dart code used in the program.
-class KernelSnapshot extends Target {
+class KernelSnapshot extends Target with ShorebirdInterpreterKernelBuildKey {
   const KernelSnapshot();
 
   @override

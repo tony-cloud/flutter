@@ -148,6 +148,32 @@ void main() {
         target.buildKeyFor(environmentWith(processEnvironment)) !=
         target.buildKeyFor(environmentWith(noValues));
 
+    test('baseline policy overrides invalidate asset stamps without secrets', () {
+      const target = CopyAssets();
+      final String? before = target.buildKeyFor(
+        environmentWith(<String, String>{'SHOREBIRD_AOT_BASE_SNAPSHOT_HASH': 'a' * 64}),
+      );
+      final String? after = target.buildKeyFor(
+        environmentWith(<String, String>{'SHOREBIRD_AOT_BASE_SNAPSHOT_HASH': 'b' * 64}),
+      );
+      expect(before, isNot(after));
+      expect(before, isNot(contains('a' * 64)));
+      expect(changes(target, <String, String>{'SHOREBIRD_AOT_PATCH_KEY_HEX': _token}), isFalse);
+    });
+
+    test('switching iOS interpreter mode invalidates cached kernel', () {
+      const target = KernelSnapshot();
+      final Environment environment = environmentWith(noValues);
+      environment.defines[kTargetPlatform] = 'ios';
+      final String? before = target.buildKeyFor(environment);
+      fileSystem
+          .file('shorebird.yaml')
+          .writeAsStringSync('aot_patch_runtime_mode: dart-bytecode-interpreter\n');
+      expect(target.buildKeyFor(environment), isNot(before));
+      environment.defines[kTargetPlatform] = 'android-arm64';
+      expect(target.buildKeyFor(environment), before);
+    });
+
     test('asset bundling targets track SHOREBIRD_PUBLIC_KEY only', () {
       final assetTargets = <Target>[
         const CopyAssets(),

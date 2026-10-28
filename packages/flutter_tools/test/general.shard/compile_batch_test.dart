@@ -196,22 +196,27 @@ void main() {
     },
   );
 
-  testWithoutContext(
-    'KernelCompiler passes correct AOT config to frontend_server in aot/profile mode',
-    () async {
+  for (final interpreter in <bool>[false, true]) {
+    testWithoutContext('KernelCompiler AOT profile: interpreter=$interpreter', () async {
+      final fileSystem = MemoryFileSystem.test();
+      if (interpreter) {
+        fileSystem
+            .file('shorebird.yaml')
+            .writeAsStringSync('aot_patch_runtime_mode: dart-bytecode-interpreter\n');
+      }
       final logger = BufferLogger.test();
-      final stdoutHandler = StdoutHandler(logger: logger, fileSystem: MemoryFileSystem.test());
+      final stdoutHandler = StdoutHandler(logger: logger, fileSystem: fileSystem);
       final completer = Completer<void>();
 
       final kernelCompiler = KernelCompiler(
         artifacts: Artifacts.test(),
-        fileSystem: MemoryFileSystem.test(),
+        fileSystem: fileSystem,
         fileSystemRoots: <String>[],
         fileSystemScheme: '',
         logger: logger,
         processManager: FakeProcessManager.list(<FakeCommand>[
           FakeCommand(
-            command: const <String>[
+            command: <String>[
               'Artifact.engineDartAotRuntime',
               'Artifact.frontendServerSnapshotForEngineDartSdk',
               '--sdk-root',
@@ -224,7 +229,8 @@ void main() {
               '--delete-tostring-package-uri=package:flutter',
               '--no-link-platform',
               '--aot',
-              '--tfa',
+              if (interpreter) '--no-tfa' else '--tfa',
+              if (interpreter) ...<String>['--target-os', 'ios'],
               '--packages',
               '.dart_tool/package_config.json',
               '--verbosity=error',
@@ -241,6 +247,7 @@ void main() {
         buildMode: BuildMode.profile,
         trackWidgetCreation: false,
         aot: true,
+        targetOS: interpreter ? 'ios' : null,
         dartDefines: const <String>[],
         packageConfig: PackageConfig.empty,
         packagesPath: '.dart_tool/package_config.json',
@@ -249,8 +256,8 @@ void main() {
       completer.complete();
 
       expect((await output)?.outputFilename, '');
-    },
-  );
+    });
+  }
 
   testWithoutContext('passes correct AOT config to kernel compiler in aot/release mode', () async {
     final logger = BufferLogger.test();
