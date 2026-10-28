@@ -12,6 +12,7 @@
     InternalFlutterGpu*;
     kInternalFlutterGpu*;
     shorebird_init;
+    shorebird_set_patch_decryption_key_provider;
     shorebird_free_string;
     shorebird_free_update_result;
     shorebird_check_for_downloadable_update;
