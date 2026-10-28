@@ -2,16 +2,16 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-import 'dart:io' show Platform;
-
 import 'package:process/process.dart';
 
 import '../artifacts.dart';
 import '../build_info.dart';
 import '../darwin/darwin.dart';
 import '../macos/xcode.dart';
+import '../shorebird/shorebird_dd.dart';
 import 'file_system.dart';
 import 'logger.dart';
+import 'platform.dart';
 import 'process.dart';
 
 /// A snapshot build configuration.
@@ -165,9 +165,12 @@ class AOTSnapshotter {
     required Xcode xcode,
     required ProcessManager processManager,
     required Artifacts artifacts,
+    // Shorebird: the environment SHOREBIRD_DD_MAX_BYTES is read from.
+    Platform platform = const LocalPlatform(),
   }) : _logger = logger,
        _fileSystem = fileSystem,
        _xcode = xcode,
+       _platform = platform,
        _processUtils = ProcessUtils(logger: logger, processManager: processManager),
        _genSnapshot = GenSnapshot(
          artifacts: artifacts,
@@ -179,6 +182,7 @@ class AOTSnapshotter {
   final Logger _logger;
   final FileSystem _fileSystem;
   final Xcode _xcode;
+  final Platform _platform;
   final ProcessUtils _processUtils;
   final GenSnapshot _genSnapshot;
 
@@ -209,7 +213,7 @@ class AOTSnapshotter {
     // the concept of "optimizes patch snapshot" from "uses linker" and probably
     // only uses the linker on iOS, but optimize patch snapshots everywhere.
     // TODO(eseidel): TargetPlatform.darwin doesn't use the linker.
-    bool usesLinker = (platform == TargetPlatform.ios || platform == TargetPlatform.darwin);
+    final bool usesLinker = platform == TargetPlatform.ios || platform == TargetPlatform.darwin;
     final dumpLinkInfoArgs = <String>[
       // Shorebird dumps the class table information during snapshot compilation which is later used during linking.
       '--print_class_table_link_debug_info_to=${_fileSystem.path.join(outputDir.parent.path, 'App.class_table.json')}',
@@ -235,6 +239,8 @@ class AOTSnapshotter {
         buildMode == BuildMode.profile || buildMode == BuildMode.release;
     _logger.printTrace('extractAppleDebugSymbols = $extractAppleDebugSymbols');
 
+    final bool shouldSplitDebugInfo = splitDebugInfo?.isNotEmpty ?? false;
+
     // We strip snapshot by default, but allow to suppress this behavior
     // by supplying --no-strip in extraGenSnapshotOptions.
     var shouldStrip = true;
@@ -243,6 +249,16 @@ class AOTSnapshotter {
       for (final option in extraGenSnapshotOptions) {
         if (option == '--no-strip') {
           shouldStrip = false;
+          continue;
+        }
+        // Stripping in gen_snapshot drops the DWARF before it reaches the
+        // assembly, leaving dsymutil nothing to build a dSYM from. The shipped
+        // binary is still stripped, after the dSYM is extracted.
+        if (option == '--strip' && targetingApplePlatform && shouldSplitDebugInfo) {
+          _logger.printTrace(
+            'Ignoring --strip because --split-debug-info needs the DWARF to '
+            'reach dsymutil. The built binary is still stripped afterwards.',
+          );
           continue;
         }
         genSnapshotArgs.add(option);
@@ -287,7 +303,6 @@ class AOTSnapshotter {
     // multiple debug files.
     final String archName = platform.getName(darwinArch: darwinArch);
     final debugFilename = 'app.$archName.symbols';
-    final bool shouldSplitDebugInfo = splitDebugInfo?.isNotEmpty ?? false;
     if (shouldSplitDebugInfo) {
       _fileSystem.directory(splitDebugInfo).createSync(recursive: true);
     }
@@ -297,7 +312,11 @@ class AOTSnapshotter {
       if (shouldSplitDebugInfo) ...<String>[
         '--dwarf-stack-traces',
         '--resolve-dwarf-paths',
-        '--save-debugging-info=${_fileSystem.path.join(splitDebugInfo!, debugFilename)}',
+        // Alongside an assembly snapshot this writes an ELF with no build ID,
+        // which symbol servers skip (dartbug.com/43274). Apple takes the
+        // companion from dsymutil in _buildFramework instead.
+        if (!targetingApplePlatform)
+          '--save-debugging-info=${_fileSystem.path.join(splitDebugInfo!, debugFilename)}',
       ],
       if (dartObfuscation) '--obfuscate',
     ]);
@@ -323,7 +342,7 @@ class AOTSnapshotter {
     // Skip DD on macOS until that work is done. Patches built without DD
     // activation will compute DD on the fly when applied, which is the
     // pre-1.6.99 behavior — slightly worse link percentage but functional.
-    final bool ddPassSupported = platform != TargetPlatform.darwin;
+    final ddPassSupported = platform != TargetPlatform.darwin;
     if (ddMaxBytes > 0 && usesLinker && ddPassSupported) {
       final int pass1Exit = await _runDdAnalysisPass(
         snapshotType: snapshotType,
@@ -336,6 +355,8 @@ class AOTSnapshotter {
       if (pass1Exit != 0) {
         return pass1Exit;
       }
+    } else if (usesLinker && ddPassSupported) {
+      _deleteDdOutputs(outputDir);
     }
 
     final int genSnapshotExitCode = await _genSnapshot.run(
@@ -360,21 +381,37 @@ class AOTSnapshotter {
         quiet: quiet,
         stripAfterBuild: stripAfterBuild,
         extractAppleDebugSymbols: extractAppleDebugSymbols,
+        splitDebugInfoSymbols: shouldSplitDebugInfo
+            ? _fileSystem.path.join(splitDebugInfo!, debugFilename)
+            : null,
       );
     } else {
       return 0;
     }
   }
 
-  /// Reads the SHOREBIRD_DD_MAX_BYTES env var (preferring `dart-define` over
-  /// the process environment). Returns 0 if unset, malformed, or non-positive,
-  /// which signals "no DD pass."
-  int _readDdMaxBytes() {
-    const fromDefine = String.fromEnvironment('SHOREBIRD_DD_MAX_BYTES');
-    final String? raw = fromDefine.isNotEmpty
-        ? fromDefine
-        : Platform.environment['SHOREBIRD_DD_MAX_BYTES'];
-    return int.tryParse(raw ?? '') ?? 0;
+  /// Reads the SHOREBIRD_DD_MAX_BYTES env var. See [shorebirdDdMaxBytes].
+  int _readDdMaxBytes() => shorebirdDdMaxBytes(_platform.environment);
+
+  /// The files a DD pass leaves next to the snapshot's output directory, which
+  /// LinkSupplement copies into the release's supplement.
+  static const _ddOutputFileNames = <String>[
+    'App.dd_identity.link',
+    'App.dd.link',
+    'App.dd_callers.link',
+    'App.dd_slots.link',
+    'App.dd_resolution.tsv',
+  ];
+
+  /// Deletes the files an earlier DD pass left next to [outputDir], so a build
+  /// that skips the pass does not ship that pass's tables.
+  void _deleteDdOutputs(Directory outputDir) {
+    for (final String name in _ddOutputFileNames) {
+      final File file = outputDir.parent.childFile(name);
+      if (file.existsSync()) {
+        file.deleteSync();
+      }
+    }
   }
 
   /// Runs the DD analysis pass: gen_snapshot → ELF + DD identity, then
@@ -510,6 +547,7 @@ class AOTSnapshotter {
     required bool quiet,
     required bool stripAfterBuild,
     required bool extractAppleDebugSymbols,
+    required String? splitDebugInfoSymbols,
   }) async {
     final String targetArch = appleArch.name;
     if (!quiet) {
@@ -586,6 +624,19 @@ class AOTSnapshotter {
         return dsymResult.exitCode;
       }
 
+      // dsymutil derives the dSYM from the linked binary, so its UUID equals
+      // App.framework's by construction.
+      if (splitDebugInfoSymbols != null) {
+        final File dwarf = _fileSystem.file(
+          _fileSystem.path.join('$frameworkDir.dSYM', 'Contents', 'Resources', 'DWARF', 'App'),
+        );
+        if (!dwarf.existsSync()) {
+          _logger.printError('dsymutil reported success but wrote no DWARF at ${dwarf.path}');
+          return 1;
+        }
+        dwarf.copySync(splitDebugInfoSymbols);
+      }
+
       if (stripAfterBuild) {
         // See https://www.unix.com/man-page/osx/1/strip/ for arguments
         final RunResult stripResult = await _xcode.strip(<String>['-x', appLib, '-o', appLib]);
@@ -598,6 +649,13 @@ class AOTSnapshotter {
       }
     } else {
       assert(!stripAfterBuild);
+      if (splitDebugInfoSymbols != null) {
+        _logger.printError(
+          'Cannot split debug info for $targetArch: debug symbols are only '
+          'extracted for profile and release builds.',
+        );
+        return 1;
+      }
     }
 
     return 0;

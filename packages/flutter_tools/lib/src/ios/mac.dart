@@ -173,6 +173,11 @@ Future<XcodeBuildResult> buildXcodeProject({
       fileSystem: globals.fs,
       plistParser: globals.plistParser,
       config: globals.config,
+      analytics: globals.analytics,
+      hostPlatform: globals.platform,
+      operatingSystemUtils: globals.os,
+      flutterVersion: globals.flutterVersion,
+      reportCrashes: !await globals.isRunningOnBot,
     ),
     SwiftPackageManagerGitignoreMigration(project, globals.logger),
     MetalAPIValidationMigrator.ios(app.project, globals.logger),
@@ -206,6 +211,7 @@ Future<XcodeBuildResult> buildXcodeProject({
     fileSystem: globals.fs,
     logger: globals.logger,
     cocoapods: globals.cocoaPods,
+    analytics: globals.analytics,
   );
 
   await removeExtendedAttributesForProject(
@@ -215,15 +221,6 @@ Future<XcodeBuildResult> buildXcodeProject({
     fileSystem: globals.fs,
     config: globals.config,
     xcodeProjectInterpreter: globals.xcodeProjectInterpreter!,
-  );
-
-  await DarwinDependencyManagement.validatePluginSupport(
-    platform: darwinPlatform,
-    xcodeProject: project.ios,
-    plugins: await project.ios.getPlugins(),
-    fileSystem: globals.fs,
-    logger: globals.logger,
-    cocoapods: globals.cocoaPods,
   );
 
   final XcodeProjectInfo? projectInfo = await app.project.projectInfo();
@@ -338,7 +335,7 @@ Future<XcodeBuildResult> buildXcodeProject({
       .fetchDependenciesAndGenerateXcodebuildArgs(
         app.project,
         globals.fs.directory(buildDirectoryPath),
-        skipPackageUpdatesAndValidation: false,
+        skipPackageValidation: false,
       );
   final buildCommands = <String>[...xcodebuildCommandArgs, '-configuration', configuration];
 
@@ -621,7 +618,7 @@ Future<XcodeBuildResult> buildXcodeProject({
       resultBundleDirectory: resultBundleDirectory,
       runXcresultTool: (List<String> args) => globals.processManager.run(args),
     );
-    traceSession?.finish(printStatus: globals.printStatus);
+    traceSession?.finish(buildTarget: 'ios', printStatus: globals.printStatus);
 
     if (tempDir.existsSync()) {
       // Display additional warning and error message from xcresult bundle.
@@ -965,6 +962,7 @@ Future<void> diagnoseXcodeBuildFailure(
     platform: platform,
     logger: logger,
     fileSystem: fileSystem,
+    analytics: analytics,
     device: device,
   );
 
@@ -1192,6 +1190,7 @@ Future<bool> _handleIssues(
   required FlutterDarwinPlatform platform,
   required Logger logger,
   required FileSystem fileSystem,
+  required Analytics analytics,
   Device? device,
 }) async {
   var requiresProvisioningProfile = false;
@@ -1282,6 +1281,11 @@ Future<bool> _handleIssues(
     final bool usesCocoapods = xcodeProject.podfile.existsSync();
     final bool usesSwiftPackageManager = xcodeProject.usesSwiftPackageManager;
     if (usesCocoapods && usesSwiftPackageManager) {
+      for (final module in duplicateModules) {
+        analytics.send(
+          Event.appleUsageEvent(workflow: 'duplicate-modules-build-failure', parameter: module),
+        );
+      }
       logger.printError(
         'Your project uses both CocoaPods and Swift Package Manager, which can '
         'cause the above error. It may be caused by there being both a CocoaPod '

@@ -37,7 +37,7 @@ Future<void> postProcess() async {
   final String storageBaseUrl =
       Platform.environment['FLUTTER_STORAGE_BASE_URL'] ??
       'http://localhost:8080/download.flutter.io';
-  final String normalizedStorageBaseUrl = storageBaseUrl.endsWith('/')
+  final normalizedStorageBaseUrl = storageBaseUrl.endsWith('/')
       ? storageBaseUrl
       : '$storageBaseUrl/';
   await runProcessWithValidations(<String>[

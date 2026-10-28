@@ -26,6 +26,7 @@ import '../migrations/xcode_project_object_version_migration.dart';
 import '../migrations/xcode_script_build_phase_migration.dart';
 import '../migrations/xcode_thin_binary_build_phase_input_paths_migration.dart';
 import '../project.dart';
+import '../shorebird/ios_build_trace_session.dart';
 import 'application_package.dart';
 import 'cocoapod_utils.dart';
 import 'darwin_dependency_management.dart';
@@ -86,6 +87,10 @@ Future<void> buildMacOS({
   SizeAnalyzer? sizeAnalyzer,
   bool usingCISystem = false,
 }) async {
+  if (globals.xcodeProjectInterpreter?.isInstalled != true) {
+    throwToolExit(globals.userMessages.xcodeMissing);
+  }
+
   final Directory? xcodeWorkspace = flutterProject.macos.xcodeWorkspace;
   if (xcodeWorkspace == null) {
     throwToolExit(
@@ -117,6 +122,11 @@ Future<void> buildMacOS({
       fileSystem: globals.fs,
       plistParser: globals.plistParser,
       config: globals.config,
+      analytics: globals.analytics,
+      hostPlatform: globals.platform,
+      operatingSystemUtils: globals.os,
+      flutterVersion: globals.flutterVersion,
+      reportCrashes: !await globals.isRunningOnBot,
     ),
     SwiftPackageManagerGitignoreMigration(flutterProject, globals.logger),
     MetalAPIValidationMigrator.macos(flutterProject.macos, globals.logger),
@@ -132,6 +142,7 @@ Future<void> buildMacOS({
     fileSystem: globals.fs,
     logger: globals.logger,
     cocoapods: globals.cocoaPods,
+    analytics: globals.analytics,
   );
 
   final String buildDirectoryPath = getMacOSBuildDirectory();
@@ -151,11 +162,14 @@ Future<void> buildMacOS({
     projectFilename: xcodeProjectName,
     buildDirectory: flutterBuildDir,
   );
-  final String? scheme = projectInfo?.schemeFor(buildInfo);
-  if (scheme == null) {
-    projectInfo!.reportFlavorNotFoundAndExit();
+  if (projectInfo == null) {
+    throwToolExit('Unable to get Xcode project information.');
   }
-  final String? configuration = projectInfo?.buildConfigurationFor(buildInfo, scheme);
+  final String? scheme = projectInfo.schemeFor(buildInfo);
+  if (scheme == null) {
+    projectInfo.reportFlavorNotFoundAndExit();
+  }
+  final String? configuration = projectInfo.buildConfigurationFor(buildInfo, scheme);
   if (configuration == null) {
     throwToolExit('Unable to find expected configuration in Xcode project.');
   }
@@ -187,7 +201,16 @@ Future<void> buildMacOS({
     }
   }
 
+  // Created early enough to capture pod install; see mac.dart.
+  final IosBuildTraceSession? traceSession = IosBuildTraceSession.maybeStart(
+    shorebirdTraceFilePath: buildInfo.shorebirdTraceFilePath,
+    fileSystem: globals.fs,
+    buildDirectoryPath: buildDirectoryPath,
+  );
+
+  traceSession?.onBeforePodInstall();
   await processPodsIfNeeded(flutterProject.macos, buildDirectoryPath, buildInfo.mode);
+  traceSession?.onAfterPodInstall();
   // If the xcfilelists do not exist, create empty version.
   if (!flutterProject.macos.inputFileList.existsSync()) {
     flutterProject.macos.inputFileList.createSync(recursive: true);
@@ -196,6 +219,7 @@ Future<void> buildMacOS({
     flutterProject.macos.outputFileList.createSync(recursive: true);
   }
   if (configOnly) {
+    traceSession?.abortOnFailure();
     return;
   }
 
@@ -262,12 +286,21 @@ Future<void> buildMacOS({
   var hasMacOSMinDeploymentTargetIssue = false;
   String? macOSMinDeploymentTarget;
   try {
+    if (archs != null && excludedArchs != null && excludedArchs.contains(archs)) {
+      throwToolExit(
+        'No Valid Target Arch: '
+        'You have enabled the macOSArm64Only feature flag but '
+        "arm64 is present in your macOS app's xcode project EXCLUDED_ARCHS settings. "
+        'Consider removing arm64 from EXCLUDED_ARCHS.',
+      );
+    }
     final List<String> xcodebuildCommandArgs = await globals.xcode!
         .fetchDependenciesAndGenerateXcodebuildArgs(
           flutterProject.macos,
           globals.fs.directory(buildDirectoryPath),
-          skipPackageUpdatesAndValidation: false,
+          skipPackageValidation: false,
         );
+    traceSession?.onXcodeAboutToStart();
     result = await globals.processUtils.stream(
       <String>[
         '/usr/bin/env',
@@ -286,6 +319,10 @@ Future<void> buildMacOS({
         'SYMROOT=${globals.fs.path.join(flutterBuildDir.absolute.path, 'Build', 'Products')}',
         if (verboseLogging) 'VERBOSE_SCRIPT_LOGGING=YES' else '-quiet',
         'COMPILER_INDEX_STORE_ENABLE=NO',
+        if (traceSession != null) ...<String>[
+          ...traceSession.extraBuildCommands(),
+          ...traceSession.ownResultBundleArgs(),
+        ],
         if (disabledSandboxEntitlementFile != null)
           'CODE_SIGN_ENTITLEMENTS=${disabledSandboxEntitlementFile.path}',
         // Pass EXCLUDED_ARCHS from Xcode project to xcodebuild command
@@ -316,7 +353,13 @@ Future<void> buildMacOS({
     status.cancel();
   }
 
+  await traceSession?.onXcodeFinished(
+    buildActionName: 'build',
+    runXcresultTool: (List<String> args) => globals.processManager.run(args),
+  );
+
   if (result != 0) {
+    traceSession?.abortOnFailure();
     if (hasMacOSMinDeploymentTargetIssue) {
       globals.logger.printError(
         _macOSDeploymentTargetTooLowMessage(macOSMinDeploymentTarget),
@@ -342,6 +385,7 @@ Future<void> buildMacOS({
     );
   }
   await _writeCodeSizeAnalysis(buildInfo, sizeAnalyzer);
+  traceSession?.finish(buildTarget: 'macos', printStatus: globals.printStatus);
   final Duration elapsedDuration = sw.elapsed;
   globals.analytics.send(
     Event.timing(

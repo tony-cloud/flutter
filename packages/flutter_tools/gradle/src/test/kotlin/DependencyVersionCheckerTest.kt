@@ -52,8 +52,6 @@ private const val FAKE_PROJECT_ROOT_DIR = "/fake/root/dir"
 
 // The following values will need to be modified when the corresponding "warn$DepName" versions
 // are updated in DependencyVersionChecker.kt
-// These values should also match the flutter create template values.
-// In //packages/flutter_tools/lib/src/android/gradle_utils.dart
 private const val SUPPORTED_GRADLE_VERSION: String = "9.1.0"
 private val SUPPORTED_JAVA_VERSION: JavaVersion = JavaVersion.VERSION_17
 private val SUPPORTED_AGP_VERSION: AndroidPluginVersion = AndroidPluginVersion(9, 0, 1)

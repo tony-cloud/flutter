@@ -21,10 +21,12 @@ import '../darwin/darwin.dart';
 import '../flutter_plugins.dart';
 import '../globals.dart' as globals;
 import '../ios/plist_parser.dart';
+import '../ios/xcode_build_settings.dart';
 import '../ios/xcodeproj.dart';
 import '../macos/cocoapod_utils.dart';
 import '../runner/flutter_command.dart'
     show DevelopmentArtifact, FlutterCommandResult, FlutterOptions;
+import '../shorebird/ios_framework_build_trace_session.dart';
 import '../version.dart';
 import 'build.dart';
 import 'darwin_add_to_app.dart';
@@ -52,6 +54,7 @@ abstract class BuildFrameworkCommand extends BuildSubCommand {
     addDartObfuscationOption();
     usesExtraDartFlagOptions(verboseHelp: verboseHelp);
     addEnableExperimentation(hide: !verboseHelp);
+    usesShorebirdTraceOption(hide: !verboseHelp);
     usesDarwinCodeSignXCFrameworksOption();
 
     argParser
@@ -495,8 +498,51 @@ class BuildIOSFrameworkCommand extends BuildFrameworkCommand {
   @override
   bool get regeneratePlatformSpecificToolingDuringVerify => false;
 
+  /// Shorebird build-trace session for the current run; null unless
+  /// `--shorebird-trace` was passed. Set by [runCommand], read by the
+  /// `_produce*` helpers.
+  IosFrameworkBuildTraceSession? _traceSession;
+
   @override
   Future<FlutterCommandResult> runCommand() async {
+    // Shorebird-specific: the whole framework build is one trace. The
+    // body lives in _buildFrameworks so it stays unindented against
+    // upstream; exceptions on any of its many exit paths abort the
+    // session without writing a partial trace.
+    final IosFrameworkBuildTraceSession? traceSession = IosFrameworkBuildTraceSession.maybeStart(
+      shorebirdTraceFilePath: stringArg(FlutterOptions.kShorebirdTrace),
+      fileSystem: globals.fs,
+    );
+    _traceSession = traceSession;
+    final FlutterCommandResult result;
+    try {
+      result = await _buildFrameworks();
+    } catch (_) {
+      traceSession?.abortOnFailure();
+      rethrow;
+    }
+    traceSession?.finish(printStatus: globals.printStatus);
+    return result;
+  }
+
+  // Trace-span helpers. Each runs [body] as-is when no session is
+  // active, so the call sites below read the same with tracing off.
+  Future<T> _traced<T>(String name, Future<T> Function() body) {
+    final IosFrameworkBuildTraceSession? session = _traceSession;
+    return session == null ? body() : session.flutterSpan(name, body);
+  }
+
+  Future<T> _tracedPodInstall<T>(Future<T> Function() body) {
+    final IosFrameworkBuildTraceSession? session = _traceSession;
+    return session == null ? body() : session.podInstallSpan(body);
+  }
+
+  Future<T> _tracedXcode<T>(String sdk, Future<T> Function() body) {
+    final IosFrameworkBuildTraceSession? session = _traceSession;
+    return session == null ? body() : session.xcodeSpan(sdk, body);
+  }
+
+  Future<FlutterCommandResult> _buildFrameworks() async {
     final String outputArgument =
         stringArg('output') ??
         globals.fs.path.join(globals.fs.currentDirectory.path, 'build', 'ios', 'framework');
@@ -514,15 +560,8 @@ class BuildIOSFrameworkCommand extends BuildFrameworkCommand {
     );
     final List<BuildInfo> buildInfos = await getBuildInfos();
 
-    final String? codesignIdentity = await codesign.getCodesignIdentity(
-      buildInfo: buildInfos.first,
-      codesignEnabled: boolArg(FlutterOptions.kCodesign),
-      codesignIdentityOption: stringArg(FlutterOptions.kCodesignIdentity),
-      identityFile: outputDirectory.childFile('.codesign_identity'),
-      xcodeProject: project.ios,
-    );
-
-    for (final buildInfo in buildInfos) {
+    String? codesignIdentity;
+    for (final (int index, BuildInfo buildInfo) in buildInfos.indexed) {
       // Create the build-mode specific metadata.
       //
       // This normally would be done in the verifyAndRun step of FlutterCommand, but special "meta"
@@ -534,6 +573,30 @@ class BuildIOSFrameworkCommand extends BuildFrameworkCommand {
         project,
         releaseMode: buildInfo.mode.isRelease,
       );
+
+      // Regeneration above rewrites Generated.xcconfig only when it is older
+      // than this Flutter's tools stamp, so a file another Flutter wrote
+      // since (an IDE's pub get) survives it, and pod install below would
+      // then use that Flutter's FLUTTER_ROOT. Always rewrite it, as
+      // `flutter build ios` does.
+      await updateGeneratedXcodeProperties(
+        project: project,
+        buildInfo: buildInfo,
+        targetOverride: targetFile,
+      );
+
+      // Look up the identity only after regenerating: it reads the development
+      // team from the iOS project's build settings, and a module's .ios/
+      // project may not exist until regeneration creates it.
+      if (index == 0) {
+        codesignIdentity = await codesign.getCodesignIdentity(
+          buildInfo: buildInfo,
+          codesignEnabled: boolArg(FlutterOptions.kCodesign),
+          codesignIdentityOption: stringArg(FlutterOptions.kCodesignIdentity),
+          identityFile: outputDirectory.childFile('.codesign_identity'),
+          xcodeProject: project.ios,
+        );
+      }
 
       final String? productBundleIdentifier = await project.ios.productBundleIdentifier(buildInfo);
       globals.printStatus(
@@ -551,7 +614,10 @@ class BuildIOSFrameworkCommand extends BuildFrameworkCommand {
         produceFlutterPodspec(buildInfo.mode, modeDirectory, force: boolArg('force'));
       } else {
         // Copy Flutter.xcframework.
-        await _produceFlutterFramework(buildInfo, modeDirectory, codesignIdentity);
+        await _traced(
+          'copy Flutter.xcframework',
+          () => _produceFlutterFramework(buildInfo, modeDirectory, codesignIdentity),
+        );
       }
 
       // Build aot, create module.framework and copy.
@@ -561,20 +627,25 @@ class BuildIOSFrameworkCommand extends BuildFrameworkCommand {
       final Directory simulatorBuildOutput = modeDirectory.childDirectory(
         XcodeSdk.IPhoneSimulator.platformName,
       );
-      await _produceAppFramework(
-        buildInfo,
-        modeDirectory,
-        iPhoneBuildOutput,
-        simulatorBuildOutput,
-        codesignIdentity,
+      await _traced(
+        'build App.xcframework',
+        () => _produceAppFramework(
+          buildInfo,
+          modeDirectory,
+          iPhoneBuildOutput,
+          simulatorBuildOutput,
+          codesignIdentity,
+        ),
       );
 
       // Build and copy plugins.
-      await processPodsIfNeeded(
-        project.ios,
-        getIosBuildDirectory(),
-        buildInfo.mode,
-        forceCocoaPodsOnly: true,
+      await _tracedPodInstall(
+        () => processPodsIfNeeded(
+          project.ios,
+          getIosBuildDirectory(),
+          buildInfo.mode,
+          forceCocoaPodsOnly: true,
+        ),
       );
       if (boolArg('plugins') && hasPlugins(project)) {
         await _producePlugins(
@@ -827,6 +898,7 @@ end
           target = const ReleaseIosApplicationBundle();
         }
         final BuildResult result = await buildSystem.build(target, environment);
+        _traceSession?.addAssembleResult(result);
         if (!result.success) {
           for (final ExceptionMeasurement measurement in result.exceptions.values) {
             globals.printError(measurement.exception.toString());
@@ -872,9 +944,12 @@ end
         if (boolArg('static')) 'MACH_O_TYPE=staticlib',
       ];
 
-      RunResult buildPluginsResult = await globals.processUtils.run(
-        pluginsBuildCommand,
-        workingDirectory: project.ios.hostAppRoot.childDirectory('Pods').path,
+      RunResult buildPluginsResult = await _tracedXcode(
+        XcodeSdk.IPhoneOS.platformName,
+        () => globals.processUtils.run(
+          pluginsBuildCommand,
+          workingDirectory: project.ios.hostAppRoot.childDirectory('Pods').path,
+        ),
       );
 
       if (buildPluginsResult.exitCode != 0) {
@@ -897,9 +972,12 @@ end
         if (boolArg('static')) 'MACH_O_TYPE=staticlib',
       ];
 
-      buildPluginsResult = await globals.processUtils.run(
-        pluginsBuildCommand,
-        workingDirectory: project.ios.hostAppRoot.childDirectory('Pods').path,
+      buildPluginsResult = await _tracedXcode(
+        XcodeSdk.IPhoneSimulator.platformName,
+        () => globals.processUtils.run(
+          pluginsBuildCommand,
+          workingDirectory: project.ios.hostAppRoot.childDirectory('Pods').path,
+        ),
       );
 
       if (buildPluginsResult.exitCode != 0) {

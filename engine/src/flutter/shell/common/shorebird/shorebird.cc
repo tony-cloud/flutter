@@ -23,6 +23,7 @@
 #include "flutter/shell/common/switches.h"
 #include "fml/logging.h"
 #include "shell/platform/embedder/embedder.h"
+#include "third_party/dart/runtime/include/dart_native_api.h"
 
 // Namespaced to avoid Google style warnings.
 namespace flutter {
@@ -43,46 +44,39 @@ extern "C" __attribute__((weak)) unsigned long getauxval(unsigned long type) {
 }
 #endif
 
-#if SHOREBIRD_USE_INTERPRETER
-// Global references to the base (unpatched) snapshots from the App.framework.
-// These are process-global because:
+// Global reference to the base (unpatched) snapshot from the App.framework,
+// set on iOS and macOS. Patches there are diffed against just the Dart
+// snapshot regions of the app binary, which FileCallbacksImpl serves to the
+// updater from this snapshot. It is process-global because:
 // 1. The Shorebird updater library is a process-global singleton with its own
-//    internal state. FileCallbacksImpl provides it access to the base snapshot
-//    data for patch generation/validation.
-// 2. The base snapshots are immutable (baked into the IPA) so sharing them
-//    across isolate groups is safe.
+//    internal state.
+// 2. The base snapshot is immutable (baked into the app) so sharing it across
+//    isolate groups is safe.
 //
 // Note: This design doesn't support multiple engines with different base
-// snapshots, but I'm not aware of any use cases for that on iOS.
+// snapshots, but I'm not aware of any use cases for that.
 static fml::RefPtr<const DartSnapshot> vm_snapshot;
-static fml::RefPtr<const DartSnapshot> isolate_snapshot;
 
+#if SHOREBIRD_USE_INTERPRETER
 void SetBaseSnapshot(Settings& settings) {
-  // These mappings happen to be to static data in the App.framework, but
-  // we still need to seem to hold onto the DartSnapshot objects to keep
-  // the mappings alive.
+  // The VM resolve path is patch-blind and does not report a launch before a
+  // Shell exists. VM and isolate symbols now refer to the same data/text pair.
   vm_snapshot = DartSnapshot::VMSnapshotFromSettings(settings);
-  isolate_snapshot = DartSnapshot::IsolateSnapshotFromSettings(settings);
+  if (!vm_snapshot) {
+    FML_LOG(ERROR) << "Shorebird updater: failed to resolve base snapshot";
+    return;
+  }
 
-  // Per-mapping observability for the base snapshot. Logged at every app boot
-  // so customer syslogs include the exact sizes the on-device base reader
-  // exposes — directly comparable to the host's `aot_tools dump_blobs`
-  // extraction the patch was generated against.
-  size_t vm_data_size = vm_snapshot->GetDataSize();
-  size_t iso_data_size = isolate_snapshot->GetDataSize();
-  size_t vm_insns_size = vm_snapshot->GetInstructionsSize();
-  size_t iso_insns_size = isolate_snapshot->GetInstructionsSize();
-  FML_LOG(INFO) << "[shorebird] SetBaseSnapshot mappings: "
-                << "vm_data_size=" << vm_data_size
-                << " iso_data_size=" << iso_data_size
-                << " vm_insns_size=" << vm_insns_size
-                << " iso_insns_size=" << iso_insns_size << " total="
-                << (vm_data_size + iso_data_size + vm_insns_size +
-                    iso_insns_size);
+  const intptr_t data_size =
+      Dart_SnapshotDataSize(vm_snapshot->GetDataMapping());
+  const intptr_t instructions_size =
+      Dart_SnapshotInstrSize(vm_snapshot->GetInstructionsMapping());
+  FML_LOG(INFO) << "[shorebird] SetBaseSnapshot mappings: data_size="
+                << data_size << " instructions_size=" << instructions_size
+                << " total=" << (data_size + instructions_size);
 
-  // The public Dart API does not expose the private interpreter hook that
-  // older Shorebird Dart builds used to register these mappings. Flutter
-  // still retains the snapshots above for the updater's file callback stream.
+  // The open Dart interpreter installs bytecode through its public patch API;
+  // retain the base mappings here only for the updater file callback stream.
 }
 #endif  // SHOREBIRD_USE_INTERPRETER
 
@@ -132,7 +126,7 @@ std::string GetValueFromYaml(const std::string& yaml, const std::string& key) {
 // TODO(eseidel): Consolidate this with the other ConfigureShorebird() API.
 bool ConfigureShorebird(const ShorebirdConfigArgs& args,
                         std::string& patch_path) {
-  patch_path = args.release_app_library_path;
+  patch_path.clear();
   auto shorebird_updater_dir_name = "shorebird_updater";
 
   // Parse app id from shorebird.yaml
@@ -166,12 +160,21 @@ bool ConfigureShorebird(const ShorebirdConfigArgs& args,
   config.file_callbacks = ShorebirdFileCallbacks();
   config.yaml_config = args.shorebird_yaml;
 
-  bool init_result = shorebird::Updater::Instance().Init(config);
+#if FML_OS_MACOSX && !FML_OS_IOS
+  // macOS patches are diffed against the Dart snapshot regions of
+  // App.framework/App rather than the whole file, so re-signing the app after
+  // release (notarization, Mac App Store) doesn't invalidate them.
+  // Resolved through the VM path, which never returns a patch.
+  Settings base_settings;
+  base_settings.application_library_paths = {args.release_app_library_path};
+  vm_snapshot = DartSnapshot::VMSnapshotFromSettings(base_settings);
+  if (!vm_snapshot) {
+    FML_LOG(ERROR) << "Shorebird updater: failed to resolve base snapshot from "
+                   << args.release_app_library_path;
+  }
+#endif  // FML_OS_MACOSX && !FML_OS_IOS
 
-  // We do not support synchronous updates on launch, it's a terrible UX.
-  // Users can implement custom check-for-updates using
-  // package:shorebird_code_push.
-  // https://github.com/shorebirdtech/shorebird/issues/950
+  bool init_result = shorebird::Updater::Instance().Init(config);
 
   FML_LOG(INFO) << "Checking for active patch";
   shorebird::Updater::Instance().ValidateNextBootPatch();
@@ -183,23 +186,34 @@ bool ConfigureShorebird(const ShorebirdConfigArgs& args,
     FML_LOG(INFO) << "Shorebird updater: no active patch.";
   }
 
-  // Note: shorebird_report_launch_start() is now called from TryLoadFromPatch()
-  // in runtime/shorebird/patch_cache.cc, right before the patched snapshot is
-  // actually loaded. This fixes issues with FlutterEngineGroup and other cases
-  // where ConfigureShorebird() is called but no Shell is created.
-  if (!init_result) {
-    return false;
-  }
+  // Launch reporting does not happen here. ResolveIsolateData in
+  // runtime/dart_snapshot.cc reports the start, so a FlutterEngineGroup or
+  // add-to-app host that calls ConfigureShorebird() without ever creating a
+  // Shell does not record a boot that never happened. The update thread
+  // starts from the Shell's launch-success report, after the boot is
+  // recorded; see the Updater class comment.
+  return init_result;
+}
 
-  if (shorebird::Updater::Instance().ShouldAutoUpdate()) {
-    FML_LOG(INFO) << "Starting Shorebird update";
-    shorebird::Updater::Instance().StartUpdateThread();
-  } else {
-    FML_LOG(INFO)
-        << "Shorebird auto_update disabled, not checking for updates.";
+bool LoadPatchOrBase(const std::string& patch_path,
+                     const std::string& base_path,
+                     const std::function<bool(const std::string&)>& load) {
+  if (patch_path.empty()) {
+    return load(base_path);
   }
-
-  return true;
+  if (load(patch_path)) {
+    return true;
+  }
+  FML_LOG(ERROR) << "Shorebird: patch load failed, running base code from "
+                 << base_path << " instead of " << patch_path;
+  // The failure report marks the booting patch bad, and a patch is only
+  // booting once the start is reported. Both are guarded once per process,
+  // so the Shell's own start report (ResolveIsolateData) is a no-op, and its
+  // success report does not record the base-code boot as the patch's. This
+  // is the same sequence TryLoadFromPatch runs on iOS.
+  shorebird::Updater::Instance().ReportLaunchStart();
+  shorebird::Updater::Instance().ReportLaunchFailure();
+  return load(base_path);
 }
 
 /// Older api used by iOS and Android, directly manipulates Settings.
@@ -238,12 +252,7 @@ void ConfigureShorebird(std::string code_cache_path,
   config.file_callbacks = ShorebirdFileCallbacks();
   config.yaml_config = shorebird_yaml;
 
-  bool init_result = shorebird::Updater::Instance().Init(config);
-
-  // We do not support synchronous updates on launch, it's a terrible UX.
-  // Users can implement custom check-for-updates using
-  // package:shorebird_code_push.
-  // https://github.com/shorebirdtech/shorebird/issues/950
+  shorebird::Updater::Instance().Init(config);
 
   // We only set the base snapshot on iOS for now.
 #if SHOREBIRD_USE_INTERPRETER
@@ -256,9 +265,11 @@ void ConfigureShorebird(std::string code_cache_path,
     FML_LOG(INFO) << "Shorebird updater: active path: " << active_path;
 
 #if SHOREBIRD_USE_INTERPRETER
-    // On iOS we add the patch to the front of the list instead of clearing
-    // the list, to allow dart_snapshot.cc to still find the base snapshot
-    // for the vm isolate.
+    // Front-insert rather than clear. A linked patch carries only the code it
+    // rewrote, and everything it linked against still executes out of the base
+    // image, so the base has to stay resolvable for the life of the process.
+    // SearchMapping takes the first path that resolves a symbol, so the patch
+    // still wins the lookup without evicting the base.
     settings.application_library_paths.insert(
         settings.application_library_paths.begin(), active_path);
 #else
@@ -269,36 +280,25 @@ void ConfigureShorebird(std::string code_cache_path,
     FML_LOG(INFO) << "Shorebird updater: no active patch.";
   }
 
-  // Note: shorebird_report_launch_start() is now called from TryLoadFromPatch()
-  // in runtime/shorebird/patch_cache.cc, right before the patched snapshot is
-  // actually loaded. This fixes issues with FlutterEngineGroup and other cases
-  // where ConfigureShorebird() is called but no Shell is created.
-
-  if (!init_result) {
-    return;
-  }
-
-  if (shorebird::Updater::Instance().ShouldAutoUpdate()) {
-    FML_LOG(INFO) << "Starting Shorebird update";
-    shorebird::Updater::Instance().StartUpdateThread();
-  } else {
-    FML_LOG(INFO)
-        << "Shorebird auto_update disabled, not checking for updates.";
-  }
+  // Launch reporting does not happen here. ResolveIsolateData in
+  // runtime/dart_snapshot.cc reports the start, so a FlutterEngineGroup or
+  // add-to-app host that calls ConfigureShorebird() without ever creating a
+  // Shell does not record a boot that never happened. The update thread
+  // starts from the Shell's launch-success report, after the boot is
+  // recorded; see the Updater class comment.
 }
 
 void* FileCallbacksImpl::Open() {
-#if SHOREBIRD_USE_INTERPRETER
-  return SnapshotsDataHandle::createForSnapshots(*vm_snapshot,
-                                                 *isolate_snapshot)
-      .release();
-#else
-  // SnapshotsDataHandle exists on all platforms (for testing) but is only used
-  // on iOS. iOS patches are generated from just the Dart parts of the snapshot,
-  // excluding the Mach-O specific headers which contain dates and paths that
-  // make them change on every build.
-  return nullptr;
-#endif  // SHOREBIRD_USE_INTERPRETER
+  // Only iOS and macOS set a base snapshot. Their patches are generated from
+  // just the Dart parts of the snapshot, excluding the Mach-O headers and code
+  // signature, which change on every build and whenever the app is re-signed.
+  if (!vm_snapshot) {
+    return nullptr;
+  }
+  // vm_snapshot, not isolate_snapshot: both resolve the same symbol now, but
+  // only the VM path is patch-blind, and this stream must be the unpatched
+  // base.
+  return SnapshotsDataHandle::createForSnapshots(*vm_snapshot).release();
 }
 
 uintptr_t FileCallbacksImpl::Read(void* file,

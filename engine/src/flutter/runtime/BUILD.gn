@@ -119,7 +119,6 @@ source_set("runtime") {
     "//flutter/third_party/tonic",
     "//flutter/txt",
   ]
-
 }
 
 if (enable_unittests) {

@@ -3,6 +3,7 @@
 // found in the LICENSE file.
 
 import 'dart:convert';
+import 'dart:ffi' show Abi;
 
 import 'package:file/file.dart';
 import 'package:process/process.dart';
@@ -441,7 +442,9 @@ class CocoaPods {
             ..write(line)
             ..write('\n');
           final PodInstallPhase? phase = _podPhaseForLogLine(line);
-          if (phase != null) phases.transitionTo(phase.wireName);
+          if (phase != null) {
+            phases.transitionTo(phase.wireName);
+          }
         })
         .asFuture<void>();
 
@@ -608,6 +611,13 @@ class CocoaPods {
               ),
         );
         if (missingPluginSupportsSwiftPM) {
+          _analytics.send(
+            Event.appleUsageEvent(
+              workflow: 'cocoapod-swiftpm-interdependency-failure',
+              parameter: requiringPlugin,
+              result: missingPlugin,
+            ),
+          );
           return 'Error: A dependency conflict has occurred because $requiringPlugin uses CocoaPods while '
               '$missingPlugin uses Swift Package Manager. Please contact the $requiringPlugin '
               'maintainers to request Swift Package Manager adoption.\n\n'
@@ -732,7 +742,9 @@ const _podPhaseMarkers = <String, PodInstallPhase>{
 /// into, or null if the line doesn't contain any of the known markers.
 PodInstallPhase? _podPhaseForLogLine(String line) {
   for (final MapEntry<String, PodInstallPhase> entry in _podPhaseMarkers.entries) {
-    if (line.contains(entry.key)) return entry.value;
+    if (line.contains(entry.key)) {
+      return entry.value;
+    }
   }
   return null;
 }

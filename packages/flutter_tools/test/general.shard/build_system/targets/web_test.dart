@@ -40,7 +40,6 @@ const _kStandardFlutterWebDefines = <String>[
   '-DFLUTTER_WEB_USE_SKWASM=false',
   '-DFLUTTER_WEB_CANVASKIT_URL=https://www.gstatic.com/flutter-canvaskit/abcdefghijklmnopqrstuvwxyz/',
   '--write-resources',
-  '--enable-experiment=record-use',
 ];
 
 const _kDart2WasmLinuxArgs = <String>[
@@ -132,6 +131,31 @@ name: foo
         Pub: ThrowingPub.new,
       },
     ),
+  );
+
+  test(
+    'WebEntrypointTarget declares package_config.json, pubspec.yaml, and plugin dependencies as inputs',
+    () => testbed.run(() async {
+      const target = WebEntrypointTarget();
+      expect(
+        target.inputs,
+        equals(<Source>[
+          const Source.pattern(
+            '{FLUTTER_ROOT}/packages/flutter_tools/lib/src/build_system/targets/web.dart',
+          ),
+          const Source.pattern('{WORKSPACE_DIR}/.dart_tool/package_config.json'),
+          const Source.pattern('{PROJECT_DIR}/pubspec.yaml'),
+          const Source.pattern('{PROJECT_DIR}/.flutter-plugins-dependencies', optional: true),
+        ]),
+      );
+      expect(
+        target.outputs,
+        equals(<Source>[
+          const Source.pattern('{BUILD_DIR}/main.dart'),
+          const Source.pattern('{BUILD_DIR}/web_plugin_registrant.dart'),
+        ]),
+      );
+    }),
   );
 
   test(
@@ -1341,7 +1365,6 @@ _flutter.loader.load();
                           '-DFLUTTER_WEB_CANVASKIT_URL=https://www.gstatic.com/flutter-canvaskit/abcdefghijklmnopqrstuvwxyz/',
                           '--extra-compiler-option=--depfile=${depFile.absolute.path}',
                           '--recorded-uses=${environment.buildDir.childFile('recorded_uses_wasm.json').absolute.path}',
-                          '--enable-experiment=record-use',
                           '-O$expectedLevel',
                           if (strip && buildMode == 'release')
                             '--strip-wasm'

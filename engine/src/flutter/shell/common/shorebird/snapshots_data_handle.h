@@ -15,9 +15,9 @@ struct BlobsIndex {
   size_t offset;
 };
 
-// Implements a POSIX file I/O interface which allows us to provide the four
-// data blobs of a Dart snapshot (vm_data, vm_instructions, isolate_data,
-// isolate_instructions) to Rust as though it were a single piece of memory.
+// Implements a POSIX file I/O interface which allows us to provide the data
+// and text regions of a Dart snapshot to Rust as though it were a single piece
+// of memory.
 class SnapshotsDataHandle {
  public:
   // This would ideally be private, but we need to be able to call it from the
@@ -25,9 +25,23 @@ class SnapshotsDataHandle {
   explicit SnapshotsDataHandle(std::vector<std::unique_ptr<fml::Mapping>> blobs)
       : blobs_(std::move(blobs)) {}
 
+  // `base_snapshot` must come from the VM resolve path, which never returns a
+  // patch. This stream is the base the updater diffs against.
+  //
+  // The region lengths come from the Dart VM. An AOT snapshot's regions arrive
+  // as fml::SymbolMapping, whose GetSize() is 0 because a dlsym'd symbol
+  // address carries no extent, so only the snapshot header knows where a
+  // region ends.
   static std::unique_ptr<SnapshotsDataHandle> createForSnapshots(
-      const DartSnapshot& vm_snapshot,
-      const DartSnapshot& isolate_snapshot);
+      const DartSnapshot& base_snapshot);
+
+  // As above, with the region lengths supplied by the caller. A test has no
+  // serialized snapshot, and the VM's parser dereferences whatever a
+  // fabricated buffer's header bytes point at.
+  static std::unique_ptr<SnapshotsDataHandle> createForSnapshots(
+      const DartSnapshot& base_snapshot,
+      size_t data_size,
+      size_t instructions_size);
 
   uintptr_t Read(uint8_t* buffer, uintptr_t length);
   int64_t Seek(int64_t offset, int32_t whence);

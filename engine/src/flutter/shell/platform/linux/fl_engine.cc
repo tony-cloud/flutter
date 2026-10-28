@@ -11,6 +11,7 @@
 
 #include "flutter/common/constants.h"
 #include "flutter/fml/logging.h"
+#include "flutter/shell/common/shorebird/shorebird.h"
 #include "flutter/shell/platform/common/engine_switches.h"
 #include "flutter/shell/platform/embedder/embedder.h"
 #include "flutter/shell/platform/linux/fl_accessibility_handler.h"
@@ -814,9 +815,12 @@ gboolean fl_engine_start(FlEngine* self, GError** error) {
       break;
   }
 
+  const std::vector<std::string> env_switches =
+      flutter::GetSwitchesFromEnvironment();
+
   gboolean enable_impeller = fl_dart_project_get_enable_impeller(self->project);
   gboolean has_enable_impeller = FALSE;
-  for (const auto& env_switch : flutter::GetSwitchesFromEnvironment()) {
+  for (const auto& env_switch : env_switches) {
     if (env_switch == "--enable-impeller" ||
         env_switch == "--enable-impeller=true") {
       enable_impeller = TRUE;
@@ -833,7 +837,7 @@ gboolean fl_engine_start(FlEngine* self, GError** error) {
   // the first item is treated as the executable and ignored. Add a dummy
   // value so that all switches are used.
   g_ptr_array_insert(command_line_args, 0, g_strdup("flutter"));
-  for (const auto& env_switch : flutter::GetSwitchesFromEnvironment()) {
+  for (const auto& env_switch : env_switches) {
     g_ptr_array_add(command_line_args, g_strdup(env_switch.c_str()));
   }
   // Linux (and other desktop platforms) always uses SDFs.
@@ -841,6 +845,23 @@ gboolean fl_engine_start(FlEngine* self, GError** error) {
 
   if (enable_impeller && !has_enable_impeller) {
     g_ptr_array_add(command_line_args, g_strdup("--enable-impeller"));
+  }
+
+  // Forward the project's Flutter GPU setting unless an environment switch
+  // already carries it (the switch is presence based, so it is only ever
+  // added, never negated).
+  if (fl_dart_project_get_enable_flutter_gpu(self->project)) {
+    gboolean has_enable_flutter_gpu = FALSE;
+    for (const auto& env_switch : env_switches) {
+      if (env_switch == "--enable-flutter-gpu" ||
+          env_switch == "--enable-flutter-gpu=true") {
+        has_enable_flutter_gpu = TRUE;
+        break;
+      }
+    }
+    if (!has_enable_flutter_gpu) {
+      g_ptr_array_add(command_line_args, g_strdup("--enable-flutter-gpu"));
+    }
   }
 
   gchar** dart_entrypoint_args =
@@ -875,24 +896,24 @@ gboolean fl_engine_start(FlEngine* self, GError** error) {
   args.compositor = &compositor;
 
   if (self->embedder_api.RunsAOTCompiledDartCode()) {
-    // This struct contains raw C strings and needs to have its lifetime scoped
-    // to this block.
-    FlutterEngineAOTDataSource source = {};
-    source.type = kFlutterEngineAOTDataSourceTypeElfPath;
     std::string patch_path;
-    auto setup_shorebird_result =
-        flutter::SetUpShorebird(args.assets_path, patch_path);
-    if (setup_shorebird_result) {
-      // If we have a patch installed, we replace the default AOT library path
-      // with the patch path here.
-      source.elf_path = patch_path.c_str();
-    } else {
+    if (!flutter::SetUpShorebird(args.assets_path, patch_path)) {
       FML_LOG(ERROR) << "Failed to configure Shorebird.";
-      source.elf_path = fl_dart_project_get_aot_library_path(self->project);
+      patch_path.clear();
     }
 
-    if (self->embedder_api.CreateAOTData(&source, &self->aot_data) !=
-        kSuccess) {
+    // A patch that fails to load is reported and replaced by the release's
+    // own library.
+    bool loaded = flutter::LoadPatchOrBase(
+        patch_path, fl_dart_project_get_aot_library_path(self->project),
+        [self](const std::string& path) {
+          FlutterEngineAOTDataSource source = {};
+          source.type = kFlutterEngineAOTDataSourceTypeElfPath;
+          source.elf_path = path.c_str();
+          return self->embedder_api.CreateAOTData(&source, &self->aot_data) ==
+                 kSuccess;
+        });
+    if (!loaded) {
       g_set_error(error, fl_engine_error_quark(), FL_ENGINE_ERROR_FAILED,
                   "Failed to create AOT data");
       return FALSE;

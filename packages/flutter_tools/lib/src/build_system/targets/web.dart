@@ -23,6 +23,7 @@ import '../../flutter_plugins.dart';
 import '../../globals.dart' as globals;
 import '../../isolated/native_assets/dart_hook_result.dart';
 import '../../project.dart';
+import '../../shorebird/shorebird_build_key.dart';
 import '../../web/bootstrap.dart';
 import '../../web/compile.dart';
 import '../../web/file_generators/flutter_service_worker_js.dart';
@@ -54,10 +55,16 @@ class WebEntrypointTarget extends Target {
   @override
   List<Source> get inputs => const <Source>[
     Source.pattern('{FLUTTER_ROOT}/packages/flutter_tools/lib/src/build_system/targets/web.dart'),
+    Source.pattern('{WORKSPACE_DIR}/.dart_tool/package_config.json'),
+    Source.pattern('{PROJECT_DIR}/pubspec.yaml'),
+    Source.pattern('{PROJECT_DIR}/.flutter-plugins-dependencies', optional: true),
   ];
 
   @override
-  List<Source> get outputs => const <Source>[Source.pattern('{BUILD_DIR}/main.dart')];
+  List<Source> get outputs => const <Source>[
+    Source.pattern('{BUILD_DIR}/main.dart'),
+    Source.pattern('{BUILD_DIR}/web_plugin_registrant.dart'),
+  ];
 
   @override
   Future<void> build(Environment environment) async {
@@ -87,7 +94,7 @@ class WebEntrypointTarget extends Target {
     // does not have an entry for the user's application or if the main file is
     // outside of the lib/ directory.
     final String importedEntrypoint =
-        packageConfig.toPackageUri(importUri)?.toString() ?? importUri.toString();
+        packageConfig.toPackageUriForWorkspace(importUri)?.toString() ?? importUri.toString();
 
     await injectBuildTimePluginFilesForWebPlatform(
       flutterProject,
@@ -192,10 +199,7 @@ class Dart2JSTarget extends Dart2WebTarget {
       else if (buildMode == BuildMode.release)
         '-Ddart.vm.product=true',
       for (final String dartDefine in computeDartDefines(environment)) '-D$dartDefine',
-      if (featureFlags.isRecordUseEnabled) ...<String>[
-        '--write-resources',
-        '--enable-experiment=record-use',
-      ],
+      if (featureFlags.isRecordUseEnabled) '--write-resources',
     ];
 
     // NOTE: most args should be populated in [toSharedCommandOptions].
@@ -367,10 +371,8 @@ class Dart2WasmTarget extends Dart2WebTarget {
       ...decodeCommaSeparated(environment.defines, kExtraFrontEndOptions),
       for (final String dartDefine in dartDefines) '-D$dartDefine',
       '--extra-compiler-option=--depfile=${depFile.path}',
-      if (featureFlags.isRecordUseEnabled) ...<String>[
+      if (featureFlags.isRecordUseEnabled)
         '--recorded-uses=${environment.buildDir.childFile(LinkHooks.recordedUsesWasmFileName).path}',
-        '--enable-experiment=record-use',
-      ],
       ...compilerConfig.toCommandOptions(buildMode),
       '-o',
       outputWasmFile.path,
@@ -572,7 +574,7 @@ class Dart2WasmTarget extends Dart2WebTarget {
 
 /// Unpacks the dart2js or dart2wasm compilation and resources to a given
 /// output directory.
-class WebReleaseBundle extends Target {
+class WebReleaseBundle extends Target with ShorebirdPublicKeyBuildKey {
   WebReleaseBundle(List<WebCompilerConfig> configs, Analytics analytics)
     : this._(
         compileTargets: configs

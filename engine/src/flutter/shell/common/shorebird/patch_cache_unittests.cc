@@ -7,6 +7,7 @@
 #include <string>
 #include <vector>
 
+#include "flutter/shell/common/shorebird/updater.h"
 #include "gtest/gtest.h"
 
 namespace flutter {
@@ -18,36 +19,18 @@ TEST(PatchCache, InstanceReturnsSameInstance) {
   EXPECT_EQ(&instance1, &instance2);
 }
 
+// Loaded ELF snapshots are covered end to end. These cases check path
+// selection and recovery when the updater selects a missing patch.
+
 TEST(TryLoadFromPatch, ReturnsNullptrForEmptyPaths) {
   std::vector<std::string> empty_paths;
-  auto result = TryLoadFromPatch(empty_paths, "kDartIsolateSnapshotData");
+  auto result = TryLoadFromPatch(empty_paths, PatchSymbol::kIsolateData);
   EXPECT_EQ(result, nullptr);
 }
 
 TEST(TryLoadFromPatch, ReturnsNullptrForNonVmcodePath) {
   std::vector<std::string> paths = {"/path/to/some/file.so"};
-  auto result = TryLoadFromPatch(paths, "kDartIsolateSnapshotData");
-  EXPECT_EQ(result, nullptr);
-}
-
-TEST(TryLoadFromPatch, ReturnsNullptrForVmSymbol) {
-  // Even with a .vmcode path, VM symbols should return nullptr
-  // (we can't actually load the file, but we can verify the symbol check)
-  std::vector<std::string> paths = {"/path/to/patch.vmcode"};
-
-  // VM data symbol should return nullptr (patches don't contain VM snapshots)
-  auto result_vm_data = TryLoadFromPatch(paths, "kDartVmSnapshotData");
-  EXPECT_EQ(result_vm_data, nullptr);
-
-  // VM instructions symbol should return nullptr
-  auto result_vm_instrs =
-      TryLoadFromPatch(paths, "kDartVmSnapshotInstructions");
-  EXPECT_EQ(result_vm_instrs, nullptr);
-}
-
-TEST(TryLoadFromPatch, ReturnsNullptrForUnknownSymbol) {
-  std::vector<std::string> paths = {"/path/to/patch.vmcode"};
-  auto result = TryLoadFromPatch(paths, "kSomeUnknownSymbol");
+  auto result = TryLoadFromPatch(paths, PatchSymbol::kIsolateData);
   EXPECT_EQ(result, nullptr);
 }
 
@@ -55,7 +38,7 @@ TEST(TryLoadFromPatch, ChecksOnlyFirstPath) {
   // Only the first path should be checked for .vmcode extension
   std::vector<std::string> paths = {"/path/to/regular.so",
                                     "/path/to/patch.vmcode"};
-  auto result = TryLoadFromPatch(paths, "kDartIsolateSnapshotData");
+  auto result = TryLoadFromPatch(paths, PatchSymbol::kIsolateInstructions);
   // Should return nullptr because first path is not .vmcode
   EXPECT_EQ(result, nullptr);
 }
@@ -64,6 +47,24 @@ TEST(PatchCache, GetOrLoadReturnsNullptrForNonexistentFile) {
   auto result =
       PatchCache::Instance().GetOrLoad("/nonexistent/path/to/file.vmcode");
   EXPECT_EQ(result, nullptr);
+}
+
+TEST(TryLoadFromPatch, MissingPatchFallsBackAndReportsFailureOnce) {
+  auto mock = std::make_unique<shorebird::MockUpdater>();
+  auto* mock_ptr = mock.get();
+  shorebird::Updater::SetInstanceForTesting(std::move(mock));
+  shorebird::Updater::ResetLaunchStateForTesting();
+  shorebird::Updater::Instance().ReportLaunchStart();
+
+  const std::vector<std::string> paths = {"/nonexistent/patch.vmcode"};
+  EXPECT_EQ(TryLoadFromPatch(paths, PatchSymbol::kIsolateData), nullptr);
+  EXPECT_EQ(TryLoadFromPatch(paths, PatchSymbol::kIsolateInstructions),
+            nullptr);
+  EXPECT_EQ(mock_ptr->launch_failure_count(), 1);
+  EXPECT_EQ(mock_ptr->launch_start_count(), 1);
+
+  shorebird::Updater::ResetInstanceForTesting();
+  shorebird::Updater::ResetLaunchStateForTesting();
 }
 
 }  // namespace testing

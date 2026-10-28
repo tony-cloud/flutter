@@ -4,50 +4,47 @@
 
 #include "flutter/runtime/shorebird/patch_cache.h"
 
+#include <cstring>
 #include <mutex>
 
 #include "flutter/fml/logging.h"
 #include "flutter/fml/mapping.h"
 #include "flutter/runtime/shorebird/patch_mapping.h"
+#include "flutter/shell/common/shorebird/updater.h"
 #include "third_party/dart/runtime/include/dart_api.h"
 
 namespace flutter {
-
-namespace {
-
-// These symbol names match the constants in dart_snapshot.cc.
-// We duplicate them here rather than extracting them into a header.
-// They are actually defined down in Dart and will never change.
-constexpr const char* kIsolateDataSymbol = "kDartIsolateSnapshotData";
-constexpr const char* kIsolateInstructionsSymbol =
-    "kDartIsolateSnapshotInstructions";
-
-}  // namespace
 
 // PatchCacheEntry implementation
 
 std::shared_ptr<PatchCacheEntry> PatchCacheEntry::Create(
     const std::string& path) {
-  // vmcode files currently use ELF internally after a prefix of a Shorebird
-  // linker header.
+  // Open native patches are ordinary ELF files, even when stored with the
+  // updater's .vmcode extension. The public loader does not understand the
+  // proprietary linker header used by older Shorebird SDKs.
   auto elf_mapping = fml::FileMapping::CreateReadOnly(path);
   if (!elf_mapping) {
     FML_LOG(ERROR) << "Failed to map file: " << path;
     return nullptr;
   }
 
-  int elf_file_offset = Shorebird_ReadLinkHeader(elf_mapping->GetMapping(),
-                                                 elf_mapping->GetSize());
+  constexpr uint8_t kElfMagic[] = {0x7f, 'E', 'L', 'F'};
+  if (elf_mapping->GetSize() < sizeof(kElfMagic) ||
+      std::memcmp(elf_mapping->GetMapping(), kElfMagic, sizeof(kElfMagic)) !=
+          0) {
+    FML_LOG(ERROR) << "Patch is not a public ELF snapshot: " << path;
+    return nullptr;
+  }
 
   const char* error = nullptr;
-  // The VM Snapshot is identical for all binaries produced by a given version
-  // of Dart. Our linker checks this and will fail to link if ever the VM
-  // snapshot changes. We ignore the VM data/instrs here.
+  // One data blob and one text blob. The VM isolate folded into the isolate
+  // group, so the VM and isolate symbols now name the same buffers and
+  // Dart_LoadELF resolves a single pair.
   const uint8_t* isolate_data = nullptr;
   const uint8_t* isolate_instrs = nullptr;
 
-  Dart_LoadedElf* elf = Dart_LoadELF(path.c_str(), elf_file_offset, &error,
-                                     &isolate_data, &isolate_instrs);
+  Dart_LoadedElf* elf =
+      Dart_LoadELF(path.c_str(), 0, &error, &isolate_data, &isolate_instrs);
 
   if (elf == nullptr) {
     FML_LOG(ERROR) << "Failed to load patch at " << path << " error: " << error;
@@ -120,7 +117,7 @@ void PatchCache::PruneExpired() {
 
 std::shared_ptr<const fml::Mapping> TryLoadFromPatch(
     const std::vector<std::string>& native_library_paths,
-    const char* symbol_name) {
+    PatchSymbol symbol) {
   if (native_library_paths.empty()) {
     return nullptr;
   }
@@ -132,31 +129,28 @@ std::shared_ptr<const fml::Mapping> TryLoadFromPatch(
     return nullptr;
   }
 
-  // Patches only contain isolate data/instructions, not VM data/instructions.
-  // Return nullptr for VM symbols to allow fallback to the base app.
-  std::string symbol(symbol_name);
-  if (symbol != kIsolateDataSymbol && symbol != kIsolateInstructionsSymbol) {
-    return nullptr;
-  }
-
   // Load the patch using the cache.
   auto cache_entry = PatchCache::Instance().GetOrLoad(patch_path);
   if (!cache_entry) {
-    FML_LOG(FATAL) << "Failed to load symbol from patch at " << patch_path;
+    // Boot the base image rather than aborting. PatchCacheEntry::Create has
+    // already logged why the load failed.
+    FML_LOG(ERROR) << "Shorebird: patch load failed, running base code from "
+                      "the app image instead of "
+                   << patch_path;
+    // ReportLaunchStart already promoted this patch to current_boot, so
+    // without a failure report it stays "running" in the updater's books
+    // while base code executes, and the next launch retries the same patch.
+    // Guarded once per process, so the second symbol lookup is a no-op.
+    shorebird::Updater::Instance().ReportLaunchFailure();
     return nullptr;
   }
 
-  FML_LOG(INFO) << "Loading symbol from patch: " << symbol_name;
-
-  // ReportLaunchStart is now called from ResolveIsolateData in
-  // dart_snapshot.cc, which runs before TryLoadFromPatch on all platforms.
-
-  if (symbol == kIsolateDataSymbol) {
+  if (symbol == PatchSymbol::kIsolateData) {
+    FML_LOG(INFO) << "Loading isolate data from patch";
     return PatchMapping::CreateIsolateData(cache_entry);
-  } else {
-    FML_CHECK(symbol == kIsolateInstructionsSymbol);
-    return PatchMapping::CreateIsolateInstructions(cache_entry);
   }
+  FML_LOG(INFO) << "Loading isolate instructions from patch";
+  return PatchMapping::CreateIsolateInstructions(cache_entry);
 }
 
 }  // namespace flutter

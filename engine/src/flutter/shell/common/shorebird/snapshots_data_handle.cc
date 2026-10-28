@@ -1,18 +1,8 @@
 #include "flutter/shell/common/shorebird/snapshots_data_handle.h"
 
+#include "third_party/dart/runtime/include/dart_native_api.h"
+
 namespace flutter {
-
-static std::unique_ptr<fml::Mapping> DataMapping(const DartSnapshot& snapshot) {
-  auto ptr = snapshot.GetDataMapping();
-  return std::make_unique<fml::NonOwnedMapping>(ptr, snapshot.GetDataSize());
-}
-
-static std::unique_ptr<fml::Mapping> InstructionsMapping(
-    const DartSnapshot& snapshot) {
-  auto ptr = snapshot.GetInstructionsMapping();
-  return std::make_unique<fml::NonOwnedMapping>(
-      ptr, snapshot.GetInstructionsSize());
-}
 
 // The size of the snapshot data is the sum of the sizes of the blobs.
 size_t SnapshotsDataHandle::FullSize() const {
@@ -79,32 +69,44 @@ BlobsIndex SnapshotsDataHandle::IndexForAbsoluteOffset(int64_t offset,
 }
 
 std::unique_ptr<SnapshotsDataHandle> SnapshotsDataHandle::createForSnapshots(
-    const DartSnapshot& vm_snapshot,
-    const DartSnapshot& isolate_snapshot) {
-  // This needs to match the order in which the blobs are written out in
-  // analyze_snapshot --dump_blobs
-  auto vm_data = DataMapping(vm_snapshot);
-  auto iso_data = DataMapping(isolate_snapshot);
-  auto vm_insns = InstructionsMapping(vm_snapshot);
-  auto iso_insns = InstructionsMapping(isolate_snapshot);
+    const DartSnapshot& base_snapshot) {
+  return createForSnapshots(
+      base_snapshot, Dart_SnapshotDataSize(base_snapshot.GetDataMapping()),
+      Dart_SnapshotInstrSize(base_snapshot.GetInstructionsMapping()));
+}
+
+std::unique_ptr<SnapshotsDataHandle> SnapshotsDataHandle::createForSnapshots(
+    const DartSnapshot& base_snapshot,
+    size_t data_size,
+    size_t instructions_size) {
+  // Order and count must match HandleDumpBlobs in
+  // runtime/bin/analyze_snapshot.cc, which writes the data region then the
+  // text region. One snapshot supplies both. The VM isolate's contents were
+  // folded into the isolate group, so kVMDataSymbol and kIsolateDataSymbol are
+  // now the same symbol and resolve to the same buffer. Taking a second
+  // snapshot here appends every byte twice and misaligns this stream against
+  // the host extraction the patch was generated from, with no error raised at
+  // either end.
+  //
+  // The caller must pass a snapshot resolved through the VM path. That path is
+  // patch-blind, and this stream has to be the unpatched base the diff was
+  // computed against.
+  auto data = std::make_unique<fml::NonOwnedMapping>(
+      base_snapshot.GetDataMapping(), data_size);
+  auto insns = std::make_unique<fml::NonOwnedMapping>(
+      base_snapshot.GetInstructionsMapping(), instructions_size);
 
   // Per-blob observability for the base byte stream the updater is about to
   // patch against. Logged at every patch-apply attempt so customer syslogs
-  // include the exact sizes the bipatch state machine sees — directly
+  // include the exact sizes the bipatch state machine sees, directly
   // comparable to the host's `aot_tools dump_blobs` extraction.
-  FML_LOG(INFO) << "[shorebird] SnapshotsDataHandle blob sizes: vm_data="
-                << vm_data->GetSize() << "b iso_data=" << iso_data->GetSize()
-                << "b vm_instructions=" << vm_insns->GetSize()
-                << "b iso_instructions=" << iso_insns->GetSize() << "b total="
-                << (vm_data->GetSize() + iso_data->GetSize() +
-                    vm_insns->GetSize() + iso_insns->GetSize())
-                << "b";
+  FML_LOG(INFO) << "[shorebird] SnapshotsDataHandle blob sizes: data="
+                << data->GetSize() << "b instructions=" << insns->GetSize()
+                << "b total=" << (data->GetSize() + insns->GetSize()) << "b";
 
   std::vector<std::unique_ptr<fml::Mapping>> blobs;
-  blobs.push_back(std::move(vm_data));
-  blobs.push_back(std::move(iso_data));
-  blobs.push_back(std::move(vm_insns));
-  blobs.push_back(std::move(iso_insns));
+  blobs.push_back(std::move(data));
+  blobs.push_back(std::move(insns));
   return std::make_unique<SnapshotsDataHandle>(std::move(blobs));
 }
 
