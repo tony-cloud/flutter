@@ -214,7 +214,6 @@ group("unittests") {
       "//flutter/shell/common/shorebird:shorebird_unittests",
       "//flutter/shell/geometry:geometry_unittests",
       "//flutter/shell/gpu:gpu_surface_unittests",
-      "//flutter/shell/common/shorebird:shorebird_unittests",
       "//flutter/shell/platform/embedder:embedder_a11y_unittests",
       "//flutter/shell/platform/embedder:embedder_proctable_unittests",
       "//flutter/shell/platform/embedder:embedder_unittests",
@@ -350,8 +349,8 @@ if (host_os == "win") {
 }
 
 # A top-level target for analyze_snapshot, modeled after the gen_snapshot
-# target above.
-if (host_os == "win") {
+# target above. Dart only builds this tool for 64-bit target architectures.
+if (host_os == "win" && (target_cpu == "x64" || target_cpu == "arm64")) {
   _analyze_snapshot_target =
       "$dart_src/runtime/bin:analyze_snapshot($host_toolchain)"
 

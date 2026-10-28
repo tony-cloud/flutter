@@ -69,9 +69,10 @@ if (build_engine_artifacts) {
       "//flutter/tools/path_ops",
     ]
     if (is_mac) {
-      # TODO(godofredoc): Remove after paths are standardized flutter/flutter#105351.
-      # Mac artifacts sometimes use mac and sometimes darwin. Standardizing the
-      # names will require changes in the list of artifacts the tool is downloading.
+      # TODO(godofredoc): Remove after paths are standardized
+      # flutter/flutter#105351. Mac artifacts sometimes use mac and sometimes
+      # darwin. Standardizing the names will require changes in the list of
+      # artifacts the tool is downloading.
       if (flutter_runtime_mode == "debug") {
         prefix = "darwin-$target_cpu"
       } else {
@@ -278,7 +279,8 @@ if (build_engine_artifacts && flutter_prebuilt_dart_sdk) {
     ]
     if (is_mac) {
       # Mac artifacts sometimes use mac and sometimes darwin. Standardizing the
-      # names will require changes in the list of artifacts the tool is downloading.
+      # names will require changes in the list of artifacts the tool is
+      # downloading.
       output = "dart-sdk-darwin-$target_cpu.zip"
       files += [
         {
@@ -398,20 +400,22 @@ if (host_os == "win") {
   # analyze_snapshot but did not update the name because it is referenced
   # elsewhere in the tooling.
   zip_bundle("archive_win_gen_snapshot") {
-    deps = [
-      "//flutter:analyze_snapshot",
-      "//flutter:gen_snapshot",
-    ]
+    deps = [ "//flutter:gen_snapshot" ]
     output = "$full_target_platform_name-$flutter_runtime_mode/windows-x64.zip"
     files = [
       {
         source = "$root_out_dir/gen_snapshot/gen_snapshot.exe"
         destination = "gen_snapshot.exe"
       },
-      {
-        source = "$root_out_dir/analyze_snapshot/analyze_snapshot.exe"
-        destination = "analyze_snapshot.exe"
-      },
     ]
+    if (target_cpu == "x64" || target_cpu == "arm64") {
+      deps += [ "//flutter:analyze_snapshot" ]
+      files += [
+        {
+          source = "$root_out_dir/analyze_snapshot/analyze_snapshot.exe"
+          destination = "analyze_snapshot.exe"
+        },
+      ]
+    }
   }
 }
