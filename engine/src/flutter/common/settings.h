@@ -91,6 +91,9 @@ using MappingsCallback = std::function<Mappings(void)>;
 using FrameRasterizedCallback = std::function<void(const FrameTiming&)>;
 
 class DartIsolate;
+namespace shorebird {
+struct InterpreterPatchConfig;
+}  // namespace shorebird
 
 // TODO(https://github.com/flutter/flutter/issues/138750): Re-order fields to
 // reduce padding.
@@ -132,6 +135,10 @@ struct Settings {
   // This is a vector so that the embedder can provide fallback paths in
   // case the primary path to the library can not be loaded.
   std::vector<std::string> application_library_paths;
+
+  // Encrypted iOS bytecode is data, never a native snapshot library.
+  std::shared_ptr<const shorebird::InterpreterPatchConfig>
+      shorebird_interpreter_patch;
 
   // Path to a library containing compiled Dart code usable for launching
   // the VM service isolate.

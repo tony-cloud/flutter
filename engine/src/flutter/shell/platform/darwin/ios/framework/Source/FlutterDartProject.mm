@@ -14,6 +14,7 @@
 #include "flutter/common/constants.h"
 #include "flutter/fml/build_config.h"
 #include "flutter/fml/paths.h"
+#include "flutter/runtime/shorebird/interpreter_patch.h"
 #include "flutter/shell/common/shorebird/shorebird.h"
 #include "flutter/shell/common/switches.h"
 #import "flutter/shell/platform/darwin/common/InternalFlutterSwiftCommon/InternalFlutterSwiftCommon.h"
@@ -321,6 +322,26 @@ flutter::Settings FLTDefaultSettingsForBundle(NSBundle* bundle, NSProcessInfo* p
 
 #pragma mark - Override base class designated initializers
 
++ (BOOL)setShorebirdAotPatchKeyProvider:(FlutterShorebirdAotPatchKeyProvider)provider {
+  if (!provider) {
+    return NO;
+  }
+  FlutterShorebirdAotPatchKeyProvider retainedProvider = [provider copy];
+  return flutter::shorebird::RegisterInterpreterKeyProvider(
+      [retainedProvider](const char* keyId, uint8_t* buffer, intptr_t capacity, intptr_t* length) {
+        @autoreleasepool {
+          NSString* identifier = [NSString stringWithUTF8String:keyId];
+          NSData* key = identifier ? retainedProvider(identifier) : nil;
+          if (!key || key.length != 32 || capacity < 32) {
+            return false;
+          }
+          [key getBytes:buffer length:32];
+          *length = 32;
+          return true;
+        }
+      });
+}
+
 - (instancetype)init {
   return [self initWithPrecompiledDartBundle:nil];
 }
@@ -332,6 +353,9 @@ flutter::Settings FLTDefaultSettingsForBundle(NSBundle* bundle, NSProcessInfo* p
 
   if (self) {
     _settings = FLTDefaultSettingsForBundle(bundle);
+    _settings.shorebird_interpreter_patch =
+        flutter::shorebird::SelectInterpreterPatchForProcess(_settings.shorebird_interpreter_patch);
+    flutter::shorebird::SealInterpreterKeyProvider();
   }
 
   return self;

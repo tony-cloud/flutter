@@ -24,6 +24,15 @@ TEST(Shorebird, GetValueFromYamlValueDoesNotExist) {
   EXPECT_EQ(value, "");
 }
 
+TEST(Shorebird, CompiledYamlScalarsUseExactKeysAndUnquoteStrings) {
+  EXPECT_EQ(GetValueFromYaml("other_app_id: wrong\napp_id: '123'\n", "app_id"),
+            "123");
+  EXPECT_EQ(GetValueFromYaml("# app_id: wrong\napp_id: \"app\"\n", "app_id"),
+            "app");
+  EXPECT_EQ(GetValueFromYaml("app_id: 'customer''s'\n", "app_id"),
+            "customer's");
+}
+
 class LoadPatchOrBaseTest : public ::testing::Test {
  protected:
   void SetUp() override {

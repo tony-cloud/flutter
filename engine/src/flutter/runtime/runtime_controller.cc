@@ -15,6 +15,8 @@
 #include "flutter/runtime/dart_isolate_group_data.h"
 #include "flutter/runtime/isolate_configuration.h"
 #include "flutter/runtime/runtime_delegate.h"
+#include "flutter/runtime/shorebird/interpreter_patch.h"
+#include "flutter/shell/common/shorebird/updater.h"
 #include "third_party/tonic/dart_message_handler.h"
 
 namespace flutter {
@@ -563,14 +565,36 @@ bool RuntimeController::LaunchRootIsolate(
           root_isolate_create_callback,                   //
           isolate_create_callback_,                       //
           isolate_shutdown_callback_,                     //
-          std::move(dart_entrypoint),                     //
-          std::move(dart_entrypoint_library),             //
+          dart_entrypoint,                                //
+          dart_entrypoint_library,                        //
           dart_entrypoint_args,                           //
           std::move(isolate_configuration),               //
           context_,                                       //
           spawning_isolate_.lock().get(),
-          std::move(native_assets_manager))  //
+          native_assets_manager)  //
           .lock();
+
+#if FML_OS_IOS
+  if (!strong_root_isolate && settings.shorebird_interpreter_patch &&
+      !spawning_isolate_.lock()) {
+    // The rejected transient group has shut down before this call. Recreate
+    // all base state; never continue in a group the bytecode loader touched.
+    shorebird::RejectInterpreterPatchForProcess();
+    shorebird::Updater::Instance().ReportLaunchFailure();
+    Settings base_settings(settings);
+    base_settings.shorebird_interpreter_patch.reset();
+    strong_root_isolate =
+        DartIsolate::CreateRunningRootIsolate(
+            base_settings, isolate_snapshot_,
+            std::make_unique<PlatformConfiguration>(this), DartIsolate::Flags{},
+            root_isolate_create_callback, isolate_create_callback_,
+            isolate_shutdown_callback_, dart_entrypoint,
+            dart_entrypoint_library, dart_entrypoint_args,
+            IsolateConfiguration::CreateForAppSnapshot(), context_, nullptr,
+            native_assets_manager)
+            .lock();
+  }
+#endif
 
   if (!strong_root_isolate) {
     FML_LOG(ERROR) << "Could not create root isolate.";

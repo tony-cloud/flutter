@@ -90,7 +90,8 @@ source_set("runtime") {
   ]
 
   if (is_ios && flutter_runtime_mode == "debug") {
-    # These contain references to private APIs and this TU must only be compiled in debug runtime modes.
+    # These contain references to private APIs and this TU must only be compiled
+    # in debug runtime modes.
     sources += [ "ptrace_check.cc" ]
   }
 
@@ -113,6 +114,7 @@ source_set("runtime") {
     "//flutter/flow",
     "//flutter/fml",
     "//flutter/lib/io",
+    "//flutter/runtime/shorebird:interpreter_patch",
     "//flutter/shell/common:display",
     "//flutter/shell/common/shorebird:updater",
     "//flutter/skia",

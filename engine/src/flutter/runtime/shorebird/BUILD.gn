@@ -17,3 +17,17 @@ source_set("patch_cache") {
     "//flutter/shell/common/shorebird:updater",
   ]
 }
+
+source_set("interpreter_patch") {
+  sources = [
+    "interpreter_patch.cc",
+    "interpreter_patch.h",
+    "interpreter_patch_dart.cc",
+  ]
+  deps = [
+    "$dart_src/runtime:dart_api",
+    "//flutter/fml",
+    "//flutter/runtime:libdart",
+    "//flutter/third_party/rapidjson",
+  ]
+}

@@ -12,6 +12,9 @@ import '../globals.dart' as globals;
 /// shorebird.yaml as `patch_public_key`.
 const kShorebirdPublicKeyEnvVar = 'SHOREBIRD_PUBLIC_KEY';
 
+/// SHA-256 derived from the release bytecode before sealing bundled assets.
+const kShorebirdAotBaseSnapshotHashEnvVar = 'SHOREBIRD_AOT_BASE_SNAPSHOT_HASH';
+
 void updateShorebirdYaml(
   String? flavor,
   String shorebirdYamlPath, {
@@ -72,9 +75,55 @@ Map<String, dynamic> compileShorebirdYaml(
   copyIfSet('base_url');
   copyIfSet('auto_update');
   copyIfSet('patch_verification');
+  copyIfSet('patch_response_verification');
+  copyIfSet('patch_public_key');
+  // Expectations are public policy, copied from the signed app's build input.
+  // The AES key and patch-only paths/hashes must never enter bundled assets.
+  const interpreterFields = <String>[
+    'aot_patch_runtime_mode',
+    'aot_patch_app_build_id',
+    'aot_patch_base_flavor_id',
+    'aot_patch_base_license_type',
+    'aot_patch_flavor_id',
+    'aot_patch_license_type',
+    'aot_patch_sdk_hash',
+    'aot_patch_base_snapshot_hash',
+    'aot_patch_obfuscation_map_hash',
+    'aot_patch_key_id',
+  ];
+  for (final String key in interpreterFields) {
+    final String? override = environment['SHOREBIRD_${key.toUpperCase()}'];
+    if (override != null) {
+      compiled[key] = override;
+    } else {
+      copyIfSet(key);
+    }
+  }
+  final String? baseHash = environment[kShorebirdAotBaseSnapshotHashEnvVar];
+  if (baseHash != null) {
+    if (!RegExp(r'^[0-9a-f]{64}$').hasMatch(baseHash)) {
+      throw Exception('$kShorebirdAotBaseSnapshotHashEnvVar must be a lowercase SHA-256');
+    }
+    compiled['aot_patch_base_snapshot_hash'] = baseHash;
+  }
+
   final String? shorebirdPublicKeyEnvVar = environment[kShorebirdPublicKeyEnvVar];
   if (shorebirdPublicKeyEnvVar != null) {
     compiled['patch_public_key'] = shorebirdPublicKeyEnvVar;
+  }
+  if (compiled['patch_public_key'] is String &&
+      (compiled['patch_public_key'] as String).trim().isNotEmpty) {
+    compiled.putIfAbsent('patch_response_verification', () => 'required');
+  }
+  if (compiled['aot_patch_runtime_mode'] == 'dart-bytecode-interpreter') {
+    final Object? publicKey = compiled['patch_public_key'];
+    if (publicKey is! String || publicKey.trim().isEmpty) {
+      throw Exception(
+        'Interpreter patches require a pinned patch_public_key or SHOREBIRD_PUBLIC_KEY',
+      );
+    }
+    compiled['patch_verification'] = 'strict';
+    compiled['patch_response_verification'] = 'required';
   }
   return compiled;
 }

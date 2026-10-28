@@ -2,6 +2,7 @@
 #include "flutter/shell/common/shorebird/shorebird.h"
 
 #include <cstddef>
+#include <cstring>
 #include <memory>
 #include <optional>
 #include <utility>
@@ -17,11 +18,13 @@
 #include "flutter/lib/ui/plugins/callback_cache.h"
 #include "flutter/runtime/dart_snapshot.h"
 #include "flutter/runtime/dart_vm.h"
+#include "flutter/runtime/shorebird/interpreter_patch.h"
 #include "flutter/shell/common/shell.h"
 #include "flutter/shell/common/shorebird/snapshots_data_handle.h"
 #include "flutter/shell/common/shorebird/updater.h"
 #include "flutter/shell/common/switches.h"
 #include "fml/logging.h"
+#include "rapidjson/document.h"
 #include "shell/platform/embedder/embedder.h"
 #include "third_party/dart/runtime/include/dart_native_api.h"
 
@@ -101,22 +104,42 @@ shorebird::FileCallbacks ShorebirdFileCallbacks() {
 // otherwise return an empty string.
 // Does not support nested keys.
 std::string GetValueFromYaml(const std::string& yaml, const std::string& key) {
-  std::stringstream ss(yaml);
+  std::stringstream input(yaml);
   std::string line;
-  std::string prefix = key + ":";
-  while (std::getline(ss, line, '\n')) {
-    if (line.find(prefix) != std::string::npos) {
-      auto ret = line.substr(line.find(prefix) + prefix.size());
-
-      // Remove leading and trailing spaces
-      while (!ret.empty() && std::isspace(ret.front())) {
-        ret.erase(0, 1);
-      }
-      while (!ret.empty() && std::isspace(ret.back())) {
-        ret.pop_back();
-      }
-      return ret;
+  const std::string prefix = key + ":";
+  while (std::getline(input, line)) {
+    // The compiler emits a flat mapping. Match complete keys, not substrings
+    // in another key, a comment, or an attacker-controlled scalar value.
+    if (line.compare(0, prefix.size(), prefix) != 0) {
+      continue;
     }
+    auto value = line.substr(prefix.size());
+    auto begin = value.find_first_not_of(" \t\r");
+    if (begin == std::string::npos) {
+      return "";
+    }
+    value = value.substr(begin, value.find_last_not_of(" \t\r") - begin + 1);
+    if (value.front() == '"') {
+      rapidjson::Document scalar;
+      scalar.Parse(value.c_str());
+      if (!scalar.HasParseError() && scalar.IsString() &&
+          std::strlen(scalar.GetString()) == scalar.GetStringLength()) {
+        return scalar.GetString();
+      }
+      return "";
+    }
+    if (value.front() == '\'') {
+      if (value.size() < 2 || value.back() != '\'') {
+        return "";
+      }
+      value = value.substr(1, value.size() - 2);
+      size_t offset = 0;
+      while ((offset = value.find("''", offset)) != std::string::npos) {
+        value.replace(offset, 2, "'");
+        ++offset;
+      }
+    }
+    return value;
   }
   return "";
 }
@@ -243,7 +266,15 @@ void ConfigureShorebird(std::string code_cache_path,
   config.file_callbacks = ShorebirdFileCallbacks();
   config.yaml_config = shorebird_yaml;
 
-  shorebird::Updater::Instance().Init(config);
+#if FML_OS_IOS
+  shorebird::SealInterpreterKeyProvider();
+#endif
+  if (!shorebird::Updater::Instance().Init(config)) {
+    FML_LOG(ERROR)
+        << "Shorebird updater initialization failed; running base code";
+    settings.shorebird_interpreter_patch.reset();
+    return;
+  }
 
   // We only set the base snapshot on iOS for now.
 #if SHOREBIRD_USE_INTERPRETER
@@ -255,7 +286,41 @@ void ConfigureShorebird(std::string code_cache_path,
   if (!active_path.empty()) {
     FML_LOG(INFO) << "Shorebird updater: active path: " << active_path;
 
-#if SHOREBIRD_USE_INTERPRETER
+#if FML_OS_IOS
+    // An encrypted artifact is JSON/bytecode data, never a native image. Keep
+    // the reviewed base snapshot linked and install only before its main runs.
+    auto patch = std::make_shared<shorebird::InterpreterPatchConfig>();
+    patch->path = active_path;
+    patch->app_id = GetValueFromYaml(shorebird_yaml, "app_id");
+    patch->app_build_id =
+        GetValueFromYaml(shorebird_yaml, "aot_patch_app_build_id");
+    if (patch->app_build_id.empty()) {
+      patch->app_build_id = config.release_version;
+    }
+    patch->base_flavor_id =
+        GetValueFromYaml(shorebird_yaml, "aot_patch_base_flavor_id");
+    patch->base_license_type =
+        GetValueFromYaml(shorebird_yaml, "aot_patch_base_license_type");
+    patch->flavor_id = GetValueFromYaml(shorebird_yaml, "aot_patch_flavor_id");
+    patch->license_type =
+        GetValueFromYaml(shorebird_yaml, "aot_patch_license_type");
+    patch->sdk_hash = GetValueFromYaml(shorebird_yaml, "aot_patch_sdk_hash");
+    patch->base_snapshot_hash =
+        GetValueFromYaml(shorebird_yaml, "aot_patch_base_snapshot_hash");
+    patch->obfuscation_map_hash =
+        GetValueFromYaml(shorebird_yaml, "aot_patch_obfuscation_map_hash");
+    patch->key_id = GetValueFromYaml(shorebird_yaml, "aot_patch_key_id");
+    patch->strict_verification =
+        GetValueFromYaml(shorebird_yaml, "aot_patch_runtime_mode") ==
+            "dart-bytecode-interpreter" &&
+        GetValueFromYaml(shorebird_yaml, "patch_response_verification") ==
+            "required" &&
+        GetValueFromYaml(shorebird_yaml, "patch_verification") == "strict" &&
+        !GetValueFromYaml(shorebird_yaml, "patch_public_key").empty() &&
+        GetValueFromYaml(shorebird_yaml, "aot_patch_key_hex").empty();
+    settings.shorebird_interpreter_patch =
+        shorebird::SelectInterpreterPatchForProcess(std::move(patch));
+#elif SHOREBIRD_USE_INTERPRETER
     // Front-insert rather than clear. A linked patch carries only the code it
     // rewrote, and everything it linked against still executes out of the base
     // image, so the base has to stay resolvable for the life of the process.
@@ -269,6 +334,10 @@ void ConfigureShorebird(std::string code_cache_path,
 #endif
   } else {
     FML_LOG(INFO) << "Shorebird updater: no active patch.";
+#if FML_OS_IOS
+    settings.shorebird_interpreter_patch =
+        shorebird::SelectInterpreterPatchForProcess(nullptr);
+#endif
   }
 
   // Launch reporting does not happen here. ResolveIsolateData in

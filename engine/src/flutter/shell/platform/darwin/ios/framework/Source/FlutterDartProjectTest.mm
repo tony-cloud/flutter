@@ -6,6 +6,7 @@
 #import <XCTest/XCTest.h>
 
 #include "flutter/common/constants.h"
+#include "flutter/runtime/shorebird/interpreter_patch.h"
 #include "flutter/shell/platform/darwin/common/framework/Headers/FlutterMacros.h"
 #import "flutter/shell/platform/darwin/ios/framework/Source/FlutterDartProject_Internal.h"
 
@@ -20,6 +21,25 @@ FLUTTER_ASSERT_ARC
 }
 
 - (void)tearDown {
+}
+
+- (void)testInterpreterKeyProviderMustBeRegisteredBeforeProjectStartup {
+  flutter::shorebird::ResetInterpreterKeyProviderForTesting();
+  XCTAssertTrue([FlutterDartProject setShorebirdAotPatchKeyProvider:^NSData*(NSString* keyId) {
+    // The application decides which locally provisioned key the account may use.
+    return [keyId isEqualToString:@"test-account-key"] ? [NSMutableData dataWithLength:32] : nil;
+  }]);
+  XCTAssertFalse([FlutterDartProject setShorebirdAotPatchKeyProvider:^NSData*(NSString* keyId) {
+    (void)keyId;
+    return nil;
+  }]);
+  flutter::shorebird::ResetInterpreterKeyProviderForTesting();
+  __unused FlutterDartProject* project = [[FlutterDartProject alloc] init];
+  XCTAssertFalse([FlutterDartProject setShorebirdAotPatchKeyProvider:^NSData*(NSString* keyId) {
+    (void)keyId;
+    return nil;
+  }]);
+  flutter::shorebird::ResetInterpreterKeyProviderForTesting();
 }
 
 - (void)testOldGenHeapSizeSetting {

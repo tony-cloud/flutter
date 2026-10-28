@@ -11,6 +11,12 @@
 
 NS_ASSUME_NONNULL_BEGIN
 
+/** Resolves a 32-byte AES key from app-owned local storage (for example Keychain).
+ * Return nil when the key is unavailable or the user is not entitled to it.
+ * The provider may run on the engine UI thread and must not perform network I/O.
+ */
+typedef NSData* _Nullable (^FlutterShorebirdAotPatchKeyProvider)(NSString* keyIdentifier);
+
 /**
  * A set of Flutter and Dart assets used by a `FlutterEngine` to initialize execution.
  *
@@ -39,6 +45,16 @@ FLUTTER_DARWIN_EXPORT
  * application.
  */
 + (NSString*)defaultBundleIdentifier;
+
+/**
+ * Registers the native app's interpreter-patch key provider process-wide.
+ * Call exactly once, before constructing any FlutterDartProject/FlutterEngine.
+ * Returns NO if already registered, nil, or startup has sealed registration.
+ * The engine retains the block for the process lifetime. Raw keys must never
+ * be placed in shorebird.yaml, assets, Dart defines, or application logs.
+ */
++ (BOOL)setShorebirdAotPatchKeyProvider:(FlutterShorebirdAotPatchKeyProvider)provider
+    NS_SWIFT_NAME(setShorebirdAotPatchKeyProvider(_:)) API_UNAVAILABLE(macos);
 
 /**
  * An NSArray of NSStrings to be passed as command line arguments to the Dart entrypoint.

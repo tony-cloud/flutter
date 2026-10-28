@@ -81,7 +81,103 @@ patch_verification: strict
         'base_url': 'https://example.com',
         'patch_verification': 'strict',
         'patch_public_key': '4-a',
+        'patch_response_verification': 'required',
       });
+    });
+    test('interpreter metadata survives compilation without secrets', () {
+      final yaml =
+          loadYamlDocument('''
+app_id: app-id
+aot_patch_runtime_mode: dart-bytecode-interpreter
+aot_patch_app_build_id: '1.0.0+1'
+aot_patch_base_flavor_id: free
+aot_patch_base_license_type: free
+aot_patch_flavor_id: pro
+aot_patch_license_type: pro
+aot_patch_sdk_hash: sdk
+aot_patch_base_snapshot_hash: base-hash
+aot_patch_obfuscation_map_hash: map-hash
+aot_patch_key_id: account-key
+aot_patch_key_hex: NEVER_BUNDLE_THIS
+aot_patch_bytecode_path: /private/patch.bytecode
+aot_patch_patch_snapshot_hash: future-patch
+patch_verification: none
+patch_response_verification: optional
+''').contents
+              as YamlMap;
+      final compiled = compileShorebirdYaml(
+        yaml,
+        flavor: null,
+        environment: <String, String>{'SHOREBIRD_PUBLIC_KEY': 'publisher-key'},
+      );
+      expect(compiled['aot_patch_runtime_mode'], 'dart-bytecode-interpreter');
+      expect(compiled['aot_patch_app_build_id'], '1.0.0+1');
+      expect(compiled['aot_patch_base_flavor_id'], 'free');
+      expect(compiled['aot_patch_base_license_type'], 'free');
+      expect(compiled['aot_patch_flavor_id'], 'pro');
+      expect(compiled['aot_patch_license_type'], 'pro');
+      expect(compiled['aot_patch_sdk_hash'], 'sdk');
+      expect(compiled['aot_patch_base_snapshot_hash'], 'base-hash');
+      expect(compiled['aot_patch_obfuscation_map_hash'], 'map-hash');
+      expect(compiled['aot_patch_key_id'], 'account-key');
+      expect(compiled['patch_verification'], 'strict');
+      expect(compiled['patch_response_verification'], 'required');
+      expect(compiled['patch_public_key'], 'publisher-key');
+      expect(compiled.containsKey('aot_patch_key_hex'), isFalse);
+      expect(compiled.containsKey('aot_patch_bytecode_path'), isFalse);
+      expect(compiled.containsKey('aot_patch_patch_snapshot_hash'), isFalse);
+    });
+    test('interpreter compilation fails without publisher pin', () {
+      final yaml =
+          loadYamlDocument('''
+app_id: app-id
+aot_patch_runtime_mode: dart-bytecode-interpreter
+''').contents
+              as YamlMap;
+      expect(
+        () => compileShorebirdYaml(yaml, flavor: null, environment: <String, String>{}),
+        throwsException,
+      );
+    });
+    test('derived release hash overrides stale source without bundling secrets', () {
+      final yaml =
+          loadYamlDocument('''
+app_id: app-id
+aot_patch_base_snapshot_hash: stale-source-hash
+''').contents
+              as YamlMap;
+      final hash = 'a' * 64;
+      final compiled = compileShorebirdYaml(
+        yaml,
+        flavor: null,
+        environment: <String, String>{
+          'SHOREBIRD_AOT_BASE_SNAPSHOT_HASH': hash,
+          'SHOREBIRD_AOT_PATCH_SDK_HASH': 'derived-sdk',
+          'SHOREBIRD_AOT_PATCH_KEY_HEX': 'NEVER_BUNDLE',
+        },
+      );
+      expect(compiled['aot_patch_base_snapshot_hash'], hash);
+      expect(compiled['aot_patch_sdk_hash'], 'derived-sdk');
+      expect(compiled.containsKey('aot_patch_key_hex'), isFalse);
+      expect(
+        () => compileShorebirdYaml(
+          yaml,
+          flavor: null,
+          environment: <String, String>{'SHOREBIRD_AOT_BASE_SNAPSHOT_HASH': 'not-a-sha256'},
+        ),
+        throwsException,
+      );
+    });
+    test('native legacy builds can explicitly retain optional responses', () {
+      final yaml =
+          loadYamlDocument('app_id: app\npatch_response_verification: optional\n').contents
+              as YamlMap;
+      final compiled = compileShorebirdYaml(
+        yaml,
+        flavor: null,
+        environment: <String, String>{'SHOREBIRD_PUBLIC_KEY': 'publisher'},
+      );
+      expect(compiled['patch_response_verification'], 'optional');
     });
     test('edit in place', () {
       const String yamlContents = '''

@@ -16,6 +16,7 @@ source_set("snapshots_data_handle") {
     "//flutter/fml",
     "//flutter/runtime",
     "//flutter/runtime:libdart",
+    "//flutter/runtime/shorebird:interpreter_patch",
     "//flutter/shell/common",
   ]
 }
@@ -129,8 +130,10 @@ source_set("shorebird") {
     "//flutter/fml",
     "//flutter/runtime",
     "//flutter/runtime:libdart",
+    "//flutter/runtime/shorebird:interpreter_patch",
     "//flutter/shell/common",
     "//flutter/shell/platform/embedder:embedder_headers",
+    "//flutter/third_party/rapidjson",
   ]
 }
 
@@ -143,6 +146,7 @@ if (enable_unittests) {
     testonly = true
 
     sources = [
+      "interpreter_patch_unittests.cc",
       "patch_cache_unittests.cc",
       "shorebird_unittests.cc",
       "snapshots_data_handle_unittests.cc",
@@ -155,6 +159,7 @@ if (enable_unittests) {
       ":snapshots_data_handle",
       ":updater",
       "//flutter/runtime",
+      "//flutter/runtime/shorebird:interpreter_patch",
       "//flutter/runtime/shorebird:patch_cache",
       "//flutter/testing",
       "//flutter/testing:fixture_test",

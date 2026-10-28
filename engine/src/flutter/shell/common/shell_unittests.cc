@@ -5187,7 +5187,7 @@ TEST_F(ShellTest, ShoulDiscardLayerTreeIfFrameIsSizedIncorrectly) {
 }
 
 // Test the full boot flow: ReportLaunchStart is called from
-// ResolveIsolateData, then ReportLaunchSuccess from the Shell constructor.
+// ResolveIsolateData, then success only after the root Dart entrypoint runs.
 // Both are guarded to run at most once per process.
 TEST_F(ShellTest, ShorebirdBootFlowCallsLaunchStartThenSuccess) {
   auto mock = std::make_unique<shorebird::MockUpdater>();
@@ -5200,12 +5200,50 @@ TEST_F(ShellTest, ShorebirdBootFlowCallsLaunchStartThenSuccess) {
   auto shell = CreateShell(settings, task_runners);
   ASSERT_TRUE(shell);
 
+  EXPECT_EQ(mock_ptr->launch_success_count(), 0);
+  fml::AutoResetWaitableEvent main_latch;
+  AddNativeCallback(
+      "SayHiFromFixturesAreFunctionalMain",
+      CREATE_NATIVE_ENTRY([&main_latch](auto args) { main_latch.Signal(); }));
+  auto configuration = RunConfiguration::InferFromSettings(settings);
+  configuration.SetEntrypoint("fixturesAreFunctionalMain");
+  RunEngine(shell.get(), std::move(configuration));
+  main_latch.Wait();
+
   const auto& log = mock_ptr->call_log();
   ASSERT_EQ(log.size(), 2u);
   EXPECT_EQ(log[0], "ReportLaunchStart");
   EXPECT_EQ(log[1], "ReportLaunchSuccess");
 
   DestroyShell(std::move(shell), task_runners);
+  shorebird::Updater::ResetLaunchStateForTesting();
+  shorebird::Updater::ResetInstanceForTesting();
+}
+
+TEST_F(ShellTest, ShorebirdMissingEntrypointReportsFailureWithoutSuccess) {
+  auto mock = std::make_unique<shorebird::MockUpdater>();
+  auto* mock_ptr = mock.get();
+  shorebird::Updater::SetInstanceForTesting(std::move(mock));
+  shorebird::Updater::ResetLaunchStateForTesting();
+  auto settings = CreateSettingsForFixture();
+  auto shell = CreateShell(settings);
+  ASSERT_TRUE(shell);
+  EXPECT_EQ(mock_ptr->launch_success_count(), 0);
+  auto configuration = RunConfiguration::InferFromSettings(settings);
+  configuration.SetEntrypoint("shorebirdMissingEntrypoint");
+  std::promise<Engine::RunStatus> outcome;
+  auto future = outcome.get_future();
+  fml::TaskRunner::RunNowOrPostTask(
+      shell->GetTaskRunners().GetPlatformTaskRunner(), [&] {
+        shell->RunEngine(std::move(configuration),
+                         [&outcome](Engine::RunStatus result) {
+                           outcome.set_value(result);
+                         });
+      });
+  EXPECT_EQ(future.get(), Engine::RunStatus::Failure);
+  EXPECT_EQ(mock_ptr->launch_success_count(), 0);
+  EXPECT_EQ(mock_ptr->launch_failure_count(), 1);
+  DestroyShell(std::move(shell));
   shorebird::Updater::ResetLaunchStateForTesting();
   shorebird::Updater::ResetInstanceForTesting();
 }
@@ -5223,10 +5261,20 @@ TEST_F(ShellTest, ShorebirdUpdaterReportsOnlyOnceForMultipleShells) {
 
   auto settings = CreateSettingsForFixture();
 
-  // Create first shell — gets Start + Success
+  fml::AutoResetWaitableEvent main_latch;
+  AddNativeCallback(
+      "SayHiFromFixturesAreFunctionalMain",
+      CREATE_NATIVE_ENTRY([&main_latch](auto args) { main_latch.Signal(); }));
+
+  // Creating a Shell records no success until its root entrypoint runs.
   auto task_runners1 = GetTaskRunnersForFixture();
   auto shell1 = CreateShell(settings, task_runners1);
   ASSERT_TRUE(shell1);
+  EXPECT_EQ(mock_ptr->launch_success_count(), 0);
+  auto configuration1 = RunConfiguration::InferFromSettings(settings);
+  configuration1.SetEntrypoint("fixturesAreFunctionalMain");
+  RunEngine(shell1.get(), std::move(configuration1));
+  main_latch.Wait();
   EXPECT_EQ(mock_ptr->launch_start_count(), 1);
   EXPECT_EQ(mock_ptr->launch_success_count(), 1);
 
@@ -5240,6 +5288,10 @@ TEST_F(ShellTest, ShorebirdUpdaterReportsOnlyOnceForMultipleShells) {
   auto task_runners2 = GetTaskRunnersForFixture();
   auto shell2 = CreateShell(settings, task_runners2);
   ASSERT_TRUE(shell2);
+  auto configuration2 = RunConfiguration::InferFromSettings(settings);
+  configuration2.SetEntrypoint("fixturesAreFunctionalMain");
+  RunEngine(shell2.get(), std::move(configuration2));
+  main_latch.Wait();
   EXPECT_EQ(mock_ptr->launch_start_count(), 1);
   EXPECT_EQ(mock_ptr->launch_success_count(), 1);
 

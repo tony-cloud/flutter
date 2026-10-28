@@ -20,6 +20,8 @@
 #include "flutter/runtime/dart_vm_lifecycle.h"
 #include "flutter/runtime/isolate_configuration.h"
 #include "flutter/runtime/platform_isolate_manager.h"
+#include "flutter/runtime/shorebird/interpreter_patch.h"
+#include "flutter/shell/common/shorebird/updater.h"
 #include "fml/message_loop_task_queues.h"
 #include "fml/task_source.h"
 #include "fml/time/time_point.h"
@@ -142,6 +144,31 @@ std::weak_ptr<DartIsolate> DartIsolate::CreateRunningRootIsolate(
     return {};
   }
 
+#if FML_OS_IOS
+  // A shared group already owns its bytecode installation. Never rewrite an
+  // existing group's functions while another isolate can execute them.
+  const auto selected_patch = settings.shorebird_interpreter_patch
+                                  ? shorebird::SelectInterpreterPatchForProcess(
+                                        settings.shorebird_interpreter_patch)
+                                  : nullptr;
+  if (selected_patch && !spawning_isolate) {
+    std::string error;
+    bool installed;
+    {
+      tonic::DartState::Scope scope(isolate.get());
+      installed = shorebird::ApplyInterpreterPatch(*selected_patch, &error);
+    }
+    if (!installed) {
+      FML_LOG(ERROR) << "Shorebird interpreter patch rejected: " << error;
+      shorebird::RejectInterpreterPatchForProcess();
+      shorebird::Updater::Instance().ReportLaunchFailure();
+      // shutdown_on_error destroys this entire transient isolate group. A
+      // caller may start a fresh base group, but cannot reuse mutated state.
+      return {};
+    }
+  }
+#endif
+
   if (!isolate_configuration->PrepareIsolate(*isolate.get())) {
     FML_LOG(ERROR) << "Could not prepare isolate.";
     return {};
@@ -175,8 +202,11 @@ std::weak_ptr<DartIsolate> DartIsolate::CreateRunningRootIsolate(
                                std::move(dart_entrypoint),          //
                                dart_entrypoint_args)) {
     FML_LOG(ERROR) << "Could not run the run main Dart entrypoint.";
+    shorebird::Updater::Instance().ReportLaunchFailure();
     return {};
   }
+
+  shorebird::Updater::Instance().ReportLaunchSuccess();
 
   if (settings.root_isolate_shutdown_callback) {
     isolate->AddIsolateShutdownCallback(
