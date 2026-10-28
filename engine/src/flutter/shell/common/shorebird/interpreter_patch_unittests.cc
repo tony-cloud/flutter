@@ -220,6 +220,22 @@ TEST_F(InterpreterPatchTest, FailedBootKeepsLaterEnginesOnCleanBase) {
   RejectInterpreterPatchForProcess();
   EXPECT_EQ(SelectInterpreterPatchForProcess(stale), nullptr);
 }
+TEST_F(InterpreterPatchTest,
+       LaterEngineErrorCannotRollbackAcceptedProcessPatch) {
+  auto patch = std::make_shared<InterpreterPatchConfig>(config);
+  EXPECT_EQ(SelectInterpreterPatchForProcess(patch), patch);
+  CompleteInterpreterMainForProcess(true);
+  CompleteInterpreterMainForProcess(false);
+  EXPECT_FALSE(RejectInterpreterPatchForProcess());
+  EXPECT_EQ(SelectInterpreterPatchForProcess(nullptr), patch);
+}
+TEST_F(InterpreterPatchTest, FailedActualMainPreventsLaterPatchPromotion) {
+  auto patch = std::make_shared<InterpreterPatchConfig>(config);
+  EXPECT_EQ(SelectInterpreterPatchForProcess(patch), patch);
+  CompleteInterpreterMainForProcess(false);
+  CompleteInterpreterMainForProcess(true);
+  EXPECT_EQ(SelectInterpreterPatchForProcess(patch), nullptr);
+}
 TEST_F(InterpreterPatchTest, ProviderCannotBeReplacedOrInstalledAfterStartup) {
   RegisterKey();
   EXPECT_FALSE(RegisterInterpreterKeyProvider(

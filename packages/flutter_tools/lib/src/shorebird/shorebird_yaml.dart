@@ -98,6 +98,7 @@ Map<String, dynamic> compileShorebirdYaml(
       // even when its source YAML names the desired upgrade target.
       if (override.isEmpty &&
           const <String>{
+            'aot_patch_app_build_id',
             'aot_patch_flavor_id',
             'aot_patch_license_type',
             'aot_patch_obfuscation_map_hash',

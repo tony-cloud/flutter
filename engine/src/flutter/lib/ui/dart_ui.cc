@@ -97,6 +97,7 @@ typedef CanvasPath Path;
   V(NativeStringAttribute::initLocaleStringAttribute)              \
   V(NativeStringAttribute::initSpellOutStringAttribute)            \
   V(NativeSemanticsFlags::initSemanticsFlags)                      \
+  V(PlatformConfigurationNativeApi::ReportShorebirdMainResult)     \
   V(PlatformConfigurationNativeApi::DefaultRouteName)              \
   V(PlatformConfigurationNativeApi::ScheduleFrame)                 \
   V(PlatformConfigurationNativeApi::EndWarmUpFrame)                \

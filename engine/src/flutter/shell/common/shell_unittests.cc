@@ -5209,6 +5209,7 @@ TEST_F(ShellTest, ShorebirdBootFlowCallsLaunchStartThenSuccess) {
   configuration.SetEntrypoint("fixturesAreFunctionalMain");
   RunEngine(shell.get(), std::move(configuration));
   main_latch.Wait();
+  PostSync(shell->GetTaskRunners().GetUITaskRunner(), [] {});
 
   const auto& log = mock_ptr->call_log();
   ASSERT_EQ(log.size(), 2u);
@@ -5218,6 +5219,120 @@ TEST_F(ShellTest, ShorebirdBootFlowCallsLaunchStartThenSuccess) {
   DestroyShell(std::move(shell), task_runners);
   shorebird::Updater::ResetLaunchStateForTesting();
   shorebird::Updater::ResetInstanceForTesting();
+}
+
+class ShorebirdStartupOutcomeTest : public ShellTest {
+ public:
+  class OutcomeUpdater : public shorebird::MockUpdater {
+   public:
+    explicit OutcomeUpdater(fml::AutoResetWaitableEvent& outcome)
+        : outcome_(outcome) {}
+    void DoReportLaunchSuccess() override {
+      shorebird::MockUpdater::DoReportLaunchSuccess();
+      outcome_.Signal();
+    }
+    void DoReportLaunchFailure() override {
+      shorebird::MockUpdater::DoReportLaunchFailure();
+      outcome_.Signal();
+    }
+
+   private:
+    fml::AutoResetWaitableEvent& outcome_;
+  };
+
+  void CheckMainOutcome(const char* entrypoint,
+                        bool succeeds,
+                        bool pending = false) {
+    fml::AutoResetWaitableEvent entered;
+    fml::AutoResetWaitableEvent body_completed;
+    fml::AutoResetWaitableEvent error_observed;
+    fml::AutoResetWaitableEvent outcome;
+    auto mock = std::make_unique<OutcomeUpdater>(outcome);
+    auto* mock_ptr = mock.get();
+    shorebird::Updater::SetInstanceForTesting(std::move(mock));
+    shorebird::Updater::ResetLaunchStateForTesting();
+    fml::ScopedCleanupClosure reset([] {
+      shorebird::Updater::ResetLaunchStateForTesting();
+      shorebird::Updater::ResetInstanceForTesting();
+    });
+    AddNativeCallback("ShorebirdMainEntered",
+                      CREATE_NATIVE_ENTRY([&](Dart_NativeArguments) {
+                        EXPECT_EQ(mock_ptr->launch_success_count(), 0);
+                        EXPECT_EQ(mock_ptr->launch_failure_count(), 0);
+                        entered.Signal();
+                      }));
+    AddNativeCallback("ShorebirdMainBodyCompleted",
+                      CREATE_NATIVE_ENTRY([&](Dart_NativeArguments) {
+                        // Still inside the actual body. Scheduling or entering
+                        // it is not success.
+                        EXPECT_EQ(mock_ptr->launch_success_count(), 0);
+                        EXPECT_EQ(mock_ptr->launch_failure_count(), 0);
+                        body_completed.Signal();
+                      }));
+    AddNativeCallback(
+        "ShorebirdUnhandledMainError",
+        CREATE_NATIVE_ENTRY([&](Dart_NativeArguments args) {
+          const char* error = nullptr;
+          const char* stack = nullptr;
+          ASSERT_FALSE(Dart_IsError(
+              Dart_StringToCString(Dart_GetNativeArgument(args, 0), &error)));
+          ASSERT_FALSE(Dart_IsError(
+              Dart_StringToCString(Dart_GetNativeArgument(args, 1), &stack)));
+          EXPECT_NE(std::string(error).find("shorebird-main-failure"),
+                    std::string::npos);
+          EXPECT_NE(std::string(stack).find(entrypoint), std::string::npos);
+          EXPECT_EQ(mock_ptr->launch_success_count(), 0);
+          EXPECT_EQ(mock_ptr->launch_failure_count(), 1);
+          error_observed.Signal();
+        }));
+    auto settings = CreateSettingsForFixture();
+    auto shell = CreateShell(settings);
+    ASSERT_TRUE(shell);
+    EXPECT_EQ(mock_ptr->launch_success_count(), 0);
+    auto configuration = RunConfiguration::InferFromSettings(settings);
+    configuration.SetEntrypoint(entrypoint);
+    RunEngine(shell.get(), std::move(configuration));
+    const auto timeout = fml::TimeDelta::FromSeconds(5);
+    EXPECT_FALSE(entered.WaitWithTimeout(timeout));
+    if (pending) {
+      EXPECT_FALSE(body_completed.WaitWithTimeout(timeout));
+      PostSync(shell->GetTaskRunners().GetUITaskRunner(), [] {});
+      EXPECT_EQ(mock_ptr->launch_success_count(), 0);
+      EXPECT_EQ(mock_ptr->launch_failure_count(), 0);
+    } else {
+      EXPECT_FALSE(outcome.WaitWithTimeout(timeout));
+      if (succeeds) {
+        EXPECT_FALSE(body_completed.WaitWithTimeout(timeout));
+        EXPECT_EQ(mock_ptr->launch_success_count(), 1);
+        EXPECT_EQ(mock_ptr->launch_failure_count(), 0);
+      } else {
+        EXPECT_FALSE(error_observed.WaitWithTimeout(timeout));
+        EXPECT_EQ(mock_ptr->launch_success_count(), 0);
+        EXPECT_EQ(mock_ptr->launch_failure_count(), 1);
+      }
+    }
+    DestroyShell(std::move(shell));
+  }
+};
+
+TEST_F(ShorebirdStartupOutcomeTest, SuccessfulSyncMainReportsAfterReturning) {
+  CheckMainOutcome("shorebirdSyncSuccessfulMain", true);
+}
+TEST_F(ShorebirdStartupOutcomeTest,
+       SuccessfulAsyncMainWaitsForFutureCompletion) {
+  CheckMainOutcome("shorebirdAsyncSuccessfulMain", true);
+}
+TEST_F(ShorebirdStartupOutcomeTest, SyncThrowRollsBackAndPreservesError) {
+  CheckMainOutcome("shorebirdSyncThrowingMain", false);
+}
+TEST_F(ShorebirdStartupOutcomeTest, AsyncThrowRollsBackAndPreservesError) {
+  CheckMainOutcome("shorebirdAsyncThrowingMain", false);
+}
+TEST_F(ShorebirdStartupOutcomeTest, AsyncVoidThrowDoesNotReportSuccess) {
+  CheckMainOutcome("shorebirdAsyncVoidThrowingMain", false);
+}
+TEST_F(ShorebirdStartupOutcomeTest, PendingMainIsNotMarkedSuccessful) {
+  CheckMainOutcome("shorebirdPendingMain", false, true);
 }
 
 TEST_F(ShellTest, ShorebirdMissingEntrypointReportsFailureWithoutSuccess) {
@@ -5275,6 +5390,7 @@ TEST_F(ShellTest, ShorebirdUpdaterReportsOnlyOnceForMultipleShells) {
   configuration1.SetEntrypoint("fixturesAreFunctionalMain");
   RunEngine(shell1.get(), std::move(configuration1));
   main_latch.Wait();
+  PostSync(shell1->GetTaskRunners().GetUITaskRunner(), [] {});
   EXPECT_EQ(mock_ptr->launch_start_count(), 1);
   EXPECT_EQ(mock_ptr->launch_success_count(), 1);
 
@@ -5292,6 +5408,7 @@ TEST_F(ShellTest, ShorebirdUpdaterReportsOnlyOnceForMultipleShells) {
   configuration2.SetEntrypoint("fixturesAreFunctionalMain");
   RunEngine(shell2.get(), std::move(configuration2));
   main_latch.Wait();
+  PostSync(shell2->GetTaskRunners().GetUITaskRunner(), [] {});
   EXPECT_EQ(mock_ptr->launch_start_count(), 1);
   EXPECT_EQ(mock_ptr->launch_success_count(), 1);
 

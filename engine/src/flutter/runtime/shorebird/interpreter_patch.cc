@@ -15,6 +15,7 @@ std::mutex provider_mutex;
 InterpreterKeyProvider key_provider;
 bool provider_sealed = false;
 bool boot_selected = false;
+bool main_completed = false;
 std::shared_ptr<const InterpreterPatchConfig> process_patch;
 thread_local const std::string* expected_key_id = nullptr;
 
@@ -115,10 +116,26 @@ std::shared_ptr<const InterpreterPatchConfig> SelectInterpreterPatchForProcess(
   return process_patch;
 }
 
-void RejectInterpreterPatchForProcess() {
+bool RejectInterpreterPatchForProcess() {
   std::lock_guard<std::mutex> lock(provider_mutex);
+  if (main_completed) {
+    return false;
+  }
   process_patch.reset();
   boot_selected = true;
+  return true;
+}
+
+void CompleteInterpreterMainForProcess(bool succeeded) {
+  std::lock_guard<std::mutex> lock(provider_mutex);
+  if (main_completed) {
+    return;
+  }
+  if (!succeeded) {
+    process_patch.reset();
+    boot_selected = true;
+  }
+  main_completed = true;
 }
 
 void ResetInterpreterKeyProviderForTesting() {
@@ -127,6 +144,7 @@ void ResetInterpreterKeyProviderForTesting() {
   provider_sealed = false;
   process_patch.reset();
   boot_selected = false;
+  main_completed = false;
 }
 
 bool ApplyInterpreterPatch(const InterpreterPatchConfig& config,

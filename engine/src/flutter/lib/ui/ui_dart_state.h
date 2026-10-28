@@ -112,11 +112,16 @@ class UIDartState : public tonic::DartState {
 
     /// Whether flutter_gpu is enabled or not.
     bool enable_flutter_gpu = false;
+
+    // Root startup result supplied by the embedder, independent of runtime
+    // APIs.
+    std::function<void(bool)> shorebird_main_result_callback;
   };
 
   Dart_Port main_port() const { return main_port_; }
   // Root isolate of the VM application
   bool IsRootIsolate() const { return is_root_isolate_; }
+  void ReportRootMainResult(bool succeeded);
   static void ThrowIfUIOperationsProhibited();
 
   void SetDebugName(const std::string& name);
@@ -215,6 +220,7 @@ class UIDartState : public tonic::DartState {
   const std::string logger_prefix_;
   Dart_Port main_port_ = ILLEGAL_PORT;
   const bool is_root_isolate_;
+  bool root_main_result_reported_ = false;
   std::string debug_name_;
   std::unique_ptr<PlatformConfiguration> platform_configuration_;
   std::weak_ptr<PlatformMessageHandler> platform_message_handler_;

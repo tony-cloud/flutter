@@ -644,6 +644,8 @@ class PlatformMessageHandlerStorage {
 //----------------------------------------------------------------------------
 class PlatformConfigurationNativeApi {
  public:
+  static void ReportShorebirdMainResult(bool succeeded);
+
   static std::string DefaultRouteName();
 
   static void ScheduleFrame();

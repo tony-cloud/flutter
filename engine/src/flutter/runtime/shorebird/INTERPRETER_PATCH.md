@@ -9,8 +9,11 @@ are enabled by this path.
 
 A rejected install destroys its transient isolate group. The runtime creates a
 fresh base group for that launch and reports the patch as failed, so the updater
-rolls back. Launch success is reported only after the root entrypoint invocation
-succeeds. This is not a first-frame watchdog. An existing shared isolate group
+rolls back. Launch success is reported only after the actual user `main` returns, or its
+returned `Future` completes successfully. A throwing main reports failure and
+keeps the original unhandled-error behavior; a never-completing main remains
+unconfirmed. Scheduling an entrypoint and rendering a frame are not startup
+confirmation. An existing shared isolate group
 uses its original installation and is never patched a second time.
 
 The current VM supports a restricted set of retained function replacements.

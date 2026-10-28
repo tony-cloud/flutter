@@ -556,6 +556,13 @@ void PlatformConfiguration::CompletePlatformMessageResponse(
   response->Complete(std::make_unique<fml::DataMapping>(std::move(data)));
 }
 
+void PlatformConfigurationNativeApi::ReportShorebirdMainResult(bool succeeded) {
+  auto* state = UIDartState::Current();
+  if (state) {
+    state->ReportRootMainResult(succeeded);
+  }
+}
+
 void PlatformConfigurationNativeApi::Render(int64_t view_id,
                                             Scene* scene,
                                             double width,

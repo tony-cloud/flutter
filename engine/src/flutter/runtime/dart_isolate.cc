@@ -42,6 +42,28 @@ namespace {
 
 constexpr std::string_view kFileUriPrefix = "file://";
 
+UIDartState::Context WithShorebirdMainResult(
+    const Settings& settings,
+    const UIDartState::Context& context) {
+  auto result = context;
+  const auto success = settings.shorebird_launch_success_callback;
+  const auto failure = settings.shorebird_launch_failure_callback;
+  if (!success && !failure) {
+    return result;
+  }
+  result.shorebird_main_result_callback = [success, failure](bool succeeded) {
+    shorebird::CompleteInterpreterMainForProcess(succeeded);
+    if (succeeded) {
+      if (success) {
+        success();
+      }
+    } else if (failure) {
+      failure();
+    }
+  };
+  return result;
+}
+
 class DartErrorString {
  public:
   DartErrorString() {}
@@ -207,10 +229,6 @@ std::weak_ptr<DartIsolate> DartIsolate::CreateRunningRootIsolate(
       settings.shorebird_launch_failure_callback();
     }
     return {};
-  }
-
-  if (settings.shorebird_launch_success_callback) {
-    settings.shorebird_launch_success_callback();
   }
 
   if (settings.root_isolate_shutdown_callback) {
@@ -482,7 +500,7 @@ DartIsolate::DartIsolate(const Settings& settings,
                   settings.log_message_callback,
                   DartVMRef::GetIsolateNameServer(),
                   is_root_isolate,
-                  context),
+                  WithShorebirdMainResult(settings, context)),
       may_insecurely_connect_to_all_domains_(
           settings.may_insecurely_connect_to_all_domains),
       is_platform_isolate_(false),

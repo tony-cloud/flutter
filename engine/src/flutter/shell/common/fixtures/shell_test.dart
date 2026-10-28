@@ -18,6 +18,63 @@ void expect(Object? a, Object? b) {
 
 void main() {}
 
+@pragma('vm:external-name', 'ShorebirdMainEntered')
+external void _shorebirdMainEntered();
+@pragma('vm:external-name', 'ShorebirdMainBodyCompleted')
+external void _shorebirdMainBodyCompleted();
+@pragma('vm:external-name', 'ShorebirdUnhandledMainError')
+external void _shorebirdUnhandledMainError(String error, String stack);
+
+void _observeShorebirdMainError() {
+  PlatformDispatcher.instance.onError = (Object error, StackTrace stack) {
+    _shorebirdUnhandledMainError(error.toString(), stack.toString());
+    return true;
+  };
+}
+
+@pragma('vm:entry-point')
+void shorebirdSyncSuccessfulMain() {
+  _shorebirdMainEntered();
+  _shorebirdMainBodyCompleted();
+}
+
+@pragma('vm:entry-point')
+Future<void> shorebirdAsyncSuccessfulMain() async {
+  _shorebirdMainEntered();
+  await Future<void>.delayed(Duration.zero);
+  _shorebirdMainBodyCompleted();
+}
+
+@pragma('vm:entry-point')
+void shorebirdSyncThrowingMain() {
+  _observeShorebirdMainError();
+  _shorebirdMainEntered();
+  throw StateError('shorebird-main-failure');
+}
+
+@pragma('vm:entry-point')
+Future<void> shorebirdAsyncThrowingMain(List<String> args) async {
+  _observeShorebirdMainError();
+  _shorebirdMainEntered();
+  await Future<void>.delayed(Duration.zero);
+  throw StateError('shorebird-main-failure');
+}
+
+@pragma('vm:entry-point')
+void shorebirdAsyncVoidThrowingMain() async {
+  _observeShorebirdMainError();
+  _shorebirdMainEntered();
+  await Future<void>.delayed(Duration.zero);
+  throw StateError('shorebird-main-failure');
+}
+
+@pragma('vm:entry-point')
+Future<void> shorebirdPendingMain() async {
+  _shorebirdMainEntered();
+  scheduleMicrotask(_shorebirdMainBodyCompleted);
+  await Completer<void>().future;
+}
+
 @pragma('vm:entry-point')
 void mainNotifyNative() {
   notifyNative();

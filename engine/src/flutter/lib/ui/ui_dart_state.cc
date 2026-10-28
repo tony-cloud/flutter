@@ -97,6 +97,16 @@ void UIDartState::DidSetIsolate() {
   SetDebugName(debug_name.str());
 }
 
+void UIDartState::ReportRootMainResult(bool succeeded) {
+  if (!IsRootIsolate() || root_main_result_reported_) {
+    return;
+  }
+  root_main_result_reported_ = true;
+  if (context_.shorebird_main_result_callback) {
+    context_.shorebird_main_result_callback(succeeded);
+  }
+}
+
 void UIDartState::ThrowIfUIOperationsProhibited() {
   if (!UIDartState::Current()->IsRootIsolate()) {
     Dart_EnterScope();

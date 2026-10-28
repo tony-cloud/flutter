@@ -41,7 +41,8 @@ void SealInterpreterKeyProvider();
 // downloads must not change code for a later independently created engine.
 std::shared_ptr<const InterpreterPatchConfig> SelectInterpreterPatchForProcess(
     std::shared_ptr<const InterpreterPatchConfig> candidate);
-void RejectInterpreterPatchForProcess();
+bool RejectInterpreterPatchForProcess();
+void CompleteInterpreterMainForProcess(bool succeeded);
 void ResetInterpreterKeyProviderForTesting();
 
 // Small seam for exercising the production install sequence without executing

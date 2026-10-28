@@ -575,10 +575,10 @@ bool RuntimeController::LaunchRootIsolate(
 
 #if FML_OS_IOS
   if (!strong_root_isolate && settings.shorebird_interpreter_patch &&
-      !spawning_isolate_.lock()) {
+      !spawning_isolate_.lock() &&
+      shorebird::RejectInterpreterPatchForProcess()) {
     // The rejected transient group has shut down before this call. Recreate
     // all base state; never continue in a group the bytecode loader touched.
-    shorebird::RejectInterpreterPatchForProcess();
     if (settings.shorebird_launch_failure_callback) {
       settings.shorebird_launch_failure_callback();
     }

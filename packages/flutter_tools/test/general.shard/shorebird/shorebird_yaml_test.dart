@@ -172,6 +172,7 @@ aot_patch_base_snapshot_hash: stale-source-hash
       final yaml =
           loadYamlDocument('''
 app_id: app
+aot_patch_app_build_id: source-build
 aot_patch_flavor_id: pro
 aot_patch_license_type: pro
 aot_patch_obfuscation_map_hash: patch-map
@@ -181,6 +182,7 @@ aot_patch_obfuscation_map_hash: patch-map
         yaml,
         flavor: null,
         environment: <String, String>{
+          'SHOREBIRD_AOT_PATCH_APP_BUILD_ID': '',
           'SHOREBIRD_AOT_PATCH_FLAVOR_ID': '',
           'SHOREBIRD_AOT_PATCH_LICENSE_TYPE': '',
           'SHOREBIRD_AOT_PATCH_OBFUSCATION_MAP_HASH': '',

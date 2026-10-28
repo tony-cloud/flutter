@@ -420,14 +420,38 @@ bool _onError(Object error, StackTrace? stackTrace) {
 
 typedef _ListStringArgFunction = Object? Function(List<String> args);
 
+@Native<Void Function(Bool)>(symbol: 'PlatformConfigurationNativeApi::ReportShorebirdMainResult')
+external void _reportShorebirdMainResult(bool succeeded);
+
 @pragma('vm:entry-point')
 void _runMain(Function startMainIsolateFunction, Function userMainFunction, List<String> args) {
+  // Scheduling the isolate is not a successful boot: only actual user code
+  // returning (or its Future completing) can confirm the installed runtime.
   // ignore: avoid_dynamic_calls
   startMainIsolateFunction(() {
-    if (userMainFunction is _ListStringArgFunction) {
-      userMainFunction(args);
-    } else {
-      userMainFunction(); // ignore: avoid_dynamic_calls
+    try {
+      final Object? result = userMainFunction is _ListStringArgFunction
+          ? userMainFunction(args)
+          : userMainFunction(); // ignore: avoid_dynamic_calls
+      if (result is Future) {
+        unawaited(
+          result.then<void>(
+            (dynamic _) {
+              _reportShorebirdMainResult(true);
+            },
+            onError: (Object error, StackTrace stack) {
+              _reportShorebirdMainResult(false);
+              // Keep the original unhandled-error/zone behavior and stack trace.
+              Error.throwWithStackTrace(error, stack);
+            },
+          ),
+        );
+      } else {
+        _reportShorebirdMainResult(true);
+      }
+    } catch (_) {
+      _reportShorebirdMainResult(false);
+      rethrow;
     }
   }, null);
 }
