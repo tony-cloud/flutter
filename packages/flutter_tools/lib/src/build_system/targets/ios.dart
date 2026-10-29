@@ -37,7 +37,10 @@ import 'native_assets.dart';
 /// If more than one iOS arch is provided, then this rule will
 /// produce a universal binary.
 abstract class AotAssemblyBase extends Target
-    with ShorebirdDdMaxBytesBuildKey, ShorebirdLegacyNativeLinkerBuildKey {
+    with
+        ShorebirdDdMaxBytesBuildKey,
+        ShorebirdLegacyNativeLinkerBuildKey,
+        ShorebirdInterpreterBuildKey {
   const AotAssemblyBase();
 
   @override

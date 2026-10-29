@@ -6,6 +6,38 @@ import 'package:yaml/yaml.dart';
 
 import '../base/file_system.dart';
 
+/// Source YAML opt-in for baselines that support structural bytecode updates.
+const kShorebirdStructuralUpdatesKey = 'aot_patch_structural_updates';
+
+/// Reads and validates the source profile, which must match all build stages.
+///
+/// The profile has no environment override: the CLI checks it against the
+/// immutable release baseline before compiling a patch.
+bool shorebirdStructuralUpdatesEnabled(Map<Object?, Object?> configuration) {
+  if (!configuration.containsKey(kShorebirdStructuralUpdatesKey)) {
+    return false;
+  }
+  final Object? value = configuration[kShorebirdStructuralUpdatesKey];
+  if (value is! bool) {
+    throw const FormatException('aot_patch_structural_updates must be a YAML boolean');
+  }
+  if (value && configuration['aot_patch_runtime_mode'] != 'dart-bytecode-interpreter') {
+    throw const FormatException(
+      'aot_patch_structural_updates requires aot_patch_runtime_mode: dart-bytecode-interpreter',
+    );
+  }
+  return value;
+}
+
+YamlMap? _readConfiguration(FileSystem fileSystem, Directory? projectDirectory) {
+  final File config = (projectDirectory ?? fileSystem.currentDirectory).childFile('shorebird.yaml');
+  if (!config.existsSync()) {
+    return null;
+  }
+  final Object? yaml = loadYaml(config.readAsStringSync());
+  return yaml is YamlMap ? yaml : null;
+}
+
 /// Selects the public AOT baseline for no-JIT bytecode interpreter updates.
 ///
 /// This route disables type-flow analysis to preserve ordinary patch targets
@@ -19,12 +51,25 @@ bool shorebirdUsesIosBytecodeInterpreter(
   if (targetOS != 'ios') {
     return false;
   }
-  final File config = (projectDirectory ?? fileSystem.currentDirectory).childFile('shorebird.yaml');
-  if (!config.existsSync()) {
+  final YamlMap? yaml = _readConfiguration(fileSystem, projectDirectory);
+  if (yaml == null) {
     return false;
   }
-  final Object? yaml = loadYaml(config.readAsStringSync());
-  return yaml is YamlMap && yaml['aot_patch_runtime_mode'] == 'dart-bytecode-interpreter';
+  shorebirdStructuralUpdatesEnabled(yaml);
+  return yaml['aot_patch_runtime_mode'] == 'dart-bytecode-interpreter';
+}
+
+/// Enables the structural compiler profile only for opted-in iOS baselines.
+bool shorebirdUsesIosStructuralUpdates(
+  FileSystem fileSystem,
+  String? targetOS, {
+  Directory? projectDirectory,
+}) {
+  if (targetOS != 'ios') {
+    return false;
+  }
+  final YamlMap? yaml = _readConfiguration(fileSystem, projectDirectory);
+  return yaml != null && shorebirdStructuralUpdatesEnabled(yaml);
 }
 
 /// Prevents LinkSupplement from collecting stale private native linker tables

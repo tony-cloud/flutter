@@ -7,6 +7,7 @@ import 'package:yaml_edit/yaml_edit.dart';
 
 import '../base/file_system.dart';
 import '../globals.dart' as globals;
+import 'shorebird_interpreter.dart';
 
 /// The environment variable whose value is written to the generated
 /// shorebird.yaml as `patch_public_key`.
@@ -65,7 +66,11 @@ Map<String, dynamic> compileShorebirdYaml(
   required Map<String, String> environment,
 }) {
   final String appId = appIdForFlavor(yamlMap, flavor: flavor);
+  final bool structuralUpdates = shorebirdStructuralUpdatesEnabled(yamlMap);
   final compiled = <String, dynamic>{'app_id': appId};
+  if (yamlMap.containsKey(kShorebirdStructuralUpdatesKey)) {
+    compiled[kShorebirdStructuralUpdatesKey] = structuralUpdates;
+  }
   void copyIfSet(String key) {
     if (yamlMap[key] != null) {
       compiled[key] = yamlMap[key];
@@ -91,7 +96,7 @@ Map<String, dynamic> compileShorebirdYaml(
     'aot_patch_obfuscation_map_hash',
     'aot_patch_key_id',
   ];
-  for (final String key in interpreterFields) {
+  for (final key in interpreterFields) {
     final String? override = environment['SHOREBIRD_${key.toUpperCase()}'];
     if (override != null) {
       // A patch build can restore the release's absent optional restriction
@@ -136,5 +141,7 @@ Map<String, dynamic> compileShorebirdYaml(
     compiled['patch_verification'] = 'strict';
     compiled['patch_response_verification'] = 'required';
   }
+  // Runtime policy overrides must not contradict the source compiler profile.
+  shorebirdStructuralUpdatesEnabled(compiled);
   return compiled;
 }

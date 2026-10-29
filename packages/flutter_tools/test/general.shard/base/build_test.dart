@@ -364,14 +364,16 @@ void main() {
       expect(processManager, hasNoRemainingExpectations);
     });
 
-    for (final (bool interpreter, int ddMaxBytes) in <(bool, int)>[
-      (false, 0),
-      (false, 10000),
-      (true, 0),
-      (true, 10000),
+    for (final (bool interpreter, bool structural, int ddMaxBytes) in <(bool, bool, int)>[
+      (false, false, 0),
+      (false, false, 10000),
+      (true, false, 0),
+      (true, false, 10000),
+      (true, true, 0),
+      (true, true, 10000),
     ]) {
       testWithoutContext(
-        'builds public iOS snapshot interpreter=$interpreter DD=$ddMaxBytes',
+        'builds public iOS snapshot interpreter=$interpreter structural=$structural DD=$ddMaxBytes',
         () async {
           final privateOutputs = <String>[
             ...kLinkInfoArgs.map((String argument) => argument.split('=').last),
@@ -384,7 +386,10 @@ void main() {
           if (interpreter) {
             fileSystem
                 .file('shorebird.yaml')
-                .writeAsStringSync('aot_patch_runtime_mode: dart-bytecode-interpreter\n');
+                .writeAsStringSync(
+                  'aot_patch_runtime_mode: dart-bytecode-interpreter\n'
+                  'aot_patch_structural_updates: $structural\n',
+                );
           }
           for (final path in privateOutputs) {
             fileSystem.file(path).createSync(recursive: true);
@@ -414,6 +419,7 @@ void main() {
               command: <String>[
                 genSnapshotPath,
                 '--deterministic',
+                if (structural) '--shorebird-structural-patching',
                 '--snapshot_kind=app-aot-assembly',
                 '--assembly=${fileSystem.path.join(outputPath, 'snapshot_assembly.S')}',
                 'main.dill',
@@ -1197,7 +1203,13 @@ void main() {
       },
     );
 
-    testWithoutContext('builds shared library for android-arm64', () async {
+    testWithoutContext('android-arm64 ignores the iOS structural profile', () async {
+      fileSystem
+          .file('shorebird.yaml')
+          .writeAsStringSync(
+            'aot_patch_runtime_mode: dart-bytecode-interpreter\n'
+            'aot_patch_structural_updates: true\n',
+          );
       final String outputPath = fileSystem.path.join('build', 'foo');
       processManager.addCommand(
         FakeCommand(

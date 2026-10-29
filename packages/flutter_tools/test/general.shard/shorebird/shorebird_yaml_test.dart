@@ -11,7 +11,7 @@ import 'package:yaml/yaml.dart';
 void main() {
   group('ShorebirdYaml', () {
     test('yaml ignores comments', () {
-      const String yamlContents = '''
+      const yamlContents = '''
 # This file is used to configure the Shorebird updater used by your app.
 app_id: 6160a7d8-cc18-4928-1233-05b51c0bb02c
 
@@ -19,7 +19,7 @@ app_id: 6160a7d8-cc18-4928-1233-05b51c0bb02c
 auto_update: false
 ''';
       final YamlDocument input = loadYamlDocument(yamlContents);
-      final YamlMap yamlMap = input.contents as YamlMap;
+      final yamlMap = input.contents as YamlMap;
       final Map<String, dynamic> compiled = compileShorebirdYaml(
         yamlMap,
         flavor: null,
@@ -32,7 +32,7 @@ auto_update: false
     });
     test('flavors', () {
       // These are invalid app_ids but make for easy testing.
-      const String yamlContents = '''
+      const yamlContents = '''
 app_id: 1-a
 auto_update: false
 flavors:
@@ -40,7 +40,7 @@ flavors:
   bar: 3-a
 ''';
       final YamlDocument input = loadYamlDocument(yamlContents);
-      final YamlMap yamlMap = input.contents as YamlMap;
+      final yamlMap = input.contents as YamlMap;
       expect(appIdForFlavor(yamlMap, flavor: null), '1-a');
       expect(appIdForFlavor(yamlMap, flavor: 'foo'), '2-a');
       expect(appIdForFlavor(yamlMap, flavor: 'bar'), '3-a');
@@ -48,7 +48,7 @@ flavors:
     });
     test('all values', () {
       // These are invalid app_ids but make for easy testing.
-      const String yamlContents = '''
+      const yamlContents = '''
 app_id: 1-a
 auto_update: false
 flavors:
@@ -58,7 +58,7 @@ base_url: https://example.com
 patch_verification: strict
 ''';
       final YamlDocument input = loadYamlDocument(yamlContents);
-      final YamlMap yamlMap = input.contents as YamlMap;
+      final yamlMap = input.contents as YamlMap;
       final Map<String, dynamic> compiled1 = compileShorebirdYaml(
         yamlMap,
         flavor: null,
@@ -89,6 +89,7 @@ patch_verification: strict
           loadYamlDocument('''
 app_id: app-id
 aot_patch_runtime_mode: dart-bytecode-interpreter
+aot_patch_structural_updates: true
 aot_patch_app_build_id: '1.0.0+1'
 aot_patch_base_flavor_id: free
 aot_patch_base_license_type: free
@@ -105,12 +106,13 @@ patch_verification: none
 patch_response_verification: optional
 ''').contents
               as YamlMap;
-      final compiled = compileShorebirdYaml(
+      final Map<String, dynamic> compiled = compileShorebirdYaml(
         yaml,
         flavor: null,
         environment: <String, String>{'SHOREBIRD_PUBLIC_KEY': 'publisher-key'},
       );
       expect(compiled['aot_patch_runtime_mode'], 'dart-bytecode-interpreter');
+      expect(compiled['aot_patch_structural_updates'], isTrue);
       expect(compiled['aot_patch_app_build_id'], '1.0.0+1');
       expect(compiled['aot_patch_base_flavor_id'], 'free');
       expect(compiled['aot_patch_base_license_type'], 'free');
@@ -126,6 +128,52 @@ patch_response_verification: optional
       expect(compiled.containsKey('aot_patch_key_hex'), isFalse);
       expect(compiled.containsKey('aot_patch_bytecode_path'), isFalse);
       expect(compiled.containsKey('aot_patch_patch_snapshot_hash'), isFalse);
+    });
+    test('structural profile stays source-owned and preserves absent or false values', () {
+      for (final setting in <String>['', 'aot_patch_structural_updates: false\n']) {
+        final yaml = loadYaml('app_id: app\n$setting') as YamlMap;
+        final Map<String, dynamic> compiled = compileShorebirdYaml(
+          yaml,
+          flavor: null,
+          environment: <String, String>{'SHOREBIRD_AOT_PATCH_STRUCTURAL_UPDATES': 'true'},
+        );
+        expect(compiled.containsKey('aot_patch_structural_updates'), setting.isNotEmpty);
+        if (setting.isNotEmpty) {
+          expect(compiled['aot_patch_structural_updates'], isFalse);
+        }
+      }
+    });
+    test('compilation rejects malformed and contradictory structural profiles', () {
+      for (final configuration in <String>[
+        'aot_patch_structural_updates: "true"\n',
+        'aot_patch_structural_updates: null\n',
+        'aot_patch_structural_updates: true\n',
+        'aot_patch_structural_updates: true\naot_patch_runtime_mode: native-aot\n',
+      ]) {
+        expect(
+          () => compileShorebirdYaml(
+            loadYaml('app_id: app\n$configuration') as YamlMap,
+            flavor: null,
+            environment: <String, String>{'SHOREBIRD_PUBLIC_KEY': 'publisher'},
+          ),
+          throwsFormatException,
+        );
+      }
+      expect(
+        () => compileShorebirdYaml(
+          loadYaml(
+                'app_id: app\naot_patch_structural_updates: true\n'
+                'aot_patch_runtime_mode: dart-bytecode-interpreter\n',
+              )
+              as YamlMap,
+          flavor: null,
+          environment: <String, String>{
+            'SHOREBIRD_PUBLIC_KEY': 'publisher',
+            'SHOREBIRD_AOT_PATCH_RUNTIME_MODE': 'native-aot',
+          },
+        ),
+        throwsFormatException,
+      );
     });
     test('interpreter compilation fails without publisher pin', () {
       final yaml =
@@ -146,8 +194,8 @@ app_id: app-id
 aot_patch_base_snapshot_hash: stale-source-hash
 ''').contents
               as YamlMap;
-      final hash = 'a' * 64;
-      final compiled = compileShorebirdYaml(
+      final String hash = 'a' * 64;
+      final Map<String, dynamic> compiled = compileShorebirdYaml(
         yaml,
         flavor: null,
         environment: <String, String>{
@@ -178,7 +226,7 @@ aot_patch_license_type: pro
 aot_patch_obfuscation_map_hash: patch-map
 ''').contents
               as YamlMap;
-      final compiled = compileShorebirdYaml(
+      final Map<String, dynamic> compiled = compileShorebirdYaml(
         yaml,
         flavor: null,
         environment: <String, String>{
@@ -194,7 +242,7 @@ aot_patch_obfuscation_map_hash: patch-map
       final yaml =
           loadYamlDocument('app_id: app\npatch_response_verification: optional\n').contents
               as YamlMap;
-      final compiled = compileShorebirdYaml(
+      final Map<String, dynamic> compiled = compileShorebirdYaml(
         yaml,
         flavor: null,
         environment: <String, String>{'SHOREBIRD_PUBLIC_KEY': 'publisher'},
@@ -202,7 +250,7 @@ aot_patch_obfuscation_map_hash: patch-map
       expect(compiled['patch_response_verification'], 'optional');
     });
     test('edit in place', () {
-      const String yamlContents = '''
+      const yamlContents = '''
 app_id: 1-a
 auto_update: false
 flavors:
@@ -212,7 +260,7 @@ base_url: https://example.com
 ''';
       // Make a temporary file to test editing in place.
       final Directory tempDir = Directory.systemTemp.createTempSync('shorebird_yaml_test.');
-      final File tempFile = File('${tempDir.path}/shorebird.yaml');
+      final tempFile = File('${tempDir.path}/shorebird.yaml');
       tempFile.writeAsStringSync(yamlContents);
       updateShorebirdYaml(
         'foo',
@@ -222,7 +270,7 @@ base_url: https://example.com
       final String updatedContents = tempFile.readAsStringSync();
       // Order is not guaranteed, so parse as YAML to compare.
       final YamlDocument updated = loadYamlDocument(updatedContents);
-      final YamlMap yamlMap = updated.contents as YamlMap;
+      final yamlMap = updated.contents as YamlMap;
       expect(yamlMap['app_id'], '2-a');
       expect(yamlMap['auto_update'], false);
       expect(yamlMap['base_url'], 'https://example.com');

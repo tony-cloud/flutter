@@ -366,6 +366,8 @@ class KernelCompiler {
           if (aot) ...<String>[
             '--aot',
             if (shorebirdUsesIosBytecodeInterpreter(_fileSystem, targetOS)) '--no-tfa' else '--tfa',
+            if (shorebirdUsesIosStructuralUpdates(_fileSystem, targetOS))
+              '--shorebird-structural-patching',
             // The --target-os flag only makes sense for whole program compilation.
             if (targetOS != null) ...<String>['--target-os', targetOS],
           ],

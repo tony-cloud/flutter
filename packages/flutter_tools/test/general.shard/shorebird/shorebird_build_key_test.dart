@@ -175,6 +175,38 @@ void main() {
       expect(target.buildKeyFor(environment), before);
     });
 
+    test('structural profile invalidates iOS kernel and AOT output', () {
+      final Environment environment = environmentWith(noValues);
+      environment.defines[kTargetPlatform] = 'ios';
+      final File config = environment.projectDir.childFile('shorebird.yaml');
+      // Build keys read the explicit project directory, not the process cwd.
+      fileSystem.currentDirectory = fileSystem.directory('/elsewhere')..createSync();
+      for (final target in const <Target>[
+        KernelSnapshot(),
+        AotAssemblyRelease(),
+        AotAssemblyProfile(),
+      ]) {
+        config.writeAsStringSync('aot_patch_runtime_mode: dart-bytecode-interpreter\n');
+        final String? bodyOnly = target.buildKeyFor(environment);
+        config.writeAsStringSync(
+          'aot_patch_runtime_mode: dart-bytecode-interpreter\n'
+          'aot_patch_structural_updates: false\n',
+        );
+        expect(target.buildKeyFor(environment), bodyOnly, reason: target.name);
+        config.writeAsStringSync(
+          'aot_patch_runtime_mode: dart-bytecode-interpreter\n'
+          'aot_patch_structural_updates: true\n',
+        );
+        expect(target.buildKeyFor(environment), isNot(bodyOnly), reason: target.name);
+        environment.defines[kTargetPlatform] = 'android-arm64';
+        final String? android = target.buildKeyFor(environment);
+        config.writeAsStringSync('aot_patch_runtime_mode: dart-bytecode-interpreter\n');
+        expect(target.buildKeyFor(environment), android, reason: target.name);
+        environment.defines[kTargetPlatform] = 'ios';
+        expect(target.buildKeyFor(environment), bodyOnly, reason: target.name);
+      }
+    });
+
     test('asset bundling targets track SHOREBIRD_PUBLIC_KEY only', () {
       final assetTargets = <Target>[
         const CopyAssets(),

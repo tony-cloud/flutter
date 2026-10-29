@@ -196,13 +196,21 @@ void main() {
     },
   );
 
-  for (final interpreter in <bool>[false, true]) {
-    testWithoutContext('KernelCompiler AOT profile: interpreter=$interpreter', () async {
+  for (final (bool interpreter, bool structural, String? targetOS) in <(bool, bool, String?)>[
+    (false, false, null),
+    (true, false, 'ios'),
+    (true, true, 'ios'),
+    (true, true, 'android'),
+  ]) {
+    testWithoutContext('KernelCompiler AOT profile: $interpreter/$structural/$targetOS', () async {
       final fileSystem = MemoryFileSystem.test();
       if (interpreter) {
         fileSystem
             .file('shorebird.yaml')
-            .writeAsStringSync('aot_patch_runtime_mode: dart-bytecode-interpreter\n');
+            .writeAsStringSync(
+              'aot_patch_runtime_mode: dart-bytecode-interpreter\n'
+              'aot_patch_structural_updates: $structural\n',
+            );
       }
       final logger = BufferLogger.test();
       final stdoutHandler = StdoutHandler(logger: logger, fileSystem: fileSystem);
@@ -229,8 +237,9 @@ void main() {
               '--delete-tostring-package-uri=package:flutter',
               '--no-link-platform',
               '--aot',
-              if (interpreter) '--no-tfa' else '--tfa',
-              if (interpreter) ...<String>['--target-os', 'ios'],
+              if (interpreter && targetOS == 'ios') '--no-tfa' else '--tfa',
+              if (structural && targetOS == 'ios') '--shorebird-structural-patching',
+              if (targetOS != null) ...<String>['--target-os', targetOS],
               '--packages',
               '.dart_tool/package_config.json',
               '--verbosity=error',
@@ -247,7 +256,7 @@ void main() {
         buildMode: BuildMode.profile,
         trackWidgetCreation: false,
         aot: true,
-        targetOS: interpreter ? 'ios' : null,
+        targetOS: targetOS,
         dartDefines: const <String>[],
         packageConfig: PackageConfig.empty,
         packagesPath: '.dart_tool/package_config.json',

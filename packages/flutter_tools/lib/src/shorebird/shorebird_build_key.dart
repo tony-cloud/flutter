@@ -78,9 +78,8 @@ mixin ShorebirdLegacyNativeLinkerBuildKey on Target {
       });
 }
 
-/// Invalidates cached kernel when an explicit iOS interpreter baseline enables
-/// declaration-preserving compilation instead of type-flow analysis.
-mixin ShorebirdInterpreterKernelBuildKey on Target {
+/// Invalidates kernel and AOT output when the iOS interpreter profile changes.
+mixin ShorebirdInterpreterBuildKey on Target {
   @override
   String? buildKeyFor(Environment environment) {
     final bool enabled =
@@ -92,6 +91,13 @@ mixin ShorebirdInterpreterKernelBuildKey on Target {
         );
     return _withShorebirdDigest(super.buildKeyFor(environment), <String, String>{
       if (enabled) 'shorebirdInterpreterTfa': 'disabled',
+      if (enabled &&
+          shorebirdUsesIosStructuralUpdates(
+            environment.fileSystem,
+            'ios',
+            projectDirectory: environment.projectDir,
+          ))
+        'shorebirdStructuralPatching': 'enabled',
     });
   }
 }

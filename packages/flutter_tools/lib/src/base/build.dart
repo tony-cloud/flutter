@@ -237,6 +237,8 @@ class AOTSnapshotter {
     final genSnapshotArgs = <String>[
       // Shorebird uses --deterministic to improve snapshot stability and increase linking.
       '--deterministic',
+      if (shorebirdUsesIosStructuralUpdates(_fileSystem, platform.getName()))
+        '--shorebird-structural-patching',
       // Only save LinkInfo if we're using the linker.
       if (usesLinker) ...dumpLinkInfoArgs,
     ];
