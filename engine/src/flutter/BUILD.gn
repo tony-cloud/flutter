@@ -10,6 +10,7 @@ import("//flutter/shell/platform/config.gni")
 import("//flutter/shell/platform/glfw/config.gni")
 import("//flutter/testing/testing.gni")
 import("$dart_src/build/dart/copy_tree.gni")
+import("$dart_src/runtime/runtime_args.gni")
 
 # Whether to build the dartdevc sdk, libraries, and source files
 # required for the flutter web sdk.
@@ -119,10 +120,13 @@ group("flutter") {
 
         # path_ops
         "//flutter/tools/path_ops",
-
-        # Built alongside gen_snapshot arm64 targets.
-        "$dart_src/runtime/bin:analyze_snapshot",
       ]
+
+      # Dart only defines analyze_snapshot for supported 64-bit Dart targets.
+      # Windows Android ARM32 builds also evaluate this group in clang_x86.
+      if (build_analyze_snapshot) {
+        public_deps += [ "$dart_src/runtime/bin:analyze_snapshot" ]
+      }
 
       if (host_os == "linux" || host_os == "mac") {
         public_deps += [

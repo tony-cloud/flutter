@@ -59,7 +59,6 @@ generated_file("artifacts_without_entitlement_config") {
 if (build_engine_artifacts) {
   zip_bundle("artifacts") {
     deps = [
-      "$dart_src/runtime/bin:analyze_snapshot",
       "$dart_src/runtime/bin:gen_snapshot",
       "//flutter/flutter_frontend_server:frontend_server",
       "//flutter/impeller/compiler:impellerc",
@@ -68,6 +67,9 @@ if (build_engine_artifacts) {
       "//flutter/shell/testing",
       "//flutter/tools/path_ops",
     ]
+    if (build_analyze_snapshot) {
+      deps += [ "$dart_src/runtime/bin:analyze_snapshot" ]
+    }
     if (is_mac) {
       # TODO(godofredoc): Remove after paths are standardized
       # flutter/flutter#105351. Mac artifacts sometimes use mac and sometimes
@@ -160,11 +162,15 @@ if (build_engine_artifacts) {
         ":artifacts_entitlement_config",
         ":artifacts_without_entitlement_config",
       ]
+      if (build_analyze_snapshot) {
+        files += [
+          {
+            source = "$root_out_dir/analyze_snapshot$exe"
+            destination = "analyze_snapshot$exe"
+          },
+        ]
+      }
       files += [
-        {
-          source = "$root_out_dir/analyze_snapshot$exe"
-          destination = "analyze_snapshot$exe"
-        },
         {
           source = "$target_gen_dir/entitlements.txt"
           destination = "entitlements.txt"
