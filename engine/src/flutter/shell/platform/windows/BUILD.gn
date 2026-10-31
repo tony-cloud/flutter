@@ -179,6 +179,7 @@ source_set("flutter_windows_source") {
     "//flutter/fml",
     "//flutter/impeller/renderer/backend/gles",
     "//flutter/shell/common/shorebird",
+    "//flutter/shell/common/shorebird:updater",
     "//flutter/shell/geometry",
     "//flutter/shell/platform/common:common_cpp",
     "//flutter/shell/platform/common:common_cpp_input",
