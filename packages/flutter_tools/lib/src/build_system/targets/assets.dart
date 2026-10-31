@@ -15,6 +15,7 @@ import '../../flutter_manifest.dart';
 import '../../isolated/native_assets/dart_hook_result.dart';
 import '../../shorebird/shorebird_build_key.dart';
 import '../../shorebird/shorebird_interpreter.dart';
+import '../../shorebird/shorebird_native_assets.dart';
 import '../../shorebird/shorebird_replacement.dart';
 import '../../shorebird/shorebird_yaml.dart';
 import '../build_system.dart';
@@ -137,10 +138,19 @@ Future<Depfile> copyAssets(
       kind: AssetKind.regular,
       transformers: const <AssetTransformerEntry>[],
     );
+    assetEntries[kShorebirdNativeAssetsDescriptor] = AssetBundleEntry(
+      DevFSFileContent(shorebirdReadNativeAssetsDescriptor(environment.buildDir)),
+      kind: AssetKind.regular,
+      transformers: const <AssetTransformerEntry>[],
+    );
   } else {
     final File staleBase = outputDirectory.childFile(kShorebirdReplacementBaseAsset);
     if (staleBase.existsSync()) {
       staleBase.deleteSync();
+    }
+    final File staleDescriptor = outputDirectory.childFile(kShorebirdNativeAssetsDescriptor);
+    if (staleDescriptor.existsSync()) {
+      staleDescriptor.deleteSync();
     }
   }
 

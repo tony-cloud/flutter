@@ -25,6 +25,7 @@ import 'bundle.dart';
 import 'convert.dart';
 import 'dart/package_map.dart';
 import 'shorebird/shorebird_interpreter.dart';
+import 'shorebird/shorebird_native_assets.dart';
 import 'shorebird/shorebird_replacement.dart';
 import 'shorebird/shorebird_replacement_host.dart';
 
@@ -288,6 +289,7 @@ class KernelCompiler {
     required List<String> dartDefines,
     required PackageConfig packageConfig,
     String? nativeAssets,
+    String? shorebirdNativeAssetsDescriptor,
   }) async {
     final TargetPlatform? platform = targetModel == TargetModel.dartdevc
         ? TargetPlatform.web_javascript
@@ -300,6 +302,11 @@ class KernelCompiler {
       _fileSystem,
       targetOS,
       projectDirectory: _projectDirectory,
+    );
+    final List<String> nativeAssetsDescriptorOptions = shorebirdNativeAssetsFrontendOptions(
+      fullReplacement: fullReplacement,
+      descriptorPath: shorebirdNativeAssetsDescriptor,
+      extraFrontEndOptions: extraFrontEndOptions,
     );
     if (fullReplacement && (!aot || buildMode != BuildMode.release)) {
       throw const FormatException('Full replacement requires a PRODUCT release AOT build');
@@ -453,6 +460,7 @@ class KernelCompiler {
             '-Dflutter.dart_plugin_registrant=$dartPluginRegistrantUri',
           ],
           if (nativeAssets != null) ...<String>['--native-assets', nativeAssets],
+          ...nativeAssetsDescriptorOptions,
           // See: https://github.com/flutter/flutter/issues/103994
           '--verbosity=error',
           ...?_filterExtraFrontEndOptions(extraFrontEndOptions),

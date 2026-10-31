@@ -19,6 +19,7 @@ import 'package:flutter_tools/src/build_system/depfile.dart';
 import 'package:flutter_tools/src/build_system/targets/assets.dart';
 import 'package:flutter_tools/src/cache.dart';
 import 'package:flutter_tools/src/globals.dart' as globals;
+import 'package:flutter_tools/src/shorebird/shorebird_native_assets.dart';
 import 'package:yaml/yaml.dart';
 
 import '../../../src/common.dart';
@@ -333,6 +334,14 @@ flutter:
             'aot_patch_full_replacement: true\n',
           );
       writePackageConfigFiles(directory: globals.fs.currentDirectory, mainLibName: 'example');
+      final File descriptor = environment.buildDir.childFile(kShorebirdNativeAssetsDescriptor)
+        ..createSync(recursive: true)
+        ..writeAsStringSync(
+          '{"schema":1,"target":"ios_arm64","carrier_present":true,'
+          '"mapping_sha256":"${'a' * 64}"}\n',
+        );
+      // Bundling consumes the compiler result, never the YAML that produced it.
+      fileSystem.file('/native_assets.yaml').writeAsStringSync('malformed: [');
       await const CopyAssets().build(environment, targetPlatform: TargetPlatform.ios);
       final File base = fileSystem.file('/private/base.sbr');
       final Directory assets = environment.buildDir.childDirectory('flutter_assets');
@@ -346,6 +355,15 @@ flutter:
         environment.buildDir.childFile('flutter_assets.d'),
       );
       expect(dependencies.inputs.map((File file) => file.path), contains(base.path));
+      expect(dependencies.inputs.map((File file) => file.path), contains(descriptor.path));
+      expect(
+        assets.childFile(kShorebirdNativeAssetsDescriptor).readAsBytesSync(),
+        descriptor.readAsBytesSync(),
+      );
+      expect(
+        dependencies.outputs.map((File file) => file.path),
+        contains(assets.childFile(kShorebirdNativeAssetsDescriptor).path),
+      );
       expect(
         dependencies.outputs.map((File file) => file.path),
         contains(assets.childFile('shorebird_replacement_base.sbr').path),
@@ -354,6 +372,84 @@ flutter:
       await expectLater(
         const CopyAssets().build(environment, targetPlatform: TargetPlatform.ios),
         throwsFormatException,
+      );
+    },
+    overrides: <Type, Generator>{
+      FileSystem: () => fileSystem,
+      ProcessManager: () => FakeProcessManager.any(),
+    },
+  );
+
+  for (final descriptorContents in <String?>[
+    null,
+    'not json',
+    '{"schema":1,"target":"ios_arm64","carrier_present":true}',
+    '{"schema":1,"target":"ios_x64","carrier_present":false}',
+  ]) {
+    testUsingContext(
+      'full replacement refuses missing or invalid compiler descriptor: $descriptorContents',
+      () async {
+        environment = Environment.test(
+          fileSystem.currentDirectory,
+          processManager: FakeProcessManager.any(),
+          artifacts: Artifacts.test(),
+          fileSystem: fileSystem,
+          logger: logger,
+          platform: FakePlatform(environment: writeShorebirdReplacementBase(fileSystem)),
+          defines: <String, String>{kBuildMode: 'release', kTargetPlatform: 'ios'},
+        );
+        fileSystem
+            .file('pubspec.yaml')
+            .writeAsStringSync('name: example\nflutter:\n  assets:\n    - shorebird.yaml\n');
+        fileSystem
+            .file('shorebird.yaml')
+            .writeAsStringSync(
+              'app_id: app\naot_patch_runtime_mode: dart-bytecode-interpreter\n'
+              'aot_patch_full_replacement: true\n',
+            );
+        writePackageConfigFiles(directory: globals.fs.currentDirectory, mainLibName: 'example');
+        if (descriptorContents != null) {
+          environment.buildDir.childFile(kShorebirdNativeAssetsDescriptor)
+            ..createSync(recursive: true)
+            ..writeAsStringSync(descriptorContents);
+        }
+        // A previous bundle cannot substitute for missing compiler output.
+        environment.buildDir
+            .childDirectory('flutter_assets')
+            .childFile(kShorebirdNativeAssetsDescriptor)
+          ..createSync(recursive: true)
+          ..writeAsStringSync('{"schema":1,"target":"ios_arm64","carrier_present":false}');
+        await expectLater(
+          const CopyAssets().build(environment, targetPlatform: TargetPlatform.ios),
+          throwsFormatException,
+        );
+      },
+      overrides: <Type, Generator>{
+        FileSystem: () => fileSystem,
+        ProcessManager: () => FakeProcessManager.any(),
+      },
+    );
+  }
+
+  testUsingContext(
+    'generic asset copy removes a stale full replacement descriptor without reading it',
+    () async {
+      writePackageConfigFiles(directory: globals.fs.currentDirectory, mainLibName: 'example');
+      final Directory assets = environment.buildDir.childDirectory('flutter_assets');
+      assets.childFile(kShorebirdNativeAssetsDescriptor)
+        ..createSync(recursive: true)
+        ..writeAsStringSync('stale bundled descriptor');
+      environment.buildDir
+          .childFile(kShorebirdNativeAssetsDescriptor)
+          .writeAsStringSync('invalid compiler descriptor');
+      await const CopyAssets().build(environment);
+      expect(assets.childFile(kShorebirdNativeAssetsDescriptor), isNot(exists));
+      final Depfile dependencies = environment.depFileService.parse(
+        environment.buildDir.childFile('flutter_assets.d'),
+      );
+      expect(
+        dependencies.inputs.map((File file) => file.path),
+        isNot(contains(environment.buildDir.childFile(kShorebirdNativeAssetsDescriptor).path)),
       );
     },
     overrides: <Type, Generator>{

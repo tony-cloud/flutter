@@ -18,6 +18,7 @@ import '../../globals.dart' as globals show xcode;
 import '../../isolated/native_assets/dart_hook_result.dart';
 import '../../project.dart';
 import '../../shorebird/shorebird_build_key.dart';
+import '../../shorebird/shorebird_native_assets.dart';
 import '../build_system.dart';
 import '../depfile.dart';
 import '../exceptions.dart';
@@ -158,6 +159,7 @@ class KernelSnapshot extends Target with ShorebirdInterpreterBuildKey {
   @override
   List<Source> get outputs => <Source>[
     const Source.pattern('{BUILD_DIR}/${KernelSnapshot.dillName}'),
+    const ShorebirdNativeAssetsOutput(),
     if (featureFlags.isRecordUseEnabled)
       const Source.pattern('{BUILD_DIR}/${KernelSnapshot.recordedUsesFileName}'),
   ];
@@ -184,6 +186,7 @@ class KernelSnapshot extends Target with ShorebirdInterpreterBuildKey {
 
   @override
   Future<void> build(Environment environment) async {
+    final String? nativeAssetsDescriptor = shorebirdPrepareNativeAssetsDescriptor(environment);
     final compiler = KernelCompiler(
       platform: environment.platform,
       projectDirectory: environment.projectDir,
@@ -313,9 +316,18 @@ class KernelSnapshot extends Target with ShorebirdInterpreterBuildKey {
       buildDir: environment.buildDir,
       targetOS: targetOS,
       checkDartPluginRegistry: environment.generateDartPluginRegistry,
+      shorebirdNativeAssetsDescriptor: nativeAssetsDescriptor,
     );
     if (output == null || output.errorCount != 0) {
       throw Exception();
+    }
+    if (nativeAssetsDescriptor != null) {
+      shorebirdValidateNativeAssetsKernelOutput(
+        environment.fileSystem,
+        expectedPath: dillPath,
+        outputPath: output.outputFilename,
+      );
+      shorebirdReadNativeAssetsDescriptor(environment.buildDir);
     }
   }
 
