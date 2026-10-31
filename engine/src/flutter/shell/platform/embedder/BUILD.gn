@@ -100,6 +100,7 @@ template("embedder_source_set") {
     public_deps = [ ":embedder_headers" ]
     deps = [
       ":embedder_gpu_configuration",
+      ":shorebird_aot_data_headers",
       "$dart_src/runtime/bin:common_embedder_dart_io",
       "$dart_src/runtime/bin:shared_object_loaders",
       "//flutter/assets",
@@ -213,6 +214,13 @@ source_set("embedder_headers") {
   public_configs = [ "//flutter:config" ]
 }
 
+# Private first-party FD loader hook; not part of the public embedder ABI.
+source_set("shorebird_aot_data_headers") {
+  public = [ "shorebird_aot_data.h" ]
+  public_deps = [ ":embedder_headers" ]
+  public_configs = [ "//flutter:config" ]
+}
+
 source_set("embedder_test_utils") {
   public = [
     "test_utils/key_codes.g.h",
@@ -303,6 +311,7 @@ if (enable_unittests) {
       ":embedder",
       ":embedder_gpu_configuration",
       ":fixtures",
+      ":shorebird_aot_data_headers",
       "$dart_src/runtime/bin:shared_object_loaders",
       "//flutter/flow",
       "//flutter/lib/snapshot",

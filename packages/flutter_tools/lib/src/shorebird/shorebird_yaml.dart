@@ -17,6 +17,9 @@ const kShorebirdPublicKeyEnvVar = 'SHOREBIRD_PUBLIC_KEY';
 /// SHA-256 derived from the release bytecode before sealing bundled assets.
 const kShorebirdAotBaseSnapshotHashEnvVar = 'SHOREBIRD_AOT_BASE_SNAPSHOT_HASH';
 
+/// Release-owned limit for reconstructing encrypted native patch images.
+const kShorebirdNativePatchMaxBytesKey = 'native_patch_max_bytes';
+
 void updateShorebirdYaml(
   String? flavor,
   String shorebirdYamlPath, {
@@ -90,6 +93,16 @@ Map<String, dynamic> compileShorebirdYaml(
   copyIfSet('patch_verification');
   copyIfSet('patch_response_verification');
   copyIfSet('patch_public_key');
+  if (yamlMap.containsKey(kShorebirdNativePatchMaxBytesKey)) {
+    final Object? value = yamlMap[kShorebirdNativePatchMaxBytesKey];
+    if (value is! int || value <= 0 || value > 0x7fffffffffffffff) {
+      throw const FormatException(
+        'native_patch_max_bytes must be a positive integer no greater than 9223372036854775807',
+      );
+    }
+    // This is bundled release policy, never a patch or environment override.
+    compiled[kShorebirdNativePatchMaxBytesKey] = value;
+  }
   // Expectations are public policy, copied from the signed app's build input.
   // The AES key and patch-only paths/hashes must never enter bundled assets.
   const interpreterFields = <String>[

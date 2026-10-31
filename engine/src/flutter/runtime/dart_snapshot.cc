@@ -17,6 +17,9 @@
 #if SHOREBIRD_USE_INTERPRETER && !FML_OS_IOS
 #include "flutter/runtime/shorebird/patch_cache.h"  // nogncheck
 #endif
+#if FML_OS_ANDROID
+#include "flutter/runtime/shorebird/native_snapshot.h"  // nogncheck
+#endif
 #include "flutter/shell/common/shorebird/updater.h"  // nogncheck
 
 namespace flutter {
@@ -216,6 +219,20 @@ fml::RefPtr<const DartSnapshot> DartSnapshot::VMSnapshotFromSettings(
 fml::RefPtr<const DartSnapshot> DartSnapshot::IsolateSnapshotFromSettings(
     const Settings& settings) {
   TRACE_EVENT0("flutter", "DartSnapshot::IsolateSnapshotFromSettings");
+#if FML_OS_ANDROID && !DART_SNAPSHOT_STATIC_LINK
+  if (shorebird::Updater::Instance().UsesPreparedBootSource()) {
+    std::shared_ptr<const fml::Mapping> data;
+    std::shared_ptr<const fml::Mapping> instructions;
+    if (!shorebird::ResolvePreparedAndroidSnapshot(data, instructions)) {
+      return nullptr;
+    }
+    if (data && instructions) {
+      return IsolateSnapshotFromMappings(data, instructions);
+    }
+    // Explicit BASE: release library paths have never been replaced by a
+    // candidate. Resolve the complete bundled pair through the usual route.
+  }
+#endif
   auto snapshot =
       fml::MakeRefCounted<DartSnapshot>(ResolveIsolateData(settings),         //
                                         ResolveIsolateInstructions(settings)  //

@@ -12,8 +12,10 @@
 #include "flutter/common/constants.h"
 #include "flutter/fml/logging.h"
 #include "flutter/shell/common/shorebird/shorebird.h"
+#include "flutter/shell/common/shorebird/updater.h"
 #include "flutter/shell/platform/common/engine_switches.h"
 #include "flutter/shell/platform/embedder/embedder.h"
+#include "flutter/shell/platform/embedder/shorebird_aot_data.h"
 #include "flutter/shell/platform/linux/fl_accessibility_handler.h"
 #include "flutter/shell/platform/linux/fl_binary_messenger_private.h"
 #include "flutter/shell/platform/linux/fl_display_monitor.h"
@@ -902,17 +904,31 @@ gboolean fl_engine_start(FlEngine* self, GError** error) {
       patch_path.clear();
     }
 
-    // A patch that fails to load is reported and replaced by the release's
-    // own library.
-    bool loaded = flutter::LoadPatchOrBase(
-        patch_path, fl_dart_project_get_aot_library_path(self->project),
-        [self](const std::string& path) {
-          FlutterEngineAOTDataSource source = {};
-          source.type = kFlutterEngineAOTDataSourceTypeElfPath;
-          source.elf_path = path.c_str();
-          return self->embedder_api.CreateAOTData(&source, &self->aot_data) ==
-                 kSuccess;
-        });
+    auto load_path = [self](const std::string& path) {
+      FlutterEngineAOTDataSource source = {};
+      source.type = kFlutterEngineAOTDataSourceTypeElfPath;
+      source.elf_path = path.c_str();
+      return self->embedder_api.CreateAOTData(&source, &self->aot_data) ==
+             kSuccess;
+    };
+    const auto* base_path = fl_dart_project_get_aot_library_path(self->project);
+    auto& updater = flutter::shorebird::Updater::Instance();
+    bool loaded;
+    if (updater.UsesPreparedBootSource()) {
+      loaded = updater.LoadPreparedBootSource(
+          [self, &load_path](flutter::shorebird::PreparedBootSource& source) {
+            if (source.kind() ==
+                flutter::shorebird::PreparedBootSource::Kind::kFD) {
+              return flutter::shorebird::CreateAOTDataFromFD(
+                         source.TakeFD(), source.selection_id(),
+                         &self->aot_data) == kSuccess;
+            }
+            return load_path(source.path());
+          },
+          [&load_path, base_path]() { return load_path(base_path); });
+    } else {
+      loaded = flutter::LoadPatchOrBase(patch_path, base_path, load_path);
+    }
     if (!loaded) {
       g_set_error(error, fl_engine_error_quark(), FL_ENGINE_ERROR_FAILED,
                   "Failed to create AOT data");

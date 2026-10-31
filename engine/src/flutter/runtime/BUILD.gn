@@ -85,6 +85,8 @@ source_set("runtime") {
     "runtime_delegate.h",
     "service_protocol.cc",
     "service_protocol.h",
+    "shorebird/native_snapshot.cc",
+    "shorebird/native_snapshot.h",
     "skia_concurrent_executor.cc",
     "skia_concurrent_executor.h",
   ]

@@ -24,6 +24,7 @@
 #include "flutter/fml/time/time_delta.h"
 #include "flutter/fml/time/time_point.h"
 #include "flutter/runtime/dart_vm.h"
+#include "flutter/shell/platform/embedder/shorebird_aot_data.h"
 #include "flutter/shell/platform/embedder/tests/embedder_assertions.h"
 #include "flutter/shell/platform/embedder/tests/embedder_config_builder.h"
 #include "flutter/shell/platform/embedder/tests/embedder_test.h"
@@ -33,6 +34,11 @@
 #include "flutter/testing/testing.h"
 #include "third_party/skia/include/core/SkSurface.h"
 #include "third_party/tonic/converter/dart_converter.h"
+
+#if FML_OS_LINUX
+#include <fcntl.h>
+#include <unistd.h>
+#endif
 
 #if defined(FML_OS_MACOSX)
 #include <pthread.h>
@@ -2831,6 +2837,47 @@ TEST_F(EmbedderTest, InvalidAOTDataSourcesMustReturnError) {
   ASSERT_EQ(data_in.elf_path, "/bin/true");
   ASSERT_EQ(data_out, nullptr);
 }
+
+#if FML_OS_LINUX
+TEST_F(EmbedderTest, PreparedFDOwnershipAndImageSurviveMultipleEngines) {
+  if (!DartVM::IsRunningPrecompiledCode()) {
+    GTEST_SKIP();
+  }
+  FlutterEngineAOTData data = nullptr;
+  int fd = open("/dev/null", O_RDONLY | O_CLOEXEC);
+  ASSERT_GE(fd, 0);
+  EXPECT_EQ(shorebird::CreateAOTDataFromFD(fd, 0, &data), kInvalidArguments);
+  EXPECT_EQ(fcntl(fd, F_GETFD), -1);
+  fd = open("/dev/null", O_RDONLY | O_CLOEXEC);
+  ASSERT_GE(fd, 0);
+  EXPECT_EQ(shorebird::CreateAOTDataFromFD(fd, 876541, &data),
+            kInvalidArguments);
+  EXPECT_EQ(fcntl(fd, F_GETFD), -1);
+
+  const auto path =
+      fml::paths::JoinPaths({GetFixturesPath(), kDefaultAOTAppELFFileName});
+  auto& context = GetEmbedderContext<EmbedderTestContextSoftware>();
+  fml::AutoResetWaitableEvent launched;
+  context.AddIsolateCreateCallback([&launched]() { launched.Signal(); });
+  EmbedderConfigBuilder builder(
+      context,
+      EmbedderConfigBuilder::InitializationPreference::kAOTDataInitialize);
+  builder.SetSurface(DlISize(1, 1));
+  for (size_t index = 0; index < 2; ++index) {
+    fd = open(path.c_str(), O_RDONLY | O_CLOEXEC);
+    ASSERT_GE(fd, 0);
+    ASSERT_EQ(shorebird::CreateAOTDataFromFD(fd, 876542, &data), kSuccess);
+    EXPECT_EQ(fcntl(fd, F_GETFD), -1);
+    builder.GetProjectArgs().aot_data = data;
+    auto engine = builder.LaunchEngine();
+    ASSERT_TRUE(engine.is_valid());
+    launched.Wait();
+    engine.reset();
+    ASSERT_EQ(FlutterEngineCollectAOTData(data), kSuccess);
+    data = nullptr;
+  }
+}
+#endif
 
 TEST_F(EmbedderTest, MustNotRunWithMultipleAOTSources) {
   if (!DartVM::IsRunningPrecompiledCode()) {

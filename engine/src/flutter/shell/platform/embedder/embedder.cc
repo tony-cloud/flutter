@@ -8,6 +8,7 @@
 #include <cstring>
 #include <iostream>
 #include <memory>
+#include <mutex>
 #include <set>
 #include <string>
 #include <vector>
@@ -20,6 +21,7 @@
 #include "flutter/fml/native_library.h"
 #include "flutter/fml/status_or.h"
 #include "flutter/fml/thread.h"
+#include "flutter/fml/unique_fd.h"
 #include "third_party/dart/runtime/bin/elf_loader.h"
 #include "third_party/dart/runtime/include/dart_native_api.h"
 #include "third_party/skia/include/core/SkSurface.h"
@@ -66,6 +68,7 @@ extern const intptr_t kPlatformStrongDillSize;
 #include "flutter/shell/platform/embedder/embedder_thread_host.h"
 #include "flutter/shell/platform/embedder/pixel_formats.h"
 #include "flutter/shell/platform/embedder/platform_view_embedder.h"
+#include "flutter/shell/platform/embedder/shorebird_aot_data.h"
 #include "rapidjson/rapidjson.h"
 #include "rapidjson/writer.h"
 
@@ -1706,6 +1709,8 @@ using UniqueLoadedElf = std::unique_ptr<Dart_LoadedElf, LoadedElfDeleter>;
 
 struct _FlutterEngineAOTData {
   UniqueLoadedElf loaded_elf = nullptr;
+  // Prepared native engines share the process-owned image across shutdowns.
+  std::shared_ptr<const _FlutterEngineAOTData> retained_source;
   const uint8_t* vm_snapshot_data = nullptr;
   const uint8_t* vm_snapshot_instrs = nullptr;
   const uint8_t* vm_isolate_data = nullptr;
@@ -1767,6 +1772,66 @@ FlutterEngineResult FlutterEngineCreateAOTData(
       kInvalidArguments,
       "Invalid FlutterEngineAOTDataSourceType type specified.");
 }
+
+#if FML_OS_LINUX
+FlutterEngineResult flutter::shorebird::CreateAOTDataFromFD(
+    int fd,
+    uint64_t selection_id,
+    FlutterEngineAOTData* data_out) {
+  fml::UniqueFD owned_fd(fd);
+  if (!data_out || !owned_fd.is_valid() || selection_id == 0 ||
+      !flutter::DartVM::IsRunningPrecompiledCode()) {
+    return LOG_EMBEDDER_ERROR(kInvalidArguments,
+                              "Invalid native FD AOT source.");
+  }
+  *data_out = nullptr;
+  static std::mutex cache_mutex;
+  static uint64_t cached_selection_id = 0;
+  static std::shared_ptr<const _FlutterEngineAOTData> cached_source;
+  std::lock_guard<std::mutex> lock(cache_mutex);
+  if (cached_source) {
+    if (cached_selection_id != selection_id) {
+      return LOG_EMBEDDER_ERROR(kInvalidArguments,
+                                "Native source changed after loading.");
+    }
+    auto data = std::make_unique<_FlutterEngineAOTData>();
+    data->vm_snapshot_data = cached_source->vm_snapshot_data;
+    data->vm_snapshot_instrs = cached_source->vm_snapshot_instrs;
+    data->vm_isolate_data = cached_source->vm_isolate_data;
+    data->vm_isolate_instrs = cached_source->vm_isolate_instrs;
+    data->retained_source = cached_source;
+    *data_out = data.release();
+    return kSuccess;
+  }
+  auto aot_data = std::make_unique<_FlutterEngineAOTData>();
+  const char* error = nullptr;
+  // Dart_LoadELF_Fd consumes the descriptor on success and every error path.
+  auto* elf =
+      Dart_LoadELF_Fd(owned_fd.release(), 0, &error, &aot_data->vm_isolate_data,
+                      &aot_data->vm_isolate_instrs);
+  if (!elf) {
+    return LOG_EMBEDDER_ERROR(kInvalidArguments, error);
+  }
+  aot_data->loaded_elf.reset(elf);
+  if (!aot_data->vm_isolate_data || !aot_data->vm_isolate_instrs) {
+    return LOG_EMBEDDER_ERROR(kInvalidArguments,
+                              "Native FD image lacks the snapshot pair.");
+  }
+  aot_data->vm_snapshot_data = aot_data->vm_isolate_data;
+  aot_data->vm_snapshot_instrs = aot_data->vm_isolate_instrs;
+  // The cache, rather than any particular engine, owns executable mappings.
+  cached_source = std::shared_ptr<_FlutterEngineAOTData>(aot_data.release());
+  cached_selection_id = selection_id;
+  auto data = std::make_unique<_FlutterEngineAOTData>();
+  data->vm_snapshot_data = cached_source->vm_snapshot_data;
+  data->vm_snapshot_instrs = cached_source->vm_snapshot_instrs;
+  data->vm_isolate_data = cached_source->vm_isolate_data;
+  data->vm_isolate_instrs = cached_source->vm_isolate_instrs;
+  data->retained_source = cached_source;
+  *data_out = data.release();
+  return kSuccess;
+}
+#endif  // FML_OS_LINUX
 
 FlutterEngineResult FlutterEngineCollectAOTData(FlutterEngineAOTData data) {
   if (!data) {

@@ -4,6 +4,7 @@
 #include "flutter/shell/common/shorebird/shorebird.h"
 
 #include <cstring>
+#include <limits>
 #include <sstream>
 
 #include "flutter/fml/paths.h"
@@ -54,6 +55,46 @@ std::string GetValueFromYaml(const std::string& yaml, const std::string& key) {
     return value;
   }
   return "";
+}
+
+bool ResolveNativePatchMaxBytes(const std::string& compiled_yaml,
+                                uint64_t explicit_max_bytes,
+                                uint64_t& max_bytes) {
+  constexpr auto limit =
+      static_cast<uint64_t>(std::numeric_limits<int64_t>::max());
+  max_bytes = 0;
+  if (explicit_max_bytes > limit) {
+    return false;
+  }
+  const std::string key = "native_patch_max_bytes";
+  const auto prefix = key + ":";
+  std::stringstream input(compiled_yaml);
+  std::string line;
+  size_t count = 0;
+  while (std::getline(input, line)) {
+    count += line.compare(0, prefix.size(), prefix) == 0;
+  }
+  if (count == 0) {
+    max_bytes =
+        explicit_max_bytes ? explicit_max_bytes : kDefaultNativePatchMaxBytes;
+    return true;
+  }
+  const auto value = GetValueFromYaml(compiled_yaml, key);
+  if (count != 1 || value.empty()) {
+    return false;
+  }
+  uint64_t parsed = 0;
+  for (const auto digit : value) {
+    if (digit < '0' || digit > '9' || parsed > (limit - (digit - '0')) / 10) {
+      return false;
+    }
+    parsed = parsed * 10 + (digit - '0');
+  }
+  if (parsed == 0 || (explicit_max_bytes && explicit_max_bytes != parsed)) {
+    return false;
+  }
+  max_bytes = parsed;
+  return true;
 }
 
 std::shared_ptr<const shorebird::InterpreterReplacementBaseConfig>

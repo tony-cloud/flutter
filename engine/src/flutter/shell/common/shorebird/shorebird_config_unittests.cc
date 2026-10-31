@@ -34,6 +34,40 @@ TEST(Shorebird, CompiledYamlScalarsUseExactKeysAndUnquoteStrings) {
             "customer's");
 }
 
+TEST(Shorebird, NativePatchBudgetUsesReleaseDefaultOrExplicitOverride) {
+  uint64_t budget = 0;
+  ASSERT_TRUE(ResolveNativePatchMaxBytes("", 0, budget));
+  EXPECT_EQ(budget, 512ULL * 1024 * 1024);
+  ASSERT_TRUE(ResolveNativePatchMaxBytes("", 4096, budget));
+  EXPECT_EQ(budget, 4096u);
+  ASSERT_TRUE(
+      ResolveNativePatchMaxBytes("native_patch_max_bytes: 4096\n", 0, budget));
+  EXPECT_EQ(budget, 4096u);
+  EXPECT_TRUE(ResolveNativePatchMaxBytes("native_patch_max_bytes: 4096\n", 4096,
+                                         budget));
+  EXPECT_FALSE(ResolveNativePatchMaxBytes("native_patch_max_bytes: 4096\n",
+                                          8192, budget));
+  EXPECT_TRUE(ResolveNativePatchMaxBytes(
+      "native_patch_max_bytes: 9223372036854775807\n", 0, budget));
+  EXPECT_EQ(budget, 9223372036854775807ULL);
+}
+
+TEST(Shorebird, NativePatchBudgetRejectsMalformedAmbiguousAndOverflowValues) {
+  for (const auto& value : {"", "0", "-1", "+1", "1.0", "1e6", "0x1000", "null",
+                            "true", "1 # comment", "9223372036854775808",
+                            "18446744073709551616", "'bad'", "[1024]"}) {
+    uint64_t budget = 123;
+    EXPECT_FALSE(ResolveNativePatchMaxBytes(
+        "native_patch_max_bytes: " + std::string(value) + "\n", 0, budget))
+        << value;
+    EXPECT_EQ(budget, 0u);
+  }
+  uint64_t budget = 0;
+  EXPECT_FALSE(ResolveNativePatchMaxBytes(
+      "native_patch_max_bytes: 1\nnative_patch_max_bytes: 1\n", 0, budget));
+  EXPECT_FALSE(ResolveNativePatchMaxBytes("", 9223372036854775808ULL, budget));
+}
+
 std::string FullReplacementYaml() {
   return "aot_patch_full_replacement: true\n"
          "aot_patch_runtime_mode: dart-bytecode-interpreter\n"

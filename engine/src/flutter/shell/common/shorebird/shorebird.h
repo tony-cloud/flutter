@@ -1,6 +1,7 @@
 #ifndef FLUTTER_SHELL_COMMON_SHOREBIRD_SHOREBIRD_H_
 #define FLUTTER_SHELL_COMMON_SHOREBIRD_SHOREBIRD_H_
 
+#include <cstdint>
 #include <functional>
 #include <memory>
 #include <string>
@@ -12,6 +13,15 @@
 namespace flutter {
 
 class DartSnapshot;
+
+// Release-owned resource policy, independent of unsigned patch metadata. The
+// current measured fixtures top out at 13,336,480 bytes (~40x below this
+// budget); they do not represent every application. Larger releases can
+// override this in compiled shorebird.yaml using native_patch_max_bytes.
+constexpr uint64_t kDefaultNativePatchMaxBytes = 512ULL * 1024 * 1024;
+bool ResolveNativePatchMaxBytes(const std::string& compiled_yaml,
+                                uint64_t explicit_max_bytes,
+                                uint64_t& max_bytes);
 
 /// Version and build number of the release.
 /// Used by ShorebirdConfigArgs.
@@ -28,6 +38,7 @@ struct ShorebirdConfigArgs {
   std::string release_app_library_path;
   std::string shorebird_yaml;
   ReleaseVersion release_version;
+  uint64_t max_native_image_bytes = 0;
 
   ShorebirdConfigArgs(std::string code_cache_path,
                       std::string app_storage_path,
@@ -65,7 +76,8 @@ void ConfigureShorebird(std::string code_cache_path,
                         Settings& settings,
                         const std::string& shorebird_yaml,
                         const std::string& version,
-                        const std::string& version_code);
+                        const std::string& version_code,
+                        uint64_t max_native_image_bytes = 0);
 
 // Parse the signed compiled profile before updater initialization. Retain an
 // invalid full-profile config so runtime startup fails closed. Absent/false is

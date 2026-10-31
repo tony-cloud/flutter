@@ -4,7 +4,14 @@
 
 #include "flutter/shell/common/shorebird/updater.h"
 
+#include <utility>
+
+#include "flutter/fml/build_config.h"
 #include "flutter/fml/logging.h"
+
+#if !FML_OS_WIN
+#include <unistd.h>
+#endif
 
 #if SHOREBIRD_PLATFORM_SUPPORTED
 #include "third_party/updater/library/include/updater_engine.h"
@@ -13,9 +20,41 @@
 namespace flutter {
 namespace shorebird {
 
+PreparedBootSource::PreparedBootSource(Kind kind,
+                                       uint64_t selection_id,
+                                       uint64_t patch_number,
+                                       uint64_t image_size,
+                                       int fd,
+                                       std::string path)
+    : kind_(kind),
+      selection_id_(selection_id),
+      patch_number_(patch_number),
+      image_size_(image_size),
+      fd_(fd),
+      path_(std::move(path)) {}
+
+PreparedBootSource::~PreparedBootSource() {
+#if !FML_OS_WIN
+  if (fd_ >= 0) {
+    close(fd_);
+  }
+#endif
+}
+
+int PreparedBootSource::TakeFD() {
+  int fd = fd_;
+  fd_ = -1;
+  return fd;
+}
+
 // Static member definitions
 std::unique_ptr<Updater> Updater::instance_;
 std::mutex Updater::instance_mutex_;
+std::mutex Updater::prepared_load_mutex_;
+std::atomic<uint64_t> Updater::loaded_selection_id_{0};
+std::atomic<bool> Updater::prepared_sources_{false};
+std::atomic<bool> Updater::prepared_configuration_failed_{false};
+std::atomic<bool> Updater::prepared_recovery_failed_{false};
 std::atomic<bool> Updater::launch_started_{false};
 std::atomic<bool> Updater::launch_completed_{false};
 std::atomic<bool> Updater::initialized_{false};
@@ -44,6 +83,10 @@ void Updater::ResetInstanceForTesting() {
 }
 
 void Updater::ResetLaunchStateForTesting() {
+  loaded_selection_id_.store(0);
+  prepared_sources_.store(false);
+  prepared_configuration_failed_.store(false);
+  prepared_recovery_failed_.store(false);
   launch_started_.store(false);
   launch_completed_.store(false);
   initialized_.store(false);
@@ -51,16 +94,111 @@ void Updater::ResetLaunchStateForTesting() {
 }
 
 bool Updater::Init(const AppConfig& config) {
+  if (config.max_native_image_bytes != 0) {
+    RequirePreparedBootSource();
+  }
   bool result = DoInit(config);
   // Latch rather than assign: add-to-app calls Init once per engine, and a
   // later failure must not forget that the process already configured.
   if (result) {
     initialized_.store(true);
+    if (config.max_native_image_bytes != 0) {
+      prepared_configuration_failed_.store(false);
+    }
   }
   return result;
 }
 
+void Updater::RequirePreparedBootSource() {
+  prepared_sources_.store(true);
+  prepared_configuration_failed_.store(true);
+}
+
+bool Updater::UsesPreparedBootSource() const {
+  return prepared_sources_.load();
+}
+
+std::unique_ptr<PreparedBootSource> Updater::PrepareBootSource() {
+  return nullptr;
+}
+
+bool Updater::BeginBootSource(uint64_t selection_id) {
+  if (!DoBeginBootSource(selection_id)) {
+    return false;
+  }
+  launch_started_.store(true);
+  return true;
+}
+
+bool Updater::AbortBootSource(uint64_t selection_id) {
+  if (DoAbortBootSource(selection_id)) {
+    return true;
+  }
+  // Failed bookkeeping must not turn the subsequent base boot into a success
+  // report for a candidate whose breadcrumb could not be cleared.
+  launch_completed_.store(true);
+  prepared_recovery_failed_.store(true);
+  return false;
+}
+
+bool Updater::LoadPreparedBootSource(
+    const std::function<bool(PreparedBootSource&)>& load_patch,
+    const std::function<bool()>& load_base) {
+  if (prepared_configuration_failed_.load()) {
+    return false;
+  }
+  if (prepared_recovery_failed_.load()) {
+    // Retain the unresolved breadcrumb for crash recovery. A later engine
+    // must not try the candidate again in this process.
+    return loaded_selection_id_.load() == 0 && load_base();
+  }
+  auto source = PrepareBootSource();
+  if (!source) {
+    return false;
+  }
+  std::unique_lock<std::mutex> lock(prepared_load_mutex_);
+  if (prepared_configuration_failed_.load()) {
+    return false;
+  }
+  const auto loaded_id = loaded_selection_id_.load();
+  if (loaded_id != 0) {
+    // A running process cannot switch images when a later engine fails to
+    // consume its frozen PATH/FD. Refuse that engine without aborting the
+    // selection or executing bundled instructions alongside the loaded patch.
+    return source->kind() != PreparedBootSource::Kind::kBase &&
+           source->selection_id() == loaded_id && BeginBootSource(loaded_id) &&
+           load_patch(*source);
+  }
+  if (prepared_recovery_failed_.load()) {
+    return load_base();
+  }
+  if (BeginBootSource(source->selection_id())) {
+    if (source->kind() == PreparedBootSource::Kind::kBase) {
+      return load_base();
+    }
+    if (load_patch(*source)) {
+      loaded_selection_id_.store(source->selection_id());
+      return true;
+    }
+    if (!AbortBootSource(source->selection_id())) {
+      return load_base();
+    }
+  }
+  // A stale token or returned loader failure invalidates the old selection.
+  // Never retry it, ask for a different patch, or fall through to legacy APIs.
+  lock.unlock();
+  source = PrepareBootSource();
+  lock.lock();
+  return !prepared_configuration_failed_.load() && source &&
+         source->kind() == PreparedBootSource::Kind::kBase &&
+         BeginBootSource(source->selection_id()) && load_base();
+}
+
 void Updater::ReportLaunchStart() {
+  if (UsesPreparedBootSource()) {
+    // Only the checked loader-bound begin may start this selection.
+    return;
+  }
   // Guard: only the first engine in a process should promote next_boot →
   // current_boot in the Rust updater. See class-level comment for rationale.
   bool expected = false;
@@ -101,7 +239,7 @@ void Updater::MaybeStartUpdateThread() {
   // no shorebird.yaml. Also covers an Init that failed.
   // Checked before the guard below so an engine that never configured cannot
   // claim it on behalf of one that did.
-  if (!initialized_.load()) {
+  if (prepared_recovery_failed_.load() || !initialized_.load()) {
     FML_LOG(INFO) << "Shorebird updater not configured, not checking for "
                      "updates.";
     return;
@@ -132,6 +270,14 @@ void Updater::ReportLaunchFailure() {
 #if SHOREBIRD_PLATFORM_SUPPORTED
 // RealUpdater implementation - wraps the Rust C API
 
+bool RealUpdater::SupportsPreparedBootSources() const {
+#if FML_OS_LINUX || (FML_OS_ANDROID && !SHOREBIRD_USE_INTERPRETER)
+  return true;
+#else
+  return false;
+#endif
+}
+
 bool RealUpdater::DoInit(const AppConfig& config) {
   // Convert paths to C strings
   std::vector<const char*> c_paths;
@@ -154,7 +300,58 @@ bool RealUpdater::DoInit(const AppConfig& config) {
   rust_callbacks.seek = config.file_callbacks.seek;
   rust_callbacks.close = config.file_callbacks.close;
 
+  if (config.max_native_image_bytes != 0) {
+#if FML_OS_LINUX || (FML_OS_ANDROID && !SHOREBIRD_USE_INTERPRETER)
+    ShorebirdEngineOptions options = {};
+    options.struct_size = sizeof(options);
+    options.native_source_capability = 1;  // SEALED_FD_V1
+    options.max_native_image_bytes = config.max_native_image_bytes;
+    return shorebird_init_with_options(&params, rust_callbacks,
+                                       config.yaml_config.c_str(), &options);
+#else
+    FML_LOG(ERROR)
+        << "Prepared native sources are unsupported on this platform";
+    return false;
+#endif
+  }
   return shorebird_init(&params, rust_callbacks, config.yaml_config.c_str());
+}
+
+std::unique_ptr<PreparedBootSource> RealUpdater::PrepareBootSource() {
+  ShorebirdBootSource source = {};
+  source.struct_size = sizeof(source);
+  source.fd = -1;
+  if (!shorebird_prepare_boot_source(&source)) {
+    shorebird_release_boot_source(&source);
+    return nullptr;
+  }
+  const bool valid =
+      source.selection_id != 0 &&
+      ((source.kind == 0 && source.patch_number == 0 && source.fd == -1 &&
+        !source.path) ||
+       (source.kind == 1 && source.patch_number != 0 && source.fd == -1 &&
+        source.path) ||
+       (source.kind == 2 && source.patch_number != 0 && source.fd >= 0 &&
+        !source.path && source.image_size != 0));
+  if (!valid) {
+    shorebird_release_boot_source(&source);
+    return nullptr;
+  }
+  auto result = std::make_unique<PreparedBootSource>(
+      static_cast<PreparedBootSource::Kind>(source.kind), source.selection_id,
+      source.patch_number, source.image_size, source.fd,
+      source.path ? source.path : "");
+  source.fd = -1;  // Ownership transferred to the C++ source.
+  shorebird_release_boot_source(&source);
+  return result;
+}
+
+bool RealUpdater::DoBeginBootSource(uint64_t selection_id) {
+  return shorebird_begin_boot_source(selection_id);
+}
+
+bool RealUpdater::DoAbortBootSource(uint64_t selection_id) {
+  return shorebird_abort_boot_source(selection_id, 0);  // RETRYABLE
 }
 
 void RealUpdater::ValidateNextBootPatch() {

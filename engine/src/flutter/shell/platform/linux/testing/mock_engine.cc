@@ -9,16 +9,35 @@
 //
 // Over time existing tests should be migrated and this file should be removed.
 
+#include <unistd.h>
+
 #include <cstring>
 #include <unordered_map>
 #include <utility>
 
 #include "flutter/shell/platform/embedder/embedder.h"
+#include "flutter/shell/platform/embedder/shorebird_aot_data.h"
 #include "flutter/shell/platform/linux/fl_method_codec_private.h"
 #include "flutter/shell/platform/linux/public/flutter_linux/fl_json_message_codec.h"
 #include "flutter/shell/platform/linux/public/flutter_linux/fl_method_response.h"
 #include "flutter/shell/platform/linux/public/flutter_linux/fl_standard_method_codec.h"
 #include "gtest/gtest.h"
+
+// This mock does not execute native FD images. A selected FD deterministically
+// fails and exercises the retryable bundled fallback; actual FD ELF execution
+// is covered separately by embedder tests against the real helper.
+FlutterEngineResult flutter::shorebird::CreateAOTDataFromFD(
+    int fd,
+    uint64_t selection_id,
+    FlutterEngineAOTData* data_out) {
+  if (fd >= 0) {
+    close(fd);
+  }
+  if (data_out) {
+    *data_out = nullptr;
+  }
+  return kInvalidArguments;
+}
 
 struct _FlutterEngine {
   _FlutterEngine() {}

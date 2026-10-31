@@ -189,11 +189,13 @@ source_set("flutter_linux_sources") {
     "$dart_src/runtime:dart_api",
     "//flutter/fml",
     "//flutter/shell/common/shorebird",
+    "//flutter/shell/common/shorebird:updater",
     "//flutter/shell/platform/common:common_cpp_enums",
     "//flutter/shell/platform/common:common_cpp_input",
     "//flutter/shell/platform/common:common_cpp_isolate_scope",
     "//flutter/shell/platform/common:common_cpp_switches",
     "//flutter/shell/platform/embedder:embedder_headers",
+    "//flutter/shell/platform/embedder:shorebird_aot_data_headers",
     "//flutter/third_party/rapidjson",
     "//flutter/third_party/tonic",
   ]
@@ -315,6 +317,7 @@ executable("flutter_linux_unittests") {
     "//flutter/shell/platform/common:common_cpp_enums",
     "//flutter/shell/platform/embedder:embedder_headers",
     "//flutter/shell/platform/embedder:embedder_test_utils",
+    "//flutter/shell/platform/embedder:shorebird_aot_data_headers",
     "//flutter/testing",
   ]
 }

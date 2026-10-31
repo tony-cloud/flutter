@@ -7,6 +7,7 @@
 
 #include <atomic>
 #include <cstdint>
+#include <functional>
 #include <memory>
 #include <mutex>
 #include <optional>
@@ -23,6 +24,38 @@ struct FileCallbacks {
   uintptr_t (*read)(void* file_handle, uint8_t* buffer, uintptr_t count);
   int64_t (*seek)(void* file_handle, int64_t offset, int32_t whence);
   void (*close)(void* file_handle);
+};
+
+/// One immutable updater selection. Owns its descriptor until TakeFD transfers
+/// it to a consuming loader. PATH is copied before the Rust output is released.
+class PreparedBootSource {
+ public:
+  enum class Kind : uint32_t { kBase = 0, kPath = 1, kFD = 2 };
+  PreparedBootSource(Kind kind,
+                     uint64_t selection_id,
+                     uint64_t patch_number,
+                     uint64_t image_size,
+                     int fd,
+                     std::string path);
+  ~PreparedBootSource();
+  PreparedBootSource(const PreparedBootSource&) = delete;
+  PreparedBootSource& operator=(const PreparedBootSource&) = delete;
+
+  Kind kind() const { return kind_; }
+  uint64_t selection_id() const { return selection_id_; }
+  uint64_t patch_number() const { return patch_number_; }
+  uint64_t image_size() const { return image_size_; }
+  int fd() const { return fd_; }
+  const std::string& path() const { return path_; }
+  int TakeFD();
+
+ private:
+  const Kind kind_;
+  const uint64_t selection_id_;
+  const uint64_t patch_number_;
+  const uint64_t image_size_;
+  int fd_;
+  const std::string path_;
 };
 
 /// Configuration for initializing the Shorebird updater.
@@ -45,6 +78,10 @@ struct AppConfig {
 
   /// YAML configuration from shorebird.yaml.
   std::string yaml_config;
+
+  /// Release-owned decoded-image budget. Zero preserves the legacy route.
+  /// Only Linux/Android native loaders may advertise sealed-FD capability.
+  uint64_t max_native_image_bytes = 0;
 };
 
 /// Abstract interface for the Shorebird updater.
@@ -119,6 +156,21 @@ class Updater {
   /// @return Path to patch, or empty string if no patch available
   virtual std::string NextBootPatchPath() = 0;
 
+  // Require checked selection before native configuration parsing/init.
+  virtual bool SupportsPreparedBootSources() const { return false; }
+  void RequirePreparedBootSource();
+  bool UsesPreparedBootSource() const;
+  virtual std::unique_ptr<PreparedBootSource> PrepareBootSource();
+  bool BeginBootSource(uint64_t selection_id);
+  // Opaque loader failures are retryable; they never condemn signed bytes.
+  bool AbortBootSource(uint64_t selection_id);
+  /// Loads only a begun selection. A returned loader failure freezes BASE;
+  /// successful bookkeeping begins the new BASE token before its loader.
+  /// Failed bookkeeping permits bundled code only and suppresses success.
+  bool LoadPreparedBootSource(
+      const std::function<bool(PreparedBootSource&)>& load_patch,
+      const std::function<bool()>& load_base);
+
   // Boot lifecycle methods. The reports themselves run at most once per
   // process, and later calls are silently ignored. `ReportLaunchSuccess`
   // still attempts the update-thread start on every call, which carries its
@@ -148,6 +200,8 @@ class Updater {
 
   // Subclass hooks — called by the public guarded methods above.
   virtual bool DoInit(const AppConfig& config) = 0;
+  virtual bool DoBeginBootSource(uint64_t selection_id) { return false; }
+  virtual bool DoAbortBootSource(uint64_t selection_id) { return false; }
   virtual void DoReportLaunchStart() = 0;
   virtual void DoReportLaunchSuccess() = 0;
   virtual void DoReportLaunchFailure() = 0;
@@ -159,8 +213,13 @@ class Updater {
 
   static std::unique_ptr<Updater> instance_;
   static std::mutex instance_mutex_;
+  static std::mutex prepared_load_mutex_;
+  static std::atomic<uint64_t> loaded_selection_id_;
 
   // Once-per-process guards for launch lifecycle.
+  static std::atomic<bool> prepared_sources_;
+  static std::atomic<bool> prepared_configuration_failed_;
+  static std::atomic<bool> prepared_recovery_failed_;
   static std::atomic<bool> launch_started_;
   static std::atomic<bool> launch_completed_;
   // Whether any `Init` succeeded; the update thread needs a configured
@@ -178,7 +237,9 @@ class NoOpUpdater : public Updater {
   NoOpUpdater() = default;
   ~NoOpUpdater() override = default;
 
-  bool DoInit(const AppConfig& config) override { return true; }
+  bool DoInit(const AppConfig& config) override {
+    return config.max_native_image_bytes == 0;
+  }
   void ValidateNextBootPatch() override {}
   std::string NextBootPatchPath() override { return ""; }
   void DoReportLaunchStart() override {}
@@ -196,7 +257,11 @@ class RealUpdater : public Updater {
   RealUpdater() = default;
   ~RealUpdater() override = default;
 
+  bool SupportsPreparedBootSources() const override;
   bool DoInit(const AppConfig& config) override;
+  std::unique_ptr<PreparedBootSource> PrepareBootSource() override;
+  bool DoBeginBootSource(uint64_t selection_id) override;
+  bool DoAbortBootSource(uint64_t selection_id) override;
   void ValidateNextBootPatch() override;
   std::string NextBootPatchPath() override;
   void DoReportLaunchStart() override;

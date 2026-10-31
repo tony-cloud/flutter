@@ -5,12 +5,184 @@
 #include "flutter/shell/common/shorebird/updater.h"
 
 #include <algorithm>
+#include <utility>
+
+#include "flutter/fml/build_config.h"
+#if !FML_OS_WIN
+#include <fcntl.h>
+#include <unistd.h>
+#endif
 
 #include "gtest/gtest.h"
 
 namespace flutter {
 namespace shorebird {
 namespace testing {
+
+class PreparedUpdater : public MockUpdater {
+ public:
+  std::vector<std::string> events;
+  bool patch = true;
+  bool prepare_result = true;
+  bool begin_result = true;
+  bool abort_result = true;
+
+  std::unique_ptr<PreparedBootSource> PrepareBootSource() override {
+    events.push_back("prepare");
+    if (!prepare_result) {
+      return nullptr;
+    }
+    return std::make_unique<PreparedBootSource>(
+        patch ? PreparedBootSource::Kind::kPath
+              : PreparedBootSource::Kind::kBase,
+        patch ? 1 : 2, patch ? 7 : 0, 0, -1, patch ? "patch.so" : "");
+  }
+  bool DoBeginBootSource(uint64_t selection_id) override {
+    events.push_back("begin:" + std::to_string(selection_id));
+    if (!begin_result) {
+      patch = false;
+      begin_result = true;
+      return false;
+    }
+    return true;
+  }
+  bool DoAbortBootSource(uint64_t selection_id) override {
+    events.push_back("abort:" + std::to_string(selection_id));
+    patch = false;
+    return abort_result;
+  }
+};
+
+class PreparedUpdaterTest : public ::testing::Test {
+ protected:
+  void SetUp() override {
+    Updater::ResetLaunchStateForTesting();
+    auto updater = std::make_unique<PreparedUpdater>();
+    updater_ = updater.get();
+    Updater::SetInstanceForTesting(std::move(updater));
+    AppConfig config = {};
+    config.max_native_image_bytes = 1024;
+    ASSERT_TRUE(updater_->Init(config));
+  }
+  void TearDown() override {
+    Updater::ResetInstanceForTesting();
+    Updater::ResetLaunchStateForTesting();
+  }
+  bool Load(bool patch_succeeds) {
+    return updater_->LoadPreparedBootSource(
+        [this, patch_succeeds](PreparedBootSource& source) {
+          EXPECT_EQ(source.patch_number(), 7u);
+          updater_->events.push_back("load:patch");
+          return patch_succeeds;
+        },
+        [this]() {
+          updater_->events.push_back("load:base");
+          return true;
+        });
+  }
+  PreparedUpdater* updater_;
+};
+
+TEST_F(PreparedUpdaterTest, BeginsBeforeTheLoaderAndDoesNotStartLegacyBoot) {
+  updater_->ReportLaunchStart();
+  EXPECT_EQ(updater_->launch_start_count(), 0);
+  ASSERT_TRUE(Load(true));
+  EXPECT_EQ(updater_->events,
+            (std::vector<std::string>{"prepare", "begin:1", "load:patch"}));
+}
+
+TEST_F(PreparedUpdaterTest, LaterEngineFailureCannotSwitchRunningPatchToBase) {
+  ASSERT_TRUE(Load(true));
+  updater_->events.clear();
+  EXPECT_FALSE(Load(false));
+  EXPECT_EQ(updater_->events,
+            (std::vector<std::string>{"prepare", "begin:1", "load:patch"}));
+  EXPECT_EQ(updater_->launch_failure_count(), 0);
+}
+
+TEST_F(PreparedUpdaterTest, LaterBaseSelectionCannotReplaceRunningPatch) {
+  ASSERT_TRUE(Load(true));
+  updater_->events.clear();
+  updater_->patch = false;
+  EXPECT_FALSE(Load(true));
+  EXPECT_EQ(updater_->events, std::vector<std::string>{"prepare"});
+}
+
+TEST_F(PreparedUpdaterTest, ExplicitBaseIsBegunWithoutLoadingTheCandidate) {
+  updater_->patch = false;
+  ASSERT_TRUE(Load(true));
+  EXPECT_EQ(updater_->events,
+            (std::vector<std::string>{"prepare", "begin:2", "load:base"}));
+}
+
+TEST_F(PreparedUpdaterTest,
+       ReturnedLoaderFailureRetriesBaseWithoutRetiringPatch) {
+  ASSERT_TRUE(Load(false));
+  EXPECT_EQ(updater_->events, (std::vector<std::string>{
+                                  "prepare", "begin:1", "load:patch", "abort:1",
+                                  "prepare", "begin:2", "load:base"}));
+  EXPECT_EQ(updater_->launch_failure_count(), 0);
+  updater_->ReportLaunchSuccess();
+  EXPECT_EQ(updater_->launch_success_count(), 1);
+}
+
+TEST_F(PreparedUpdaterTest, StaleSelectionNeverReachesTheCandidateLoader) {
+  updater_->begin_result = false;
+  ASSERT_TRUE(Load(true));
+  EXPECT_EQ(updater_->events,
+            (std::vector<std::string>{"prepare", "begin:1", "prepare",
+                                      "begin:2", "load:base"}));
+}
+
+TEST_F(PreparedUpdaterTest, FailedRequiredConfigurationCannotStartImplicitly) {
+  updater_->RequirePreparedBootSource();
+  updater_->ReportLaunchStart();
+  EXPECT_FALSE(Load(true));
+  EXPECT_EQ(updater_->launch_start_count(), 0);
+  EXPECT_TRUE(updater_->events.empty());
+}
+
+TEST_F(PreparedUpdaterTest,
+       PreparationFailureCannotFallThroughToLegacySelection) {
+  updater_->prepare_result = false;
+  EXPECT_FALSE(Load(true));
+  EXPECT_EQ(updater_->events, std::vector<std::string>{"prepare"});
+  EXPECT_EQ(updater_->launch_start_count(), 0);
+}
+
+TEST_F(PreparedUpdaterTest,
+       FailedAbortCannotReportCandidateSuccessOrStartUpdates) {
+  updater_->abort_result = false;
+  updater_->set_should_auto_update(true);
+  ASSERT_TRUE(Load(false));
+  updater_->ReportLaunchSuccess();
+  EXPECT_EQ(updater_->launch_success_count(), 0);
+  EXPECT_EQ(updater_->start_update_thread_count(), 0);
+  updater_->events.clear();
+  // Even another engine cannot retry the source whose abort failed.
+  ASSERT_TRUE(Load(true));
+  EXPECT_EQ(updater_->events, std::vector<std::string>{"load:base"});
+}
+
+#if !FML_OS_WIN
+TEST(PreparedBootSourceTest, ClosesOwnedFDAndTransfersDetachedFD) {
+  int descriptors[2];
+  ASSERT_EQ(pipe(descriptors), 0);
+  {
+    PreparedBootSource source(PreparedBootSource::Kind::kFD, 1, 7, 1,
+                              descriptors[0], "");
+  }
+  EXPECT_EQ(fcntl(descriptors[0], F_GETFD), -1);
+  {
+    PreparedBootSource source(PreparedBootSource::Kind::kFD, 1, 7, 1,
+                              descriptors[1], "");
+    EXPECT_EQ(source.TakeFD(), descriptors[1]);
+    EXPECT_EQ(source.fd(), -1);
+  }
+  EXPECT_NE(fcntl(descriptors[1], F_GETFD), -1);
+  close(descriptors[1]);
+}
+#endif
 
 class UpdaterTest : public ::testing::Test {
  protected:

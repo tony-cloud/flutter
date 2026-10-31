@@ -136,6 +136,19 @@ bool ConfigureShorebird(const ShorebirdConfigArgs& args,
   config.code_cache_dir = code_cache_dir;
   config.file_callbacks = ShorebirdFileCallbacks();
   config.yaml_config = args.shorebird_yaml;
+  config.max_native_image_bytes = args.max_native_image_bytes;
+#if FML_OS_LINUX
+  if (shorebird::Updater::Instance().SupportsPreparedBootSources() &&
+      DartVM::IsRunningPrecompiledCode()) {
+    shorebird::Updater::Instance().RequirePreparedBootSource();
+    if (!ResolveNativePatchMaxBytes(args.shorebird_yaml,
+                                    args.max_native_image_bytes,
+                                    config.max_native_image_bytes)) {
+      FML_LOG(ERROR) << "Invalid native_patch_max_bytes release configuration";
+      return false;
+    }
+  }
+#endif
 
   // The open CLI diffs desktop patches against the complete release library.
   // Leave the snapshot callback unopened so the updater reads that same file.
@@ -143,6 +156,12 @@ bool ConfigureShorebird(const ShorebirdConfigArgs& args,
   // both ends of this contract can change together.
 
   bool init_result = shorebird::Updater::Instance().Init(config);
+
+  if (config.max_native_image_bytes != 0) {
+    // Selection occurs at the actual loader. In particular, do not ask the
+    // legacy path validator to interpret encrypted persistent state.
+    return init_result;
+  }
 
   FML_LOG(INFO) << "Checking for active patch";
   shorebird::Updater::Instance().ValidateNextBootPatch();
@@ -191,7 +210,8 @@ void ConfigureShorebird(std::string code_cache_path,
                         Settings& settings,
                         const std::string& shorebird_yaml,
                         const std::string& version,
-                        const std::string& version_code) {
+                        const std::string& version_code,
+                        uint64_t max_native_image_bytes) {
   // If you are crashing here, you probably are running Shorebird in a Debug
   // config, where the AOT snapshot won't be linked into the process, and thus
   // lookups will fail.  Change your Scheme to Release to fix:
@@ -219,6 +239,18 @@ void ConfigureShorebird(std::string code_cache_path,
   config.code_cache_dir = code_cache_dir;
   config.file_callbacks = ShorebirdFileCallbacks();
   config.yaml_config = shorebird_yaml;
+  config.max_native_image_bytes = max_native_image_bytes;
+#if FML_OS_ANDROID && !SHOREBIRD_USE_INTERPRETER
+  if (shorebird::Updater::Instance().SupportsPreparedBootSources() &&
+      DartVM::IsRunningPrecompiledCode()) {
+    shorebird::Updater::Instance().RequirePreparedBootSource();
+    if (!ResolveNativePatchMaxBytes(shorebird_yaml, max_native_image_bytes,
+                                    config.max_native_image_bytes)) {
+      FML_LOG(ERROR) << "Invalid native_patch_max_bytes release configuration";
+      return;
+    }
+  }
+#endif
 
 #if FML_OS_IOS
   shorebird::SealInterpreterKeyProvider();
@@ -227,8 +259,7 @@ void ConfigureShorebird(std::string code_cache_path,
                                            settings.assets_path);
 #endif
   if (!shorebird::Updater::Instance().Init(config)) {
-    FML_LOG(ERROR)
-        << "Shorebird updater initialization failed; running base code";
+    FML_LOG(ERROR) << "Shorebird updater initialization failed";
 #if FML_OS_IOS
     settings.shorebird_interpreter_patch =
         shorebird::SelectInterpreterPatchForProcess(nullptr);
@@ -243,6 +274,10 @@ void ConfigureShorebird(std::string code_cache_path,
   SetBaseSnapshot(settings);
 #endif
 
+  if (shorebird::Updater::Instance().UsesPreparedBootSource()) {
+    // Preserve release paths for BASE; the actual loader begins the source.
+    return;
+  }
   shorebird::Updater::Instance().ValidateNextBootPatch();
   std::string active_path = shorebird::Updater::Instance().NextBootPatchPath();
   if (!active_path.empty()) {

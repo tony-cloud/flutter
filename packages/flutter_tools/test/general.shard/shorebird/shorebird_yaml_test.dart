@@ -13,6 +13,47 @@ import '../../src/shorebird_replacement.dart';
 
 void main() {
   group('ShorebirdYaml', () {
+    test('native image budget stays absent unless the release specifies it', () {
+      final Map<String, dynamic> compiled = compileShorebirdYaml(
+        loadYaml('app_id: app') as YamlMap,
+        flavor: null,
+        environment: <String, String>{'SHOREBIRD_NATIVE_PATCH_MAX_BYTES': '1'},
+      );
+      expect(compiled.containsKey('native_patch_max_bytes'), isFalse);
+    });
+    test('native image budget preserves release values across flavor selection', () {
+      for (final bytes in <int>[1, 536870912, 0x7fffffffffffffff]) {
+        final Map<String, dynamic> compiled = compileShorebirdYaml(
+          loadYaml('app_id: app\nflavors:\n  paid: paid-app\nnative_patch_max_bytes: $bytes\n')
+              as YamlMap,
+          flavor: 'paid',
+          environment: <String, String>{'SHOREBIRD_NATIVE_PATCH_MAX_BYTES': '2'},
+        );
+        expect(compiled['app_id'], 'paid-app');
+        expect(compiled['native_patch_max_bytes'], bytes);
+      }
+    });
+    test('native image budget rejects malformed or unbounded release values', () {
+      for (final value in <String>[
+        'null',
+        'true',
+        '"1024"',
+        '1.5',
+        '0',
+        '-1',
+        '9223372036854775808',
+      ]) {
+        expect(
+          () => compileShorebirdYaml(
+            loadYaml('app_id: app\nnative_patch_max_bytes: $value\n') as YamlMap,
+            flavor: null,
+            environment: <String, String>{},
+          ),
+          throwsFormatException,
+          reason: value,
+        );
+      }
+    });
     test('yaml ignores comments', () {
       const yamlContents = '''
 # This file is used to configure the Shorebird updater used by your app.
