@@ -20,10 +20,12 @@
 #include "flutter/fml/platform/win/wstring_conversion.h"
 #include "flutter/fml/synchronization/waitable_event.h"
 #include "flutter/shell/common/shorebird/shorebird.h"
+#include "flutter/shell/common/shorebird/updater.h"
 #include "flutter/shell/platform/common/client_wrapper/binary_messenger_impl.h"
 #include "flutter/shell/platform/common/client_wrapper/include/flutter/standard_message_codec.h"
 #include "flutter/shell/platform/common/path_utils.h"
 #include "flutter/shell/platform/embedder/embedder_struct_macros.h"
+#include "flutter/shell/platform/embedder/shorebird_aot_data.h"
 #include "flutter/shell/platform/windows/accessibility_bridge_windows.h"
 #include "flutter/shell/platform/windows/compositor_opengl.h"
 #include "flutter/shell/platform/windows/compositor_software.h"
@@ -430,19 +432,40 @@ bool FlutterWindowsEngine::Run(std::string_view entrypoint) {
   // fails to load is reported and replaced by the release's own library.
   if (embedder_api_.RunsAOTCompiledDartCode()) {
     const std::filesystem::path base_path = project_->aot_library_path();
-    LoadPatchOrBase(
-        patch_path, fml::PathToUtf8(base_path), [&](const std::string& path) {
-          // The patch path is UTF-8, which a narrow std::filesystem::path
-          // would decode as the ANSI code page. The base keeps its own
-          // path object.
-          project_->SetAotLibraryPath(
-              path == patch_path
-                  ? std::filesystem::path(fml::Utf8ToWideString(path))
-                  : base_path);
-          aot_data_ = project_->LoadAotData(embedder_api_);
-          return aot_data_ != nullptr;
-        });
-    if (!aot_data_) {
+    const auto base_path_utf8 = fml::PathToUtf8(base_path);
+    auto load_path = [&](const std::string& path) {
+      // The patch path is UTF-8, which a narrow std::filesystem::path
+      // would decode as the ANSI code page. The base keeps its own
+      // path object.
+      project_->SetAotLibraryPath(
+          path == base_path_utf8
+              ? base_path
+              : std::filesystem::path(fml::Utf8ToWideString(path)));
+      aot_data_ = project_->LoadAotData(embedder_api_);
+      return aot_data_ != nullptr;
+    };
+    auto& updater = shorebird::Updater::Instance();
+    bool loaded;
+    if (updater.UsesPreparedBootSource()) {
+      loaded = updater.LoadPreparedBootSource(
+          [&](shorebird::PreparedBootSource& source) {
+            if (source.kind() == shorebird::PreparedBootSource::Kind::kMemory) {
+              FlutterEngineAOTData data = nullptr;
+              const auto result = shorebird::CreateAOTDataFromMemory(
+                  source.memory(), source.image_size(), source.selection_id(),
+                  &data);
+              aot_data_ = UniqueAotDataPtr(data, embedder_api_.CollectAOTData);
+              return result == kSuccess && aot_data_ != nullptr;
+            }
+            return source.kind() ==
+                       shorebird::PreparedBootSource::Kind::kPath &&
+                   load_path(source.path());
+          },
+          [&]() { return load_path(base_path_utf8); });
+    } else {
+      loaded = LoadPatchOrBase(patch_path, base_path_utf8, load_path);
+    }
+    if (!loaded || !aot_data_) {
       FML_LOG(ERROR) << "Unable to start engine without AOT data.";
       return false;
     }

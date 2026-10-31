@@ -186,6 +186,7 @@ source_set("flutter_windows_source") {
     "//flutter/shell/platform/common:common_cpp_switches",
     "//flutter/shell/platform/common/client_wrapper",
     "//flutter/shell/platform/embedder:embedder_as_internal_library",
+    "//flutter/shell/platform/embedder:shorebird_aot_data_headers",
     "//flutter/shell/platform/windows/client_wrapper:client_wrapper_windows",
 
     # libEGL_static MUST be ordered before libGLESv2_static in this list. If
@@ -257,6 +258,7 @@ executable("flutter_windows_unittests") {
     "platform_handler_unittests.cc",
     "sequential_id_generator_unittests.cc",
     "settings_plugin_unittests.cc",
+    "shorebird_flutter_windows_engine_unittests.cc",
     "system_utils_unittests.cc",
     "task_runner_unittests.cc",
     "testing/egl/mock_context.h",
@@ -304,6 +306,7 @@ executable("flutter_windows_unittests") {
     ":flutter_windows_headers",
     ":flutter_windows_source",
     "//flutter/impeller/renderer/backend/gles",
+    "//flutter/shell/common/shorebird:updater",
     "//flutter/shell/platform/common:common_cpp",
     "//flutter/shell/platform/common/client_wrapper",
     "//flutter/shell/platform/embedder:embedder_as_internal_library",

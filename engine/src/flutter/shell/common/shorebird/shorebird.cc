@@ -137,7 +137,7 @@ bool ConfigureShorebird(const ShorebirdConfigArgs& args,
   config.file_callbacks = ShorebirdFileCallbacks();
   config.yaml_config = args.shorebird_yaml;
   config.max_native_image_bytes = args.max_native_image_bytes;
-#if FML_OS_LINUX
+#if FML_OS_LINUX || FML_OS_WIN
   if (shorebird::Updater::Instance().SupportsPreparedBootSources() &&
       DartVM::IsRunningPrecompiledCode()) {
     shorebird::Updater::Instance().RequirePreparedBootSource();

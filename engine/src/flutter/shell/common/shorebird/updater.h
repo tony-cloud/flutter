@@ -28,15 +28,17 @@ struct FileCallbacks {
 
 /// One immutable updater selection. Owns its descriptor until TakeFD transfers
 /// it to a consuming loader. PATH is copied before the Rust output is released.
+/// MEMORY holds an immutable lease for the complete loader call.
 class PreparedBootSource {
  public:
-  enum class Kind : uint32_t { kBase = 0, kPath = 1, kFD = 2 };
+  enum class Kind : uint32_t { kBase = 0, kPath = 1, kFD = 2, kMemory = 3 };
   PreparedBootSource(Kind kind,
                      uint64_t selection_id,
                      uint64_t patch_number,
                      uint64_t image_size,
                      int fd,
-                     std::string path);
+                     std::string path,
+                     std::shared_ptr<const uint8_t> memory = nullptr);
   ~PreparedBootSource();
   PreparedBootSource(const PreparedBootSource&) = delete;
   PreparedBootSource& operator=(const PreparedBootSource&) = delete;
@@ -47,6 +49,7 @@ class PreparedBootSource {
   uint64_t image_size() const { return image_size_; }
   int fd() const { return fd_; }
   const std::string& path() const { return path_; }
+  const uint8_t* memory() const { return memory_.get(); }
   int TakeFD();
 
  private:
@@ -56,6 +59,7 @@ class PreparedBootSource {
   const uint64_t image_size_;
   int fd_;
   const std::string path_;
+  const std::shared_ptr<const uint8_t> memory_;
 };
 
 /// Configuration for initializing the Shorebird updater.
@@ -80,7 +84,7 @@ struct AppConfig {
   std::string yaml_config;
 
   /// Release-owned decoded-image budget. Zero preserves the legacy route.
-  /// Only Linux/Android native loaders may advertise sealed-FD capability.
+  /// Linux/Android advertise sealed FDs; Windows advertises verified memory.
   uint64_t max_native_image_bytes = 0;
 };
 

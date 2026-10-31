@@ -17,6 +17,14 @@ FlutterEngineResult CreateAOTDataFromFD(int fd,
                                         uint64_t selection_id,
                                         FlutterEngineAOTData* data_out);
 
+// Engine-internal Windows memory source (also exercised by Linux tests).
+// Borrows authenticated immutable bytes for this call only. Loaded mappings
+// and Windows unwind tables are retained across engine destruction/recreation.
+FlutterEngineResult CreateAOTDataFromMemory(const uint8_t* bytes,
+                                            uint64_t length,
+                                            uint64_t selection_id,
+                                            FlutterEngineAOTData* data_out);
+
 }  // namespace flutter::shorebird
 
 #endif  // FLUTTER_SHELL_PLATFORM_EMBEDDER_SHOREBIRD_AOT_DATA_H_

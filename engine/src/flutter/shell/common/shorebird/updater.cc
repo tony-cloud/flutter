@@ -25,13 +25,15 @@ PreparedBootSource::PreparedBootSource(Kind kind,
                                        uint64_t patch_number,
                                        uint64_t image_size,
                                        int fd,
-                                       std::string path)
+                                       std::string path,
+                                       std::shared_ptr<const uint8_t> memory)
     : kind_(kind),
       selection_id_(selection_id),
       patch_number_(patch_number),
       image_size_(image_size),
       fd_(fd),
-      path_(std::move(path)) {}
+      path_(std::move(path)),
+      memory_(std::move(memory)) {}
 
 PreparedBootSource::~PreparedBootSource() {
 #if !FML_OS_WIN
@@ -271,7 +273,7 @@ void Updater::ReportLaunchFailure() {
 // RealUpdater implementation - wraps the Rust C API
 
 bool RealUpdater::SupportsPreparedBootSources() const {
-#if FML_OS_LINUX || (FML_OS_ANDROID && !SHOREBIRD_USE_INTERPRETER)
+#if FML_OS_LINUX || FML_OS_WIN || (FML_OS_ANDROID && !SHOREBIRD_USE_INTERPRETER)
   return true;
 #else
   return false;
@@ -301,10 +303,14 @@ bool RealUpdater::DoInit(const AppConfig& config) {
   rust_callbacks.close = config.file_callbacks.close;
 
   if (config.max_native_image_bytes != 0) {
-#if FML_OS_LINUX || (FML_OS_ANDROID && !SHOREBIRD_USE_INTERPRETER)
+#if FML_OS_LINUX || FML_OS_WIN || (FML_OS_ANDROID && !SHOREBIRD_USE_INTERPRETER)
     ShorebirdEngineOptions options = {};
     options.struct_size = sizeof(options);
+#if FML_OS_WIN
+    options.native_source_capability = 2;  // VERIFIED_MEMORY_V1
+#else
     options.native_source_capability = 1;  // SEALED_FD_V1
+#endif
     options.max_native_image_bytes = config.max_native_image_bytes;
     return shorebird_init_with_options(&params, rust_callbacks,
                                        config.yaml_config.c_str(), &options);
@@ -332,15 +338,33 @@ std::unique_ptr<PreparedBootSource> RealUpdater::PrepareBootSource() {
        (source.kind == 1 && source.patch_number != 0 && source.fd == -1 &&
         source.path) ||
        (source.kind == 2 && source.patch_number != 0 && source.fd >= 0 &&
+        !source.path && source.image_size != 0) ||
+       (source.kind == 3 && source.patch_number != 0 && source.fd == -1 &&
         !source.path && source.image_size != 0));
   if (!valid) {
     shorebird_release_boot_source(&source);
     return nullptr;
   }
+  std::shared_ptr<const uint8_t> memory;
+  if (source.kind == 3) {
+    ShorebirdBootMemory lease = {};
+    lease.struct_size = sizeof(lease);
+    if (!shorebird_acquire_boot_source_memory(source.selection_id, &lease) ||
+        !lease.data || !lease.private_owner ||
+        lease.length != source.image_size) {
+      shorebird_release_boot_source_memory(&lease);
+      shorebird_release_boot_source(&source);
+      return nullptr;
+    }
+    memory = std::shared_ptr<const uint8_t>(
+        lease.data, [lease](const uint8_t*) mutable {
+          shorebird_release_boot_source_memory(&lease);
+        });
+  }
   auto result = std::make_unique<PreparedBootSource>(
       static_cast<PreparedBootSource::Kind>(source.kind), source.selection_id,
       source.patch_number, source.image_size, source.fd,
-      source.path ? source.path : "");
+      source.path ? source.path : "", std::move(memory));
   source.fd = -1;  // Ownership transferred to the C++ source.
   shorebird_release_boot_source(&source);
   return result;

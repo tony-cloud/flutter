@@ -7,6 +7,7 @@
 
 #include <cstring>
 #include <iostream>
+#include <limits>
 #include <memory>
 #include <mutex>
 #include <set>
@@ -1832,6 +1833,64 @@ FlutterEngineResult flutter::shorebird::CreateAOTDataFromFD(
   return kSuccess;
 }
 #endif  // FML_OS_LINUX
+
+#if FML_OS_WIN || FML_OS_LINUX
+FlutterEngineResult flutter::shorebird::CreateAOTDataFromMemory(
+    const uint8_t* bytes,
+    uint64_t length,
+    uint64_t selection_id,
+    FlutterEngineAOTData* data_out) {
+  if (data_out) {
+    *data_out = nullptr;
+  }
+  if (!data_out || !bytes || length == 0 || selection_id == 0 ||
+      length > static_cast<uint64_t>(std::numeric_limits<intptr_t>::max()) ||
+      !flutter::DartVM::IsRunningPrecompiledCode()) {
+    return LOG_EMBEDDER_ERROR(kInvalidArguments,
+                              "Invalid native memory AOT source.");
+  }
+  static std::mutex cache_mutex;
+  static uint64_t cached_selection_id = 0;
+  static uint64_t cached_length = 0;
+  static std::shared_ptr<const _FlutterEngineAOTData> cached_source;
+  std::lock_guard<std::mutex> lock(cache_mutex);
+  if (cached_source &&
+      (cached_selection_id != selection_id || cached_length != length)) {
+    return LOG_EMBEDDER_ERROR(kInvalidArguments,
+                              "Native source changed after loading.");
+  }
+  if (!cached_source) {
+    auto image = std::make_unique<_FlutterEngineAOTData>();
+    const char* error = nullptr;
+    image->loaded_elf.reset(Dart_LoadELF_Memory(bytes, length, &error,
+                                                &image->vm_isolate_data,
+                                                &image->vm_isolate_instrs));
+    if (!image->loaded_elf) {
+      return LOG_EMBEDDER_ERROR(kInvalidArguments, error);
+    }
+    if (!image->vm_isolate_data || !image->vm_isolate_instrs) {
+      return LOG_EMBEDDER_ERROR(kInvalidArguments,
+                                "Native memory image lacks the snapshot pair.");
+    }
+    image->vm_snapshot_data = image->vm_isolate_data;
+    image->vm_snapshot_instrs = image->vm_isolate_instrs;
+    // The loader owns its copied image and Windows unwind registrations. The
+    // caller's immutable input lease can end after this call; no input pointer
+    // is retained. Engines reuse this exact loaded image for the process.
+    cached_source = std::shared_ptr<_FlutterEngineAOTData>(image.release());
+    cached_selection_id = selection_id;
+    cached_length = length;
+  }
+  auto data = std::make_unique<_FlutterEngineAOTData>();
+  data->vm_snapshot_data = cached_source->vm_snapshot_data;
+  data->vm_snapshot_instrs = cached_source->vm_snapshot_instrs;
+  data->vm_isolate_data = cached_source->vm_isolate_data;
+  data->vm_isolate_instrs = cached_source->vm_isolate_instrs;
+  data->retained_source = cached_source;
+  *data_out = data.release();
+  return kSuccess;
+}
+#endif  // FML_OS_WIN || FML_OS_LINUX
 
 FlutterEngineResult FlutterEngineCollectAOTData(FlutterEngineAOTData data) {
   if (!data) {

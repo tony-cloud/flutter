@@ -184,6 +184,28 @@ TEST(PreparedBootSourceTest, ClosesOwnedFDAndTransfersDetachedFD) {
 }
 #endif
 
+TEST(PreparedBootSourceTest, MemoryLeaseOutlivesCallerAndEndsAfterLoader) {
+  int released = 0;
+  auto memory = std::shared_ptr<const uint8_t>(
+      new uint8_t[3]{11, 22, 33}, [&released](const uint8_t* bytes) {
+        ++released;
+        delete[] bytes;
+      });
+  const uint8_t* address = memory.get();
+  {
+    PreparedBootSource source(PreparedBootSource::Kind::kMemory, 1, 7, 3, -1,
+                              "", memory);
+    memory.reset();
+    EXPECT_EQ(released, 0);
+    EXPECT_EQ(source.memory(), address);
+    EXPECT_EQ(source.memory()[2], 33);
+    EXPECT_EQ(source.image_size(), 3u);
+    EXPECT_EQ(source.fd(), -1);
+    EXPECT_TRUE(source.path().empty());
+  }
+  EXPECT_EQ(released, 1);
+}
+
 class UpdaterTest : public ::testing::Test {
  protected:
   void SetUp() override {

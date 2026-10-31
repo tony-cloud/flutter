@@ -2879,6 +2879,68 @@ TEST_F(EmbedderTest, PreparedFDOwnershipAndImageSurviveMultipleEngines) {
 }
 #endif
 
+#if FML_OS_WIN || FML_OS_LINUX
+TEST_F(EmbedderTest, PreparedMemoryImageSurvivesInputAndMultipleEngines) {
+  if (!DartVM::IsRunningPrecompiledCode()) {
+    GTEST_SKIP();
+  }
+  FlutterEngineAOTData data = nullptr;
+  const uint8_t invalid[] = {0, 1, 2};
+  EXPECT_EQ(
+      shorebird::CreateAOTDataFromMemory(invalid, sizeof(invalid), 0, &data),
+      kInvalidArguments);
+  EXPECT_EQ(shorebird::CreateAOTDataFromMemory(invalid, sizeof(invalid), 976541,
+                                               &data),
+            kInvalidArguments);
+  EXPECT_EQ(data, nullptr);
+  const auto path =
+      fml::paths::JoinPaths({GetFixturesPath(), kDefaultAOTAppELFFileName});
+  auto input = fml::FileMapping::CreateReadOnly(path);
+  ASSERT_TRUE(input && input->IsValid());
+  const auto length = input->GetSize();
+  ASSERT_GT(length, 0u);
+  ASSERT_EQ(shorebird::CreateAOTDataFromMemory(input->GetMapping(), length,
+                                               976542, &data),
+            kSuccess);
+  // The first engine runs after the caller has unmapped its source bytes.
+  input.reset();
+  auto& context = GetEmbedderContext<EmbedderTestContextSoftware>();
+  fml::AutoResetWaitableEvent launched;
+  context.AddIsolateCreateCallback([&launched]() { launched.Signal(); });
+  EmbedderConfigBuilder builder(
+      context,
+      EmbedderConfigBuilder::InitializationPreference::kAOTDataInitialize);
+  builder.SetSurface(DlISize(1, 1));
+  for (size_t index = 0; index < 2; ++index) {
+    builder.GetProjectArgs().aot_data = data;
+    auto engine = builder.LaunchEngine();
+    ASSERT_TRUE(engine.is_valid());
+    launched.Wait();
+    engine.reset();
+    ASSERT_EQ(FlutterEngineCollectAOTData(data), kSuccess);
+    data = nullptr;
+    if (index == 0) {
+      // A second engine must reuse the loaded selection, not reload or retain
+      // the borrowed input. These non-image bytes could not load a new ELF.
+      std::vector<uint8_t> consumed_input(length, 0);
+      ASSERT_EQ(shorebird::CreateAOTDataFromMemory(consumed_input.data(),
+                                                   length, 976542, &data),
+                kSuccess);
+    }
+  }
+  input = fml::FileMapping::CreateReadOnly(path);
+  ASSERT_TRUE(input && input->IsValid());
+  EXPECT_EQ(shorebird::CreateAOTDataFromMemory(input->GetMapping(), length,
+                                               976543, &data),
+            kInvalidArguments);
+  EXPECT_EQ(data, nullptr);
+  EXPECT_EQ(shorebird::CreateAOTDataFromMemory(input->GetMapping(), length - 1,
+                                               976542, &data),
+            kInvalidArguments);
+  EXPECT_EQ(data, nullptr);
+}
+#endif
+
 TEST_F(EmbedderTest, MustNotRunWithMultipleAOTSources) {
   if (!DartVM::IsRunningPrecompiledCode()) {
     GTEST_SKIP();
