@@ -23,6 +23,7 @@
 #include "flutter/fml/thread.h"
 #include "flutter/fml/time/time_delta.h"
 #include "flutter/fml/time/time_point.h"
+#include "flutter/fml/unique_fd.h"
 #include "flutter/runtime/dart_vm.h"
 #include "flutter/shell/platform/embedder/shorebird_aot_data.h"
 #include "flutter/shell/platform/embedder/tests/embedder_assertions.h"
@@ -36,7 +37,10 @@
 #include "third_party/tonic/converter/dart_converter.h"
 
 #if FML_OS_LINUX
+#include <errno.h>
 #include <fcntl.h>
+#include <linux/memfd.h>
+#include <sys/syscall.h>
 #include <unistd.h>
 #endif
 
@@ -2856,6 +2860,39 @@ TEST_F(EmbedderTest, PreparedFDOwnershipAndImageSurviveMultipleEngines) {
 
   const auto path =
       fml::paths::JoinPaths({GetFixturesPath(), kDefaultAOTAppELFFileName});
+  auto input = fml::FileMapping::CreateReadOnly(path);
+  ASSERT_TRUE(input && input->IsValid());
+  ASSERT_GT(input->GetSize(), 0u);
+  fml::UniqueFD sealed_fd(
+      static_cast<int>(syscall(SYS_memfd_create, "shorebird-native-test",
+                               MFD_CLOEXEC | MFD_ALLOW_SEALING)));
+  ASSERT_TRUE(sealed_fd.is_valid());
+  size_t written = 0;
+  while (written < input->GetSize()) {
+    const auto count = write(sealed_fd.get(), input->GetMapping() + written,
+                             input->GetSize() - written);
+    if (count < 0 && errno == EINTR) {
+      continue;
+    }
+    ASSERT_GT(count, 0);
+    written += static_cast<size_t>(count);
+  }
+  input.reset();
+  constexpr int seals =
+      F_SEAL_WRITE | F_SEAL_GROW | F_SEAL_SHRINK | F_SEAL_SEAL;
+  ASSERT_EQ(fcntl(sealed_fd.get(), F_ADD_SEALS, seals), 0);
+  ASSERT_EQ(fcntl(sealed_fd.get(), F_GET_SEALS) & seals, seals);
+  const uint8_t replacement = 0;
+  ASSERT_EQ(pwrite(sealed_fd.get(), &replacement, 1, 0), -1);
+  EXPECT_EQ(errno, EPERM);
+  ASSERT_EQ(ftruncate(sealed_fd.get(), 0), -1);
+  EXPECT_EQ(errno, EPERM);
+  std::vector<fml::UniqueFD> sources;
+  for (size_t index = 0; index < 2; ++index) {
+    sources.emplace_back(fcntl(sealed_fd.get(), F_DUPFD_CLOEXEC, 0));
+    ASSERT_TRUE(sources.back().is_valid());
+  }
+  sealed_fd.reset();
   auto& context = GetEmbedderContext<EmbedderTestContextSoftware>();
   fml::AutoResetWaitableEvent launched;
   context.AddIsolateCreateCallback([&launched]() { launched.Signal(); });
@@ -2864,8 +2901,7 @@ TEST_F(EmbedderTest, PreparedFDOwnershipAndImageSurviveMultipleEngines) {
       EmbedderConfigBuilder::InitializationPreference::kAOTDataInitialize);
   builder.SetSurface(DlISize(1, 1));
   for (size_t index = 0; index < 2; ++index) {
-    fd = open(path.c_str(), O_RDONLY | O_CLOEXEC);
-    ASSERT_GE(fd, 0);
+    fd = sources[index].release();
     ASSERT_EQ(shorebird::CreateAOTDataFromFD(fd, 876542, &data), kSuccess);
     EXPECT_EQ(fcntl(fd, F_GETFD), -1);
     builder.GetProjectArgs().aot_data = data;
