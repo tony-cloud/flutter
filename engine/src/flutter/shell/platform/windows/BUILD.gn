@@ -212,7 +212,15 @@ copy("updater_exports_windows") {
 }
 
 shared_library("flutter_windows") {
-  deps = [ ":flutter_windows_source" ]
+  deps = [
+    ":flutter_windows_source",
+    ":updater_exports_windows",
+  ]
+
+  # The Windows linker consumes this copied Shorebird export list. Require it
+  # before linking, including when the DLL is built directly for an archive,
+  # and relink when the exports change.
+  inputs = [ "$root_out_dir/flutter_windows.dll.def" ]
 
   public_configs = [ "//flutter:config" ]
 }

@@ -4,6 +4,7 @@ EXPORTS
   shorebird_free_string = shorebird_free_string
   shorebird_free_update_result = shorebird_free_update_result
   shorebird_init = shorebird_init
+  shorebird_set_device_id_override = shorebird_set_device_id_override
   shorebird_set_patch_decryption_key_provider = shorebird_set_patch_decryption_key_provider
   shorebird_next_boot_patch_number = shorebird_next_boot_patch_number
   shorebird_next_boot_patch_path = shorebird_next_boot_patch_path
