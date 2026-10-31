@@ -29,6 +29,7 @@ import 'package:unified_analytics/unified_analytics.dart';
 
 import '../../src/common.dart';
 import '../../src/context.dart';
+import '../../src/shorebird_replacement.dart';
 
 const _keyA = 'PUBLIC-KEY-AAAA';
 const _keyB = 'PUBLIC-KEY-BBBB';
@@ -204,6 +205,45 @@ void main() {
         expect(target.buildKeyFor(environment), android, reason: target.name);
         environment.defines[kTargetPlatform] = 'ios';
         expect(target.buildKeyFor(environment), bodyOnly, reason: target.name);
+      }
+    });
+
+    test('full replacement bytes and host ABI invalidate kernel, AOT and assets', () {
+      fileSystem
+          .file('shorebird.yaml')
+          .writeAsStringSync(
+            'aot_patch_runtime_mode: dart-bytecode-interpreter\naot_patch_full_replacement: true\n',
+          );
+      for (final target in const <Target>[
+        KernelSnapshot(),
+        AotAssemblyRelease(),
+        AotAssemblyProfile(),
+        CopyAssets(),
+        ReleaseIosApplicationBundle(),
+      ]) {
+        final String hostAbi = writeShorebirdReplacementHost(fileSystem, Artifacts.test());
+        Environment environment = environmentWith(
+          writeShorebirdReplacementBase(fileSystem, hostAbi: hostAbi),
+        );
+        environment.defines[kTargetPlatform] = 'ios';
+        final String? before = target.buildKeyFor(environment);
+        environment = environmentWith(
+          writeShorebirdReplacementBase(fileSystem, content: 2, hostAbi: hostAbi),
+        );
+        environment.defines[kTargetPlatform] = 'ios';
+        final String? changedBytes = target.buildKeyFor(environment);
+        expect(changedBytes, isNot(before), reason: target.name);
+        environment = environmentWith(
+          writeShorebirdReplacementBase(
+            fileSystem,
+            content: 2,
+            hostAbi: writeShorebirdReplacementHost(fileSystem, Artifacts.test(), content: 2),
+          ),
+        );
+        environment.defines[kTargetPlatform] = 'ios';
+        expect(target.buildKeyFor(environment), isNot(changedBytes), reason: target.name);
+        expect(before, isNot(contains('/private/base.sbr')));
+        expect(before, isNot(contains('a' * 64)));
       }
     });
 

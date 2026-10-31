@@ -185,6 +185,8 @@ class KernelSnapshot extends Target with ShorebirdInterpreterBuildKey {
   @override
   Future<void> build(Environment environment) async {
     final compiler = KernelCompiler(
+      platform: environment.platform,
+      projectDirectory: environment.projectDir,
       fileSystem: environment.fileSystem,
       logger: environment.logger,
       processManager: environment.processManager,
@@ -367,6 +369,7 @@ abstract class AotElfBase extends Target {
   @override
   Future<void> build(Environment environment) async {
     final snapshotter = AOTSnapshotter(
+      projectDirectory: environment.projectDir,
       fileSystem: environment.fileSystem,
       logger: environment.logger,
       xcode: globals.xcode!,

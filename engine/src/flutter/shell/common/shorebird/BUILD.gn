@@ -122,6 +122,7 @@ source_set("shorebird") {
   sources = [
     "shorebird.cc",
     "shorebird.h",
+    "shorebird_config.cc",
   ]
 
   deps = [
@@ -148,6 +149,7 @@ if (enable_unittests) {
     sources = [
       "interpreter_patch_unittests.cc",
       "patch_cache_unittests.cc",
+      "shorebird_config_unittests.cc",
       "shorebird_unittests.cc",
       "snapshots_data_handle_unittests.cc",
       "updater_unittests.cc",

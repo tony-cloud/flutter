@@ -2,6 +2,7 @@
 #define FLUTTER_SHELL_COMMON_SHOREBIRD_SHOREBIRD_H_
 
 #include <functional>
+#include <memory>
 #include <string>
 
 #include "flutter/common/settings.h"
@@ -65,6 +66,13 @@ void ConfigureShorebird(std::string code_cache_path,
                         const std::string& shorebird_yaml,
                         const std::string& version,
                         const std::string& version_code);
+
+// Parse the signed compiled profile before updater initialization. Retain an
+// invalid full-profile config so runtime startup fails closed. Absent/false is
+// the legacy profile and returns nullptr. Exposed for focused config tests.
+std::shared_ptr<const shorebird::InterpreterReplacementBaseConfig>
+LoadInterpreterReplacementBaseConfig(const std::string& yaml,
+                                     const std::string& assets_path);
 
 /// Used for reading app_id from shorebird.yaml.
 /// Exposed for testing.

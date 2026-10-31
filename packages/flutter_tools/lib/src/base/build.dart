@@ -10,6 +10,8 @@ import '../darwin/darwin.dart';
 import '../macos/xcode.dart';
 import '../shorebird/shorebird_dd.dart';
 import '../shorebird/shorebird_interpreter.dart';
+import '../shorebird/shorebird_replacement.dart';
+import '../shorebird/shorebird_replacement_host.dart';
 import 'file_system.dart';
 import 'logger.dart';
 import 'platform.dart';
@@ -168,10 +170,14 @@ class AOTSnapshotter {
     required Artifacts artifacts,
     // Shorebird: the environment SHOREBIRD_DD_MAX_BYTES is read from.
     Platform platform = const LocalPlatform(),
+    Directory? projectDirectory,
   }) : _logger = logger,
        _fileSystem = fileSystem,
        _xcode = xcode,
        _platform = platform,
+       _projectDirectory = projectDirectory ?? fileSystem.currentDirectory,
+       _artifacts = artifacts,
+       _processManager = processManager,
        _processUtils = ProcessUtils(logger: logger, processManager: processManager),
        _genSnapshot = GenSnapshot(
          artifacts: artifacts,
@@ -184,6 +190,9 @@ class AOTSnapshotter {
   final FileSystem _fileSystem;
   final Xcode _xcode;
   final Platform _platform;
+  final Directory _projectDirectory;
+  final Artifacts _artifacts;
+  final ProcessManager _processManager;
   final ProcessUtils _processUtils;
   final GenSnapshot _genSnapshot;
 
@@ -216,7 +225,31 @@ class AOTSnapshotter {
     final bool usesInterpreter = shorebirdUsesIosBytecodeInterpreter(
       _fileSystem,
       platform.getName(),
+      projectDirectory: _projectDirectory,
     );
+    if (shorebirdUsesIosFullReplacement(
+      _fileSystem,
+      platform.getName(),
+      projectDirectory: _projectDirectory,
+    )) {
+      if (buildMode != BuildMode.release) {
+        throw const FormatException('Full replacement requires a PRODUCT release build');
+      }
+      if (darwinArch != DarwinArch.arm64 ||
+          (sdkRoot?.toLowerCase().contains('iphonesimulator') ?? false)) {
+        throw const FormatException('Full replacement requires an arm64 iOS device build');
+      }
+      if (dartObfuscation) {
+        throw const FormatException('Full replacement does not support Dart obfuscation');
+      }
+      final inputs = ShorebirdReplacementInputs.read(_fileSystem, _platform.environment);
+      ShorebirdReplacementHost.read(
+        _fileSystem,
+        _artifacts,
+        buildMode: buildMode,
+        processManager: _processManager,
+      ).validate(inputs.hostAbi);
+    }
     final bool usesLinker =
         !usesInterpreter &&
         shorebirdLegacyAotToolsEnabled(_platform.environment) &&
@@ -237,8 +270,18 @@ class AOTSnapshotter {
     final genSnapshotArgs = <String>[
       // Shorebird uses --deterministic to improve snapshot stability and increase linking.
       '--deterministic',
-      if (shorebirdUsesIosStructuralUpdates(_fileSystem, platform.getName()))
+      if (shorebirdUsesIosStructuralUpdates(
+        _fileSystem,
+        platform.getName(),
+        projectDirectory: _projectDirectory,
+      ))
         '--shorebird-structural-patching',
+      if (shorebirdUsesIosFullReplacement(
+        _fileSystem,
+        platform.getName(),
+        projectDirectory: _projectDirectory,
+      ))
+        '--shorebird-full-replacement',
       // Only save LinkInfo if we're using the linker.
       if (usesLinker) ...dumpLinkInfoArgs,
     ];

@@ -3,6 +3,7 @@
 // found in the LICENSE file.
 #include "flutter/runtime/shorebird/interpreter_patch.h"
 
+#include <algorithm>
 #include <array>
 #include <cstring>
 #include <vector>
@@ -31,6 +32,29 @@ std::string Envelope(const std::string& key = "test-key") {
          R"("}})";
 }
 
+// A v1 baseline manifest with one root library and a small opaque component.
+// The VM owns full component decoding; these tests exercise the engine seam.
+std::string ReplacementWrapper() {
+  std::string manifest(4, '\0');
+  manifest[0] = 1;
+  manifest += std::string(32, '\xaa');
+  manifest += std::string(64, '\xcc');
+  auto uint32 = [](uint32_t value) {
+    std::string bytes;
+    for (int i = 0; i < 4; ++i) {
+      bytes.push_back(static_cast<char>(value >> (i * 8)));
+    }
+    return bytes;
+  };
+  const std::string root = "package:app/main.dart";
+  manifest += uint32(root.size()) + root;
+  manifest += uint32(1) + uint32(root.size()) + root;
+  manifest += uint32(1) + uint32(root.size()) + root;
+  manifest += uint32(0);
+  return std::string("SBRPLCE\0", 8) + uint32(1) + uint32(manifest.size()) +
+         uint32(4) + uint32(0) + manifest + "DBC3";
+}
+
 class FakeApi : public InterpreterPatchApi {
  public:
   bool install_ok = true;
@@ -38,7 +62,10 @@ class FakeApi : public InterpreterPatchApi {
   bool empty_payload = false;
   Dart_AotPatchKeyCallback callback = nullptr;
   std::vector<std::string> calls;
-  std::array<uint8_t, 4> plaintext = {1, 2, 3, 4};
+  std::vector<uint8_t> plaintext = {1, 2, 3, 4};
+  bool expect_decrypted_payload = true;
+  const uint8_t* reloaded_payload = nullptr;
+  intptr_t reloaded_length = 0;
 
   void SetKeyCallback(Dart_AotPatchKeyCallback value) override {
     calls.emplace_back("callback");
@@ -79,8 +106,12 @@ class FakeApi : public InterpreterPatchApi {
               intptr_t length,
               std::string* error) override {
     calls.emplace_back("reload");
-    EXPECT_EQ(payload, plaintext.data());
-    EXPECT_EQ(length, 4);
+    reloaded_payload = payload;
+    reloaded_length = length;
+    if (expect_decrypted_payload) {
+      EXPECT_EQ(payload, plaintext.data());
+      EXPECT_EQ(length, static_cast<intptr_t>(plaintext.size()));
+    }
     if (!reload_ok) {
       *error = "bytecode rejected";
     }
@@ -130,7 +161,7 @@ TEST_F(InterpreterPatchTest, InstallsThenReloadsAndFreesPlaintext) {
   EXPECT_TRUE(Apply());
   EXPECT_EQ(api.calls, (std::vector<std::string>{"callback", "install",
                                                  "reload", "free"}));
-  EXPECT_EQ(api.plaintext, (std::array<uint8_t, 4>{0, 0, 0, 0}));
+  EXPECT_EQ(api.plaintext, (std::vector<uint8_t>{0, 0, 0, 0}));
   std::array<uint8_t, 32> key;
   intptr_t size;
   // The SDK's process-global callback cannot retrieve keys outside install.
@@ -244,6 +275,166 @@ TEST_F(InterpreterPatchTest, ProviderCannotBeReplacedOrInstalledAfterStartup) {
   SealInterpreterKeyProvider();
   EXPECT_FALSE(RegisterInterpreterKeyProvider(
       [](const char*, uint8_t*, intptr_t, intptr_t*) { return false; }));
+}
+
+InterpreterReplacementBaseConfig ReplacementBase() {
+  InterpreterReplacementBaseConfig base;
+  base.path = "/signed/flutter_assets/shorebird_replacement_base.sbr";
+  base.host_abi = std::string(64, 'a');
+  base.snapshot_hash =
+      "0aa96315d2d20ee4c482f75bf8e0ec18ca0457a441bee7f65155e4a597a290c2";
+  return base;
+}
+
+TEST_F(InterpreterPatchTest, BundledBaseReloadsWithoutEnvelopeOrAesKey) {
+  const auto base = ReplacementBase();
+  const Artifact artifact(ReplacementWrapper());
+  api.expect_decrypted_payload = false;
+  EXPECT_TRUE(ApplyInterpreterReplacementBase(base, artifact, api, &error));
+  EXPECT_EQ(api.calls, (std::vector<std::string>{"reload"}));
+  EXPECT_EQ(api.reloaded_payload, artifact.GetMapping());
+  EXPECT_EQ(api.reloaded_length, static_cast<intptr_t>(artifact.GetSize()));
+  EXPECT_EQ(std::string(reinterpret_cast<const char*>(artifact.GetMapping()),
+                        artifact.GetSize()),
+            ReplacementWrapper());
+}
+
+TEST_F(InterpreterPatchTest, InvalidBundledBaseNeverTouchesVm) {
+  const auto original = ReplacementBase();
+  auto base = original;
+  base.snapshot_hash[0] = base.snapshot_hash[0] == '0' ? '1' : '0';
+  EXPECT_FALSE(ApplyInterpreterReplacementBase(
+      base, Artifact(ReplacementWrapper()), api, &error));
+  base = original;
+  base.host_abi = std::string(64, 'b');
+  EXPECT_FALSE(ApplyInterpreterReplacementBase(
+      base, Artifact(ReplacementWrapper()), api, &error));
+  base = original;
+  base.path = "/updater/arbitrary.sbr";
+  EXPECT_FALSE(ApplyInterpreterReplacementBase(
+      base, Artifact(ReplacementWrapper()), api, &error));
+  base = original;
+  base.validation_error = "invalid signed configuration";
+  EXPECT_FALSE(ApplyInterpreterReplacementBase(
+      base, Artifact(ReplacementWrapper()), api, &error));
+  EXPECT_TRUE(api.calls.empty());
+}
+
+TEST_F(InterpreterPatchTest, RejectsTruncatedWrongVersionAndNonBaseWrappers) {
+  const auto base = ReplacementBase();
+  auto wrapper = ReplacementWrapper();
+  EXPECT_FALSE(ApplyInterpreterReplacementBase(
+      base, Artifact(wrapper.substr(0, 23)), api, &error));
+  wrapper[8] = 2;
+  EXPECT_FALSE(
+      ApplyInterpreterReplacementBase(base, Artifact(wrapper), api, &error));
+  wrapper = ReplacementWrapper();
+  wrapper[16] = 3;
+  EXPECT_FALSE(
+      ApplyInterpreterReplacementBase(base, Artifact(wrapper), api, &error));
+  wrapper = ReplacementWrapper();
+  wrapper[24 + 68] = 0;
+  EXPECT_FALSE(
+      ApplyInterpreterReplacementBase(base, Artifact(wrapper), api, &error));
+  EXPECT_TRUE(api.calls.empty());
+}
+
+TEST_F(InterpreterPatchTest, FullUpdateForwardsOpaqueWrapperAndFreesIt) {
+  RegisterKey();
+  config.full_replacement = true;
+  config.host_abi = std::string(64, 'a');
+  const auto wrapper = ReplacementWrapper();
+  api.plaintext.assign(wrapper.begin(), wrapper.end());
+  EXPECT_TRUE(Apply());
+  EXPECT_EQ(api.reloaded_length, static_cast<intptr_t>(wrapper.size()));
+  EXPECT_EQ(api.calls, (std::vector<std::string>{"callback", "install",
+                                                 "reload", "free"}));
+  EXPECT_TRUE(std::all_of(api.plaintext.begin(), api.plaintext.end(),
+                          [](uint8_t byte) { return byte == 0; }));
+}
+
+TEST_F(InterpreterPatchTest, ProfileMismatchRejectsBeforeReloadAndStillFrees) {
+  RegisterKey();
+  config.full_replacement = true;
+  config.host_abi = std::string(64, 'a');
+  EXPECT_FALSE(Apply());  // DBC3/body profile cannot activate a full baseline.
+  EXPECT_EQ(api.calls,
+            (std::vector<std::string>{"callback", "install", "free"}));
+  api.calls.clear();
+  config.full_replacement = false;
+  const auto wrapper = ReplacementWrapper();
+  api.plaintext.assign(wrapper.begin(), wrapper.end());
+  EXPECT_FALSE(Apply());
+  EXPECT_EQ(api.calls,
+            (std::vector<std::string>{"callback", "install", "free"}));
+}
+
+TEST_F(InterpreterPatchTest, UpdateFailureRequiresFreshGroupBeforeBaseInstall) {
+  auto base = ReplacementBase();
+  config.full_replacement = true;
+  config.host_abi = base.host_abi;
+  config.base_snapshot_hash = base.snapshot_hash;
+  std::vector<std::string> installs;
+  auto update = [&] {
+    installs.emplace_back("update");
+    return false;
+  };
+  auto bundled = [&] {
+    installs.emplace_back("base");
+    return true;
+  };
+  EXPECT_FALSE(InstallInterpreterCodeForFreshGroup(&config, &base, update,
+                                                   bundled, &error));
+  EXPECT_EQ(installs, (std::vector<std::string>{"update"}));
+  // The runtime destroys that group and clears only its optional update.
+  EXPECT_TRUE(InstallInterpreterCodeForFreshGroup(nullptr, &base, update,
+                                                  bundled, &error));
+  EXPECT_EQ(installs, (std::vector<std::string>{"update", "base"}));
+}
+
+TEST_F(InterpreterPatchTest, SelectedUpdateDoesNotInstallBaseInSameGroup) {
+  auto base = ReplacementBase();
+  config.full_replacement = true;
+  config.host_abi = base.host_abi;
+  config.base_snapshot_hash = base.snapshot_hash;
+  int updates = 0;
+  int bases = 0;
+  EXPECT_TRUE(InstallInterpreterCodeForFreshGroup(
+      &config, &base,
+      [&] {
+        ++updates;
+        return true;
+      },
+      [&] {
+        ++bases;
+        return true;
+      },
+      &error));
+  EXPECT_EQ(updates, 1);
+  EXPECT_EQ(bases, 0);
+}
+
+TEST_F(InterpreterPatchTest,
+       BrokenBaseOrCompiledProfileCannotFallBackToNativeApp) {
+  auto base = ReplacementBase();
+  int bases = 0;
+  auto bundled = [&] {
+    ++bases;
+    return false;
+  };
+  EXPECT_FALSE(InstallInterpreterCodeForFreshGroup(
+      nullptr, &base, [] { return true; }, bundled, &error));
+  EXPECT_EQ(bases, 1);
+  base.validation_error = "broken configuration";
+  EXPECT_FALSE(InstallInterpreterCodeForFreshGroup(
+      &config, &base, [] { return true; }, bundled, &error));
+  EXPECT_EQ(error, "broken configuration");
+  EXPECT_EQ(bases, 1);
+  base.validation_error.clear();
+  // A retained process update from another profile cannot mutate this group.
+  EXPECT_FALSE(InstallInterpreterCodeForFreshGroup(
+      &config, &base, [] { return true; }, bundled, &error));
+  EXPECT_EQ(bases, 1);
 }
 }  // namespace
 }  // namespace flutter::shorebird

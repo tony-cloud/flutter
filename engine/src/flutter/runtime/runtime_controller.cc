@@ -555,6 +555,15 @@ bool RuntimeController::LaunchRootIsolate(
     return false;
   }
 
+#if FML_OS_IOS
+  // Capture the actual boot choice before a failed update clears the process
+  // latch. A stale per-engine candidate must not retry a broken selected base.
+  const bool attempting_interpreter_patch =
+      !spawning_isolate_.lock() && settings.shorebird_interpreter_patch &&
+      shorebird::SelectInterpreterPatchForProcess(
+          settings.shorebird_interpreter_patch) != nullptr;
+#endif
+
   auto strong_root_isolate =
       DartIsolate::CreateRunningRootIsolate(
           settings,                                       //
@@ -574,8 +583,7 @@ bool RuntimeController::LaunchRootIsolate(
           .lock();
 
 #if FML_OS_IOS
-  if (!strong_root_isolate && settings.shorebird_interpreter_patch &&
-      !spawning_isolate_.lock() &&
+  if (!strong_root_isolate && attempting_interpreter_patch &&
       shorebird::RejectInterpreterPatchForProcess()) {
     // The rejected transient group has shut down before this call. Recreate
     // all base state; never continue in a group the bytecode loader touched.
@@ -584,6 +592,9 @@ bool RuntimeController::LaunchRootIsolate(
     }
     Settings base_settings(settings);
     base_settings.shorebird_interpreter_patch.reset();
+    // Keep shorebird_interpreter_replacement_base: full-profile native app
+    // declarations are inactive, so retry must install signed bundled bytecode.
+    // This single retry cannot recurse if the bundled base is itself broken.
     strong_root_isolate =
         DartIsolate::CreateRunningRootIsolate(
             base_settings, isolate_snapshot_,

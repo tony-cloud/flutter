@@ -16,6 +16,7 @@ import '../build_system/depfile.dart';
 import '../build_system/targets/android.dart';
 import '../build_system/targets/assets.dart';
 import '../build_system/targets/common.dart';
+import '../build_system/targets/dart_plugin_registrant.dart';
 import '../build_system/targets/deferred_components.dart';
 import '../build_system/targets/ios.dart';
 import '../build_system/targets/linux.dart';
@@ -32,6 +33,7 @@ import '../shorebird/assemble_trace_events.dart';
 var _kDefaultTargets = <Target>[
   // Shared targets
   const CopyAssets(),
+  const DartPluginRegistrantTarget(),
   const KernelSnapshot(),
   const AotElfProfile(TargetPlatform.android_arm),
   const AotElfRelease(TargetPlatform.android_arm),

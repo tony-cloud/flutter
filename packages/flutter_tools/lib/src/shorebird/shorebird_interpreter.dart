@@ -9,6 +9,31 @@ import '../base/file_system.dart';
 /// Source YAML opt-in for baselines that support structural bytecode updates.
 const kShorebirdStructuralUpdatesKey = 'aot_patch_structural_updates';
 
+/// Source YAML opt-in for complete mutable-domain replacement.
+const kShorebirdFullReplacementKey = 'aot_patch_full_replacement';
+
+/// Validates the source-owned full replacement compiler profile.
+bool shorebirdFullReplacementEnabled(Map<Object?, Object?> configuration) {
+  final Object? value = configuration[kShorebirdFullReplacementKey];
+  if (!configuration.containsKey(kShorebirdFullReplacementKey)) {
+    return false;
+  }
+  if (value is! bool) {
+    throw const FormatException('aot_patch_full_replacement must be a YAML boolean');
+  }
+  if (value && configuration['aot_patch_runtime_mode'] != 'dart-bytecode-interpreter') {
+    throw const FormatException(
+      'aot_patch_full_replacement requires aot_patch_runtime_mode: dart-bytecode-interpreter',
+    );
+  }
+  if (value && configuration[kShorebirdStructuralUpdatesKey] == true) {
+    throw const FormatException(
+      'aot_patch_full_replacement and aot_patch_structural_updates are mutually exclusive',
+    );
+  }
+  return value;
+}
+
 /// Reads and validates the source profile, which must match all build stages.
 ///
 /// The profile has no environment override: the CLI checks it against the
@@ -56,6 +81,7 @@ bool shorebirdUsesIosBytecodeInterpreter(
     return false;
   }
   shorebirdStructuralUpdatesEnabled(yaml);
+  shorebirdFullReplacementEnabled(yaml);
   return yaml['aot_patch_runtime_mode'] == 'dart-bytecode-interpreter';
 }
 
@@ -69,7 +95,29 @@ bool shorebirdUsesIosStructuralUpdates(
     return false;
   }
   final YamlMap? yaml = _readConfiguration(fileSystem, projectDirectory);
-  return yaml != null && shorebirdStructuralUpdatesEnabled(yaml);
+  if (yaml == null) {
+    return false;
+  }
+  shorebirdFullReplacementEnabled(yaml);
+  return shorebirdStructuralUpdatesEnabled(yaml);
+}
+
+/// Enables complete-domain replacement only for opted-in iOS baselines.
+bool shorebirdUsesIosFullReplacement(
+  FileSystem fileSystem,
+  String? targetOS, {
+  Directory? projectDirectory,
+}) {
+  final YamlMap? yaml = _readConfiguration(fileSystem, projectDirectory);
+  if (yaml == null) {
+    return false;
+  }
+  shorebirdStructuralUpdatesEnabled(yaml);
+  final bool enabled = shorebirdFullReplacementEnabled(yaml);
+  if (enabled && targetOS != 'ios') {
+    throw const FormatException('aot_patch_full_replacement is supported only on iOS');
+  }
+  return enabled;
 }
 
 /// Prevents LinkSupplement from collecting stale private native linker tables

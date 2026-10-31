@@ -69,4 +69,26 @@ void main() {
     );
     expect(shorebirdUsesIosStructuralUpdates(fileSystem, 'ios'), isFalse);
   });
+  testWithoutContext('full replacement requires an exclusive iOS interpreter profile', () {
+    final fileSystem = MemoryFileSystem.test();
+    final File config = fileSystem.file('shorebird.yaml');
+    for (final value in <String>['"true"', 'null', '1']) {
+      config.writeAsStringSync('aot_patch_full_replacement: $value\n');
+      expect(() => shorebirdUsesIosFullReplacement(fileSystem, 'ios'), throwsFormatException);
+    }
+    for (final extra in <String>[
+      '',
+      'aot_patch_runtime_mode: native-aot\n',
+      'aot_patch_runtime_mode: dart-bytecode-interpreter\naot_patch_structural_updates: true\n',
+    ]) {
+      config.writeAsStringSync('${extra}aot_patch_full_replacement: true\n');
+      expect(() => shorebirdUsesIosFullReplacement(fileSystem, 'ios'), throwsFormatException);
+    }
+    config.writeAsStringSync(
+      'aot_patch_runtime_mode: dart-bytecode-interpreter\naot_patch_full_replacement: true\n',
+    );
+    expect(shorebirdUsesIosFullReplacement(fileSystem, 'ios'), isTrue);
+    expect(shorebirdUsesIosStructuralUpdates(fileSystem, 'ios'), isFalse);
+    expect(() => shorebirdUsesIosFullReplacement(fileSystem, 'android'), throwsFormatException);
+  });
 }

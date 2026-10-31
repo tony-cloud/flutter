@@ -172,21 +172,35 @@ std::weak_ptr<DartIsolate> DartIsolate::CreateRunningRootIsolate(
                                   ? shorebird::SelectInterpreterPatchForProcess(
                                         settings.shorebird_interpreter_patch)
                                   : nullptr;
-  if (selected_patch && !spawning_isolate) {
+  const auto& bundled_base = settings.shorebird_interpreter_replacement_base;
+  if (!spawning_isolate && (selected_patch || bundled_base)) {
     std::string error;
     bool installed;
     {
       tonic::DartState::Scope scope(isolate.get());
-      installed = shorebird::ApplyInterpreterPatch(*selected_patch, &error);
+      installed = shorebird::InstallInterpreterCodeForFreshGroup(
+          selected_patch.get(), bundled_base.get(),
+          [&] {
+            return shorebird::ApplyInterpreterPatch(*selected_patch, &error);
+          },
+          [&] {
+            return shorebird::ApplyInterpreterReplacementBase(*bundled_base,
+                                                              &error);
+          },
+          &error);
     }
     if (!installed) {
-      FML_LOG(ERROR) << "Shorebird interpreter patch rejected: " << error;
-      shorebird::RejectInterpreterPatchForProcess();
-      if (settings.shorebird_launch_failure_callback) {
-        settings.shorebird_launch_failure_callback();
+      FML_LOG(ERROR) << "Shorebird interpreter installation rejected: "
+                     << error;
+      if (selected_patch) {
+        shorebird::RejectInterpreterPatchForProcess();
+        if (settings.shorebird_launch_failure_callback) {
+          settings.shorebird_launch_failure_callback();
+        }
       }
       // shutdown_on_error destroys this entire transient isolate group. A
-      // caller may start a fresh base group, but cannot reuse mutated state.
+      // caller may install the retained bundled base in a fresh group, but
+      // cannot reuse mutated state. A failed base has no further fallback.
       return {};
     }
   }

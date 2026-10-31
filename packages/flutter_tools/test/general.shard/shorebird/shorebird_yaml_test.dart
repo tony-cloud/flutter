@@ -4,9 +4,12 @@
 
 import 'dart:io';
 
+import 'package:file/memory.dart';
 import 'package:flutter_tools/src/shorebird/shorebird_yaml.dart';
 import 'package:test/test.dart';
 import 'package:yaml/yaml.dart';
+
+import '../../src/shorebird_replacement.dart';
 
 void main() {
   group('ShorebirdYaml', () {
@@ -170,6 +173,48 @@ patch_response_verification: optional
           environment: <String, String>{
             'SHOREBIRD_PUBLIC_KEY': 'publisher',
             'SHOREBIRD_AOT_PATCH_RUNTIME_MODE': 'native-aot',
+          },
+        ),
+        throwsFormatException,
+      );
+    });
+    test('full replacement bundles only public binding and rejects inconsistent hashes', () {
+      final fileSystem = MemoryFileSystem.test();
+      final environment = <String, String>{
+        ...writeShorebirdReplacementBase(fileSystem),
+        'SHOREBIRD_PUBLIC_KEY': 'publisher',
+        'SHOREBIRD_AOT_PATCH_KEY_HEX': 'SECRET',
+      };
+      final yaml =
+          loadYaml(
+                'app_id: app\naot_patch_runtime_mode: dart-bytecode-interpreter\n'
+                'aot_patch_full_replacement: true\naot_patch_replacement_base: /secret/path\n'
+                'aot_patch_host_abi: stale\n',
+              )
+              as YamlMap;
+      final Map<String, dynamic> compiled = compileShorebirdYaml(
+        yaml,
+        flavor: null,
+        environment: environment,
+        fileSystem: fileSystem,
+      );
+      expect(compiled['aot_patch_full_replacement'], isTrue);
+      expect(compiled['aot_patch_replacement_base'], 'shorebird_replacement_base.sbr');
+      expect(compiled['aot_patch_host_abi'], environment['SHOREBIRD_AOT_HOST_ABI']);
+      expect(
+        compiled['aot_patch_base_snapshot_hash'],
+        environment['SHOREBIRD_AOT_BASE_SNAPSHOT_HASH'],
+      );
+      expect(compiled.toString(), isNot(contains('/private/')));
+      expect(compiled.toString(), isNot(contains('SECRET')));
+      expect(
+        () => compileShorebirdYaml(
+          yaml,
+          flavor: null,
+          fileSystem: fileSystem,
+          environment: <String, String>{
+            ...environment,
+            'SHOREBIRD_AOT_BASE_SNAPSHOT_HASH': 'b' * 64,
           },
         ),
         throwsFormatException,

@@ -28,6 +28,7 @@ source_set("interpreter_patch") {
     "$dart_src/runtime:dart_api",
     "//flutter/fml",
     "//flutter/runtime:libdart",
+    "//flutter/third_party/boringssl",
     "//flutter/third_party/rapidjson",
   ]
 }

@@ -19,7 +19,10 @@ import 'dart:ui' show Display, FlutterView;
 import 'package:flutter/foundation.dart';
 
 import '../foundation/_features.dart';
-import '_window_io.dart' if (dart.library.js_interop) '_window_web.dart' as window_impl;
+import '_window_io.dart'
+    if (dart.library.js_interop) '_window_web.dart'
+    if (dart.library._shorebird_ios_full_replacement) '../shorebird/window_mobile.dart'
+    as window_impl;
 import '_window_positioner.dart';
 import 'basic.dart';
 import 'binding.dart';

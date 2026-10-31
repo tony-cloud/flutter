@@ -2,7 +2,6 @@
 #include "flutter/shell/common/shorebird/shorebird.h"
 
 #include <cstddef>
-#include <cstring>
 #include <memory>
 #include <optional>
 #include <utility>
@@ -24,7 +23,6 @@
 #include "flutter/shell/common/shorebird/updater.h"
 #include "flutter/shell/common/switches.h"
 #include "fml/logging.h"
-#include "rapidjson/document.h"
 #include "shell/platform/embedder/embedder.h"
 #include "third_party/dart/runtime/include/dart_native_api.h"
 
@@ -98,50 +96,6 @@ shorebird::FileCallbacks ShorebirdFileCallbacks() {
       .seek = FileCallbacksImpl::Seek,
       .close = FileCallbacksImpl::Close,
   };
-}
-
-// Given the contents of a yaml file, return the given value if it exists,
-// otherwise return an empty string.
-// Does not support nested keys.
-std::string GetValueFromYaml(const std::string& yaml, const std::string& key) {
-  std::stringstream input(yaml);
-  std::string line;
-  const std::string prefix = key + ":";
-  while (std::getline(input, line)) {
-    // The compiler emits a flat mapping. Match complete keys, not substrings
-    // in another key, a comment, or an attacker-controlled scalar value.
-    if (line.compare(0, prefix.size(), prefix) != 0) {
-      continue;
-    }
-    auto value = line.substr(prefix.size());
-    auto begin = value.find_first_not_of(" \t\r");
-    if (begin == std::string::npos) {
-      return "";
-    }
-    value = value.substr(begin, value.find_last_not_of(" \t\r") - begin + 1);
-    if (value.front() == '"') {
-      rapidjson::Document scalar;
-      scalar.Parse(value.c_str());
-      if (!scalar.HasParseError() && scalar.IsString() &&
-          std::strlen(scalar.GetString()) == scalar.GetStringLength()) {
-        return scalar.GetString();
-      }
-      return "";
-    }
-    if (value.front() == '\'') {
-      if (value.size() < 2 || value.back() != '\'') {
-        return "";
-      }
-      value = value.substr(1, value.size() - 2);
-      size_t offset = 0;
-      while ((offset = value.find("''", offset)) != std::string::npos) {
-        value.replace(offset, 2, "'");
-        ++offset;
-      }
-    }
-    return value;
-  }
-  return "";
 }
 
 /// Newer api, used by Desktop implementations.
@@ -268,11 +222,19 @@ void ConfigureShorebird(std::string code_cache_path,
 
 #if FML_OS_IOS
   shorebird::SealInterpreterKeyProvider();
+  settings.shorebird_interpreter_replacement_base =
+      LoadInterpreterReplacementBaseConfig(shorebird_yaml,
+                                           settings.assets_path);
 #endif
   if (!shorebird::Updater::Instance().Init(config)) {
     FML_LOG(ERROR)
         << "Shorebird updater initialization failed; running base code";
+#if FML_OS_IOS
+    settings.shorebird_interpreter_patch =
+        shorebird::SelectInterpreterPatchForProcess(nullptr);
+#else
     settings.shorebird_interpreter_patch.reset();
+#endif
     return;
   }
 
@@ -291,6 +253,12 @@ void ConfigureShorebird(std::string code_cache_path,
     // the reviewed base snapshot linked and install only before its main runs.
     auto patch = std::make_shared<shorebird::InterpreterPatchConfig>();
     patch->path = active_path;
+    patch->full_replacement =
+        settings.shorebird_interpreter_replacement_base != nullptr;
+    if (patch->full_replacement) {
+      patch->host_abi =
+          settings.shorebird_interpreter_replacement_base->host_abi;
+    }
     patch->app_id = GetValueFromYaml(shorebird_yaml, "app_id");
     patch->app_build_id =
         GetValueFromYaml(shorebird_yaml, "aot_patch_app_build_id");

@@ -8,6 +8,7 @@ import 'package:file_testing/file_testing.dart';
 import 'package:flutter_tools/src/artifacts.dart';
 import 'package:flutter_tools/src/base/file_system.dart';
 import 'package:flutter_tools/src/build_system/build_system.dart';
+import 'package:flutter_tools/src/build_system/targets/dart_plugin_registrant.dart';
 import 'package:flutter_tools/src/cache.dart';
 import 'package:flutter_tools/src/commands/assemble.dart';
 import 'package:flutter_tools/src/convert.dart';
@@ -21,6 +22,12 @@ import '../../src/context.dart';
 import '../../src/fakes.dart';
 import '../../src/test_build_system.dart';
 import '../../src/test_flutter_command_runner.dart';
+
+FileSystem _projectFileSystem() {
+  final fileSystem = MemoryFileSystem.test();
+  fileSystem.file('pubspec.yaml').writeAsStringSync('name: assemble_test\n');
+  return fileSystem;
+}
 
 void main() {
   Cache.disableLocking();
@@ -51,7 +58,44 @@ void main() {
     },
     overrides: <Type, Generator>{
       Cache: () => Cache.test(processManager: FakeProcessManager.any()),
-      FileSystem: () => MemoryFileSystem.test(),
+      FileSystem: _projectFileSystem,
+      ProcessManager: () => FakeProcessManager.any(),
+    },
+  );
+
+  testUsingContext(
+    'flutter assemble can select the default Dart plugin registrant target',
+    () async {
+      var builds = 0;
+      final CommandRunner<void> commandRunner = createTestCommandRunner(
+        AssembleCommand(
+          buildSystem: TestBuildSystem.all(BuildResult(success: true), (
+            Target target,
+            Environment environment,
+          ) {
+            builds += 1;
+            expect(target, isA<DartPluginRegistrantTarget>());
+            expect(target.name, 'gen_dart_plugin_registrant');
+            expect(environment.generateDartPluginRegistry, isTrue);
+            expect(environment.defines, containsPair('TargetFile', 'lib/main.dart'));
+          }),
+        ),
+      );
+      await commandRunner.run(<String>[
+        'assemble',
+        '--output=build/registrant',
+        '-dTargetPlatform=ios',
+        '-dBuildMode=release',
+        '-dTargetFile=lib/main.dart',
+        'gen_dart_plugin_registrant',
+      ]);
+
+      expect(builds, 1);
+      expect(testLogger.traceText, contains('build succeeded.'));
+    },
+    overrides: <Type, Generator>{
+      Cache: () => Cache.test(processManager: FakeProcessManager.any()),
+      FileSystem: _projectFileSystem,
       ProcessManager: () => FakeProcessManager.any(),
     },
   );
@@ -80,7 +124,7 @@ void main() {
     },
     overrides: <Type, Generator>{
       Cache: () => Cache.test(processManager: FakeProcessManager.any()),
-      FileSystem: () => MemoryFileSystem.test(),
+      FileSystem: _projectFileSystem,
       ProcessManager: () => FakeProcessManager.any(),
     },
   );
@@ -109,7 +153,7 @@ void main() {
     },
     overrides: <Type, Generator>{
       Cache: () => Cache.test(processManager: FakeProcessManager.any()),
-      FileSystem: () => MemoryFileSystem.test(),
+      FileSystem: _projectFileSystem,
       ProcessManager: () => FakeProcessManager.any(),
     },
   );
@@ -138,7 +182,7 @@ void main() {
     },
     overrides: <Type, Generator>{
       Cache: () => Cache.test(processManager: FakeProcessManager.any()),
-      FileSystem: () => MemoryFileSystem.test(),
+      FileSystem: _projectFileSystem,
       ProcessManager: () => FakeProcessManager.any(),
     },
   );
@@ -160,7 +204,7 @@ void main() {
     },
     overrides: <Type, Generator>{
       Cache: () => Cache.test(processManager: FakeProcessManager.any()),
-      FileSystem: () => MemoryFileSystem.test(),
+      FileSystem: _projectFileSystem,
       ProcessManager: () => FakeProcessManager.any(),
       FeatureFlags: () => TestFeatureFlags(isMacOSEnabled: true),
     },
@@ -192,7 +236,7 @@ void main() {
     overrides: <Type, Generator>{
       Analytics: () => fakeAnalytics,
       Cache: () => Cache.test(processManager: FakeProcessManager.any()),
-      FileSystem: () => MemoryFileSystem.test(),
+      FileSystem: _projectFileSystem,
       ProcessManager: () => FakeProcessManager.any(),
     },
   );
@@ -224,7 +268,7 @@ void main() {
     },
     overrides: <Type, Generator>{
       Cache: () => Cache.test(processManager: FakeProcessManager.any()),
-      FileSystem: () => MemoryFileSystem.test(),
+      FileSystem: _projectFileSystem,
       ProcessManager: () => FakeProcessManager.any(),
       FeatureFlags: () => TestFeatureFlags(isMacOSEnabled: true),
       Analytics: () => fakeAnalytics,
@@ -245,7 +289,7 @@ void main() {
     },
     overrides: <Type, Generator>{
       Cache: () => Cache.test(processManager: FakeProcessManager.any()),
-      FileSystem: () => MemoryFileSystem.test(),
+      FileSystem: _projectFileSystem,
       ProcessManager: () => FakeProcessManager.any(),
     },
   );
@@ -269,7 +313,7 @@ void main() {
     },
     overrides: <Type, Generator>{
       Cache: () => Cache.test(processManager: FakeProcessManager.any()),
-      FileSystem: () => MemoryFileSystem.test(),
+      FileSystem: _projectFileSystem,
       ProcessManager: () => FakeProcessManager.any(),
     },
   );
@@ -292,13 +336,13 @@ void main() {
         commandRunner.run(command),
         throwsToolExit(
           message:
-              'Error parsing assemble command: your generated configuration may be out of date',
+              'Error parsing assemble command: The -Pdart-defines argument contains non-base64 encoded data.',
         ),
       );
     },
     overrides: <Type, Generator>{
       Cache: () => Cache.test(processManager: FakeProcessManager.any()),
-      FileSystem: () => MemoryFileSystem.test(),
+      FileSystem: _projectFileSystem,
       ProcessManager: () => FakeProcessManager.any(),
     },
   );
@@ -314,7 +358,7 @@ void main() {
     },
     overrides: <Type, Generator>{
       Cache: () => Cache.test(processManager: FakeProcessManager.any()),
-      FileSystem: () => MemoryFileSystem.test(),
+      FileSystem: _projectFileSystem,
       ProcessManager: () => FakeProcessManager.any(),
     },
   );
@@ -344,7 +388,7 @@ void main() {
     },
     overrides: <Type, Generator>{
       Cache: () => Cache.test(processManager: FakeProcessManager.any()),
-      FileSystem: () => MemoryFileSystem.test(),
+      FileSystem: _projectFileSystem,
       ProcessManager: () => FakeProcessManager.any(),
     },
   );
@@ -387,7 +431,7 @@ void main() {
     },
     overrides: <Type, Generator>{
       Cache: () => Cache.test(processManager: FakeProcessManager.any()),
-      FileSystem: () => MemoryFileSystem.test(),
+      FileSystem: _projectFileSystem,
       ProcessManager: () => FakeProcessManager.any(),
     },
   );
@@ -417,7 +461,7 @@ void main() {
         localEngineHost: 'out/host_release',
       ),
       Cache: () => Cache.test(processManager: FakeProcessManager.any()),
-      FileSystem: () => MemoryFileSystem.test(),
+      FileSystem: _projectFileSystem,
       ProcessManager: () => FakeProcessManager.any(),
     },
   );
@@ -490,7 +534,7 @@ void main() {
     },
     overrides: <Type, Generator>{
       Cache: () => Cache.test(processManager: FakeProcessManager.any()),
-      FileSystem: () => MemoryFileSystem.test(),
+      FileSystem: _projectFileSystem,
       ProcessManager: () => FakeProcessManager.any(),
     },
   );
@@ -560,7 +604,7 @@ void main() {
       ),
     ];
     final FileSystem fileSystem = MemoryFileSystem.test();
-    final outFile = fileSystem.currentDirectory.childDirectory('foo').childFile('trace.json');
+    final File outFile = fileSystem.currentDirectory.childDirectory('foo').childFile('trace.json');
 
     writeTraceData(measurements, outFile);
 

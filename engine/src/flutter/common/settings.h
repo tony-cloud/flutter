@@ -93,6 +93,7 @@ using FrameRasterizedCallback = std::function<void(const FrameTiming&)>;
 class DartIsolate;
 namespace shorebird {
 struct InterpreterPatchConfig;
+struct InterpreterReplacementBaseConfig;
 }  // namespace shorebird
 
 // TODO(https://github.com/flutter/flutter/issues/138750): Re-order fields to
@@ -139,6 +140,11 @@ struct Settings {
   // Encrypted iOS bytecode is data, never a native snapshot library.
   std::shared_ptr<const shorebird::InterpreterPatchConfig>
       shorebird_interpreter_patch;
+  // Full-profile native app declarations remain inactive until this signed
+  // bundled component (or one authenticated update) commits in a fresh group.
+  // Retain this independently of the optional update, including retry startup.
+  std::shared_ptr<const shorebird::InterpreterReplacementBaseConfig>
+      shorebird_interpreter_replacement_base;
   // Supplied by the shell; runtime startup stays independent of updater APIs.
   fml::closure shorebird_launch_success_callback;
   fml::closure shorebird_launch_failure_callback;

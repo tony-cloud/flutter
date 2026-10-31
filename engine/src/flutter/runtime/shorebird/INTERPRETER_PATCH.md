@@ -16,7 +16,7 @@ unconfirmed. Scheduling an entrypoint and rendering a frame are not startup
 confirmation. An existing shared isolate group
 uses its original installation and is never patched a second time.
 
-The current VM supports a restricted set of retained function replacements.
+The default VM profile supports a restricted set of retained function replacements.
 A full-snapshot payload does not mean arbitrary library/class/closure/signature
 changes are supported. The release and patch compilers must preserve the same
 interpreter-compatible metadata and reachability policy; unsupported changes
@@ -74,3 +74,32 @@ The compiled YAML allowlist excludes raw AES keys, patch build paths and future
 patch hashes. Interpreter compilation requires a publisher pin and forces both
 verification modes. Legacy native builds may explicitly retain optional response
 verification for compatibility.
+
+## Complete-domain replacement profile
+
+The signed compiled configuration opts in with
+`aot_patch_full_replacement: true`, `aot_patch_host_abi` (64 lowercase hex),
+and `aot_patch_replacement_base: shorebird_replacement_base.sbr`. Structural
+updates and full replacement are mutually exclusive. The immutable base asset
+must live directly in the signed `flutter_assets` directory. Its
+`aot_patch_base_snapshot_hash` pins the SHA-256 of the **whole SBRPLCE wrapper**,
+not the enclosed component.
+
+The engine retains this configuration before initializing the updater. Every
+fresh root group installs exactly one component after SDK libraries are set up
+and before it becomes runnable: the process-selected authenticated update, or
+the bundled base when no update is selected or the updater is unavailable. The
+base is signed bundle data and requires no encrypted envelope or AES key. The
+engine validates its bounded wrapper, whole-file hash and host stamp; the VM
+validates the native baseline descriptor, root and complete mutable domain.
+Profile mixing is rejected before VM replacement staging.
+
+A rejected update destroys that group. The single fresh-group retry clears the
+optional update while retaining the immutable base configuration. A rejected
+base fails startup; inactive native application declarations are never a
+fallback. Shared child groups retain their parent's committed installation.
+Entrypoints and the plugin registrant are reacquired after replacement commits.
+
+Focused native tests exercise configuration, one-artifact selection, opaque
+wrapper forwarding, validation and payload release. They do not establish a
+full-profile Flutter application launch or physical iOS device validation.

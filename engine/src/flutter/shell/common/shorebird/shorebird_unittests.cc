@@ -10,29 +10,6 @@
 
 namespace flutter {
 namespace testing {
-TEST(Shorebird, GetValueFromYamlValueExists) {
-  std::string yaml = "appid: com.example.app\nversion: 1.0.0\n";
-  std::string key = "appid";
-  std::string value = GetValueFromYaml(yaml, key);
-  EXPECT_EQ(value, "com.example.app");
-}
-
-TEST(Shorebird, GetValueFromYamlValueDoesNotExist) {
-  std::string yaml = "appid: com.example.app\nversion: 1.0.0\n";
-  std::string key = "appid2";
-  std::string value = GetValueFromYaml(yaml, key);
-  EXPECT_EQ(value, "");
-}
-
-TEST(Shorebird, CompiledYamlScalarsUseExactKeysAndUnquoteStrings) {
-  EXPECT_EQ(GetValueFromYaml("other_app_id: wrong\napp_id: '123'\n", "app_id"),
-            "123");
-  EXPECT_EQ(GetValueFromYaml("# app_id: wrong\napp_id: \"app\"\n", "app_id"),
-            "app");
-  EXPECT_EQ(GetValueFromYaml("app_id: 'customer''s'\n", "app_id"),
-            "customer's");
-}
-
 class LoadPatchOrBaseTest : public ::testing::Test {
  protected:
   void SetUp() override {

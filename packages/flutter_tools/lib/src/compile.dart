@@ -25,6 +25,8 @@ import 'bundle.dart';
 import 'convert.dart';
 import 'dart/package_map.dart';
 import 'shorebird/shorebird_interpreter.dart';
+import 'shorebird/shorebird_replacement.dart';
+import 'shorebird/shorebird_replacement_host.dart';
 
 /// Opt-in changes to the dart compilers.
 const kDartCompilerExperiments = <String>[];
@@ -239,10 +241,14 @@ class KernelCompiler {
     required ProcessManager processManager,
     required Artifacts artifacts,
     required List<String> fileSystemRoots,
+    Platform? platform,
+    Directory? projectDirectory,
     String? fileSystemScheme,
     @visibleForTesting StdoutHandler? stdoutHandler,
   }) : _logger = logger,
        _fileSystem = fileSystem,
+       _platform = platform ?? const LocalPlatform(),
+       _projectDirectory = projectDirectory ?? fileSystem.currentDirectory,
        _artifacts = artifacts,
        _processManager = processManager,
        _fileSystemScheme = fileSystemScheme,
@@ -250,6 +256,8 @@ class KernelCompiler {
        _stdoutHandler = stdoutHandler ?? StdoutHandler(logger: logger, fileSystem: fileSystem);
 
   final FileSystem _fileSystem;
+  final Platform _platform;
+  final Directory _projectDirectory;
   final Artifacts _artifacts;
   final ProcessManager _processManager;
   final Logger _logger;
@@ -288,6 +296,50 @@ class KernelCompiler {
     if (!sdkRoot.endsWith('/')) {
       sdkRoot = '$sdkRoot/';
     }
+    final bool fullReplacement = shorebirdUsesIosFullReplacement(
+      _fileSystem,
+      targetOS,
+      projectDirectory: _projectDirectory,
+    );
+    if (fullReplacement && (!aot || buildMode != BuildMode.release)) {
+      throw const FormatException('Full replacement requires a PRODUCT release AOT build');
+    }
+    if (fullReplacement) {
+      final inputs = ShorebirdReplacementInputs.read(_fileSystem, _platform.environment);
+      ShorebirdReplacementHost.read(
+        _fileSystem,
+        _artifacts,
+        buildMode: buildMode,
+        processManager: _processManager,
+      ).validate(inputs.hostAbi);
+      sdkRoot = shorebirdReplacementSdkRoot(_artifacts, _fileSystem);
+      if (!sdkRoot.endsWith('/')) {
+        sdkRoot = '$sdkRoot/';
+      }
+      fileSystemRoots = <String>[_projectDirectory.absolute.path];
+      fileSystemScheme = 'org-dartlang-root';
+    }
+    String sourceUri(Uri fileUri) {
+      if (!fullReplacement) {
+        return toMultiRootPath(
+          fileUri,
+          _fileSystemScheme,
+          _fileSystemRoots,
+          _fileSystem.path.separator == r'\',
+        );
+      }
+      final String root = _fileSystem.path.normalize(_projectDirectory.absolute.path);
+      final String path = _fileSystem.path.normalize(fileUri.toFilePath());
+      if (path != root && !_fileSystem.path.isWithin(root, path)) {
+        throw const FormatException('Full replacement source must be inside the project root');
+      }
+      final String relative = _fileSystem.path.relative(path, from: root).replaceAll(r'\', '/');
+      return Uri(scheme: fileSystemScheme, host: '', path: '/$relative').toString();
+    }
+
+    if (fullReplacement && packagesPath != null) {
+      packagesPath = sourceUri(_fileSystem.file(packagesPath).absolute.uri);
+    }
     String? mainUri;
     if (mainPath != null) {
       final File mainFile = _fileSystem.file(mainPath);
@@ -295,12 +347,7 @@ class KernelCompiler {
       if (packagesPath != null) {
         mainUri = packageConfig.toPackageUriForWorkspace(mainFileUri)?.toString();
       }
-      mainUri ??= toMultiRootPath(
-        mainFileUri,
-        _fileSystemScheme,
-        _fileSystemRoots,
-        _fileSystem.path.separator == r'\',
-      );
+      mainUri ??= sourceUri(mainFileUri);
     }
     if (outputFilePath != null && !_fileSystem.isFileSync(outputFilePath)) {
       _fileSystem.file(outputFilePath).createSync(recursive: true);
@@ -317,12 +364,7 @@ class KernelCompiler {
       final Uri dartPluginRegistrantFileUri = dartPluginRegistrant.uri;
       dartPluginRegistrantUri =
           packageConfig.toPackageUriForWorkspace(dartPluginRegistrantFileUri)?.toString() ??
-          toMultiRootPath(
-            dartPluginRegistrantFileUri,
-            _fileSystemScheme,
-            _fileSystemRoots,
-            _fileSystem.path.separator == r'\',
-          );
+          sourceUri(dartPluginRegistrantFileUri);
     }
 
     final List<String> commandToStartFrontendServer;
@@ -365,16 +407,32 @@ class KernelCompiler {
           if (!linkPlatformKernelIn) '--no-link-platform',
           if (aot) ...<String>[
             '--aot',
-            if (shorebirdUsesIosBytecodeInterpreter(_fileSystem, targetOS)) '--no-tfa' else '--tfa',
-            if (shorebirdUsesIosStructuralUpdates(_fileSystem, targetOS))
+            if (shorebirdUsesIosBytecodeInterpreter(
+              _fileSystem,
+              targetOS,
+              projectDirectory: _projectDirectory,
+            ))
+              '--no-tfa'
+            else
+              '--tfa',
+            if (shorebirdUsesIosStructuralUpdates(
+              _fileSystem,
+              targetOS,
+              projectDirectory: _projectDirectory,
+            ))
               '--shorebird-structural-patching',
+            if (fullReplacement)
+              ...ShorebirdReplacementInputs.read(
+                _fileSystem,
+                _platform.environment,
+              ).frontendOptions,
             // The --target-os flag only makes sense for whole program compilation.
             if (targetOS != null) ...<String>['--target-os', targetOS],
           ],
           if (packagesPath != null) ...<String>['--packages', packagesPath],
           if (outputFilePath != null) ...<String>['--output-dill', outputFilePath],
           if (depFilePath != null &&
-              (fileSystemRoots == null || fileSystemRoots.isEmpty)) ...<String>[
+              (fullReplacement || fileSystemRoots == null || fileSystemRoots.isEmpty)) ...<String>[
             '--depfile',
             depFilePath,
           ],

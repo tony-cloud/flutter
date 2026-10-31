@@ -14,6 +14,7 @@ import 'package:flutter_tools/src/macos/xcode.dart';
 
 import '../../src/common.dart';
 import '../../src/fake_process_manager.dart';
+import '../../src/shorebird_replacement.dart';
 
 const kWhichSysctlCommand = FakeCommand(command: <String>['which', 'sysctl']);
 
@@ -364,16 +365,18 @@ void main() {
       expect(processManager, hasNoRemainingExpectations);
     });
 
-    for (final (bool interpreter, bool structural, int ddMaxBytes) in <(bool, bool, int)>[
-      (false, false, 0),
-      (false, false, 10000),
-      (true, false, 0),
-      (true, false, 10000),
-      (true, true, 0),
-      (true, true, 10000),
-    ]) {
+    for (final (bool interpreter, bool structural, bool full, int ddMaxBytes)
+        in <(bool, bool, bool, int)>[
+          (false, false, false, 0),
+          (false, false, false, 10000),
+          (true, false, false, 0),
+          (true, false, false, 10000),
+          (true, true, false, 0),
+          (true, true, false, 10000),
+          (true, false, true, 0),
+        ]) {
       testWithoutContext(
-        'builds public iOS snapshot interpreter=$interpreter structural=$structural DD=$ddMaxBytes',
+        'builds public iOS snapshot interpreter=$interpreter structural=$structural full=$full DD=$ddMaxBytes',
         () async {
           final privateOutputs = <String>[
             ...kLinkInfoArgs.map((String argument) => argument.split('=').last),
@@ -388,7 +391,8 @@ void main() {
                 .file('shorebird.yaml')
                 .writeAsStringSync(
                   'aot_patch_runtime_mode: dart-bytecode-interpreter\n'
-                  'aot_patch_structural_updates: $structural\n',
+                  'aot_patch_structural_updates: $structural\n'
+                  'aot_patch_full_replacement: $full\n',
                 );
           }
           for (final path in privateOutputs) {
@@ -404,6 +408,11 @@ void main() {
             platform: FakePlatform(
               environment: <String, String>{
                 'SHOREBIRD_DD_MAX_BYTES': '$ddMaxBytes',
+                if (full)
+                  ...writeShorebirdReplacementBase(
+                    fileSystem,
+                    hostAbi: writeShorebirdReplacementHost(fileSystem, artifacts),
+                  ),
                 if (interpreter) 'SHOREBIRD_ENABLE_LEGACY_AOT_TOOLS': '1',
               },
             ),
@@ -415,11 +424,13 @@ void main() {
             mode: BuildMode.release,
           );
           processManager.addCommands(<FakeCommand>[
+            if (full) ...shorebirdReplacementVersionCommands(artifacts),
             FakeCommand(
               command: <String>[
                 genSnapshotPath,
                 '--deterministic',
                 if (structural) '--shorebird-structural-patching',
+                if (full) '--shorebird-full-replacement',
                 '--snapshot_kind=app-aot-assembly',
                 '--assembly=${fileSystem.path.join(outputPath, 'snapshot_assembly.S')}',
                 'main.dill',

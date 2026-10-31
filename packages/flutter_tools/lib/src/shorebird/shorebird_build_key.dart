@@ -10,6 +10,8 @@ import '../build_info.dart';
 import '../build_system/build_system.dart';
 import 'shorebird_dd.dart';
 import 'shorebird_interpreter.dart';
+import 'shorebird_replacement.dart';
+import 'shorebird_replacement_host.dart';
 import 'shorebird_yaml.dart';
 
 /// Folds a digest of Shorebird environment [values] into [buildKey].
@@ -36,6 +38,7 @@ mixin ShorebirdPublicKeyBuildKey on Target {
     final String? publicKey = environment.platform.environment[kShorebirdPublicKeyEnvVar];
     return _withShorebirdDigest(super.buildKeyFor(environment), <String, String>{
       kShorebirdPublicKeyEnvVar: ?publicKey,
+      ..._replacementBuildKey(environment),
       for (final String key in const <String>[
         'SHOREBIRD_AOT_BASE_SNAPSHOT_HASH',
         'SHOREBIRD_AOT_PATCH_BASE_SNAPSHOT_HASH',
@@ -91,6 +94,7 @@ mixin ShorebirdInterpreterBuildKey on Target {
         );
     return _withShorebirdDigest(super.buildKeyFor(environment), <String, String>{
       if (enabled) 'shorebirdInterpreterTfa': 'disabled',
+      ..._replacementBuildKey(environment),
       if (enabled &&
           shorebirdUsesIosStructuralUpdates(
             environment.fileSystem,
@@ -100,4 +104,28 @@ mixin ShorebirdInterpreterBuildKey on Target {
         'shorebirdStructuralPatching': 'enabled',
     });
   }
+}
+
+Map<String, String> _replacementBuildKey(Environment environment) {
+  if (!shorebirdUsesIosFullReplacement(
+    environment.fileSystem,
+    environment.defines[kTargetPlatform],
+    projectDirectory: environment.projectDir,
+  )) {
+    return const <String, String>{};
+  }
+  final buildMode = BuildMode.fromCliName(environment.defines[kBuildMode]!);
+  if (buildMode != BuildMode.release) {
+    throw const FormatException('Full replacement requires a PRODUCT release build');
+  }
+  final inputs = ShorebirdReplacementInputs.read(
+    environment.fileSystem,
+    environment.platform.environment,
+  );
+  final host = ShorebirdReplacementHost.read(
+    environment.fileSystem,
+    environment.artifacts,
+    buildMode: buildMode,
+  )..validate(inputs.hostAbi);
+  return <String, String>{...inputs.buildKey, ...host.artifactHashes};
 }

@@ -7,6 +7,7 @@
 #include <mutex>
 #include <set>
 
+#include "openssl/sha.h"
 #include "rapidjson/document.h"
 
 namespace flutter::shorebird {
@@ -90,6 +91,64 @@ bool Hash(const char* value) {
   }
   return true;
 }
+constexpr size_t kMaxReplacementManifest = 4 * 1024 * 1024;
+constexpr size_t kMaxReplacementComponent = 128 * 1024 * 1024;
+constexpr size_t kReplacementHeaderSize = 24;
+
+bool IsReplacementWrapper(const uint8_t* bytes, size_t size) {
+  static constexpr uint8_t magic[] = {'S', 'B', 'R', 'P', 'L', 'C', 'E', 0};
+  return bytes && size >= sizeof(magic) &&
+         std::memcmp(bytes, magic, sizeof(magic)) == 0;
+}
+
+uint32_t UInt32(const uint8_t* bytes) {
+  return static_cast<uint32_t>(bytes[0]) |
+         (static_cast<uint32_t>(bytes[1]) << 8) |
+         (static_cast<uint32_t>(bytes[2]) << 16) |
+         (static_cast<uint32_t>(bytes[3]) << 24);
+}
+
+std::string Hex(const uint8_t* bytes, size_t size) {
+  static constexpr char digits[] = "0123456789abcdef";
+  std::string result;
+  result.reserve(size * 2);
+  for (size_t i = 0; i < size; ++i) {
+    result.push_back(digits[bytes[i] >> 4]);
+    result.push_back(digits[bytes[i] & 15]);
+  }
+  return result;
+}
+
+bool ValidateReplacementWrapper(const uint8_t* bytes,
+                                size_t size,
+                                const std::string& host_abi,
+                                bool require_base,
+                                std::string* error) {
+  if (!Hash(host_abi.c_str()) || !IsReplacementWrapper(bytes, size) ||
+      size < kReplacementHeaderSize || UInt32(bytes + 8) != 1) {
+    *error = "Invalid full replacement profile, wrapper or host ABI";
+    return false;
+  }
+  const uint32_t manifest_size = UInt32(bytes + 12);
+  const uint64_t component_size =
+      static_cast<uint64_t>(UInt32(bytes + 16)) |
+      (static_cast<uint64_t>(UInt32(bytes + 20)) << 32);
+  // The policy plus three digests precede the variable-length URI sets. Full
+  // manifest/domain/component validation belongs to the native VM descriptor.
+  if (manifest_size < 100 || manifest_size > kMaxReplacementManifest ||
+      component_size == 0 || component_size > kMaxReplacementComponent ||
+      size != kReplacementHeaderSize + manifest_size + component_size) {
+    *error = "Invalid full replacement wrapper bounds";
+    return false;
+  }
+  const uint8_t* manifest = bytes + kReplacementHeaderSize;
+  if (UInt32(manifest) != 1 || Hex(manifest + 4, 32) != host_abi ||
+      (require_base && std::memcmp(manifest + 36, manifest + 68, 32) != 0)) {
+    *error = "Full replacement wrapper policy, host or base identity mismatch";
+    return false;
+  }
+  return true;
+}
 }  // namespace
 
 bool RegisterInterpreterKeyProvider(InterpreterKeyProvider provider) {
@@ -159,7 +218,8 @@ bool ApplyInterpreterPatch(const InterpreterPatchConfig& config,
   if (!config.strict_verification || config.app_id.empty() ||
       config.app_build_id.empty() || config.base_flavor_id.empty() ||
       config.base_license_type.empty() || config.sdk_hash.empty() ||
-      !Hash(config.base_snapshot_hash.c_str()) || config.key_id.empty()) {
+      !Hash(config.base_snapshot_hash.c_str()) || config.key_id.empty() ||
+      (config.full_replacement && !Hash(config.host_abi.c_str()))) {
     return reject(
         "Interpreter patch expectations are incomplete or verification is not "
         "strict");
@@ -230,7 +290,18 @@ bool ApplyInterpreterPatch(const InterpreterPatchConfig& config,
   expected_key_id = nullptr;
   bool reloaded = false;
   if (installed && payload && length > 0) {
-    reloaded = api.Reload(payload, length, error);
+    // Decryption/authentication stays unchanged. Reject profile mixing before
+    // asking the VM to stage any declarations; it owns final descriptor checks.
+    if (config.full_replacement) {
+      if (ValidateReplacementWrapper(payload, length, config.host_abi, false,
+                                     error)) {
+        reloaded = api.Reload(payload, length, error);
+      }
+    } else if (IsReplacementWrapper(payload, length)) {
+      *error = "Full replacement update requires a full replacement release";
+    } else {
+      reloaded = api.Reload(payload, length, error);
+    }
   } else if (installed) {
     *error = "Interpreter patch decrypted to an empty payload";
   }
@@ -239,5 +310,64 @@ bool ApplyInterpreterPatch(const InterpreterPatchConfig& config,
     api.FreePayload(payload);
   }
   return installed && reloaded;
+}
+bool InstallInterpreterCodeForFreshGroup(
+    const InterpreterPatchConfig* patch,
+    const InterpreterReplacementBaseConfig* base,
+    const std::function<bool()>& install_patch,
+    const std::function<bool()>& install_base,
+    std::string* error) {
+  if (base && !base->validation_error.empty()) {
+    *error = base->validation_error;
+    return false;
+  }
+  if (patch) {
+    if (patch->full_replacement != (base != nullptr) ||
+        (base && (patch->host_abi != base->host_abi ||
+                  patch->base_snapshot_hash != base->snapshot_hash))) {
+      *error = "Selected interpreter update does not match the bundled profile";
+      return false;
+    }
+    return install_patch();
+  }
+  return !base || install_base();
+}
+
+bool ValidateInterpreterReplacementBase(
+    const InterpreterReplacementBaseConfig& config,
+    const fml::Mapping& artifact,
+    std::string* error) {
+  if (!config.validation_error.empty()) {
+    *error = config.validation_error;
+    return false;
+  }
+  const std::string filename = std::string("/") + kReplacementBaseAsset;
+  if (config.path.size() <= filename.size() ||
+      config.path.compare(config.path.size() - filename.size(), filename.size(),
+                          filename) != 0 ||
+      !Hash(config.snapshot_hash.c_str())) {
+    *error = "Incomplete bundled replacement base configuration";
+    return false;
+  }
+  if (!ValidateReplacementWrapper(artifact.GetMapping(), artifact.GetSize(),
+                                  config.host_abi, true, error)) {
+    return false;
+  }
+  uint8_t digest[SHA256_DIGEST_LENGTH];
+  SHA256(artifact.GetMapping(), artifact.GetSize(), digest);
+  if (Hex(digest, sizeof(digest)) != config.snapshot_hash) {
+    *error = "Bundled replacement base hash mismatch";
+    return false;
+  }
+  return true;
+}
+
+bool ApplyInterpreterReplacementBase(
+    const InterpreterReplacementBaseConfig& config,
+    const fml::Mapping& artifact,
+    InterpreterPatchApi& api,
+    std::string* error) {
+  return ValidateInterpreterReplacementBase(config, artifact, error) &&
+         api.Reload(artifact.GetMapping(), artifact.GetSize(), error);
 }
 }  // namespace flutter::shorebird

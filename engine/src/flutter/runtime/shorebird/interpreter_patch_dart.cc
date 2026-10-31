@@ -57,4 +57,21 @@ bool ApplyInterpreterPatch(const InterpreterPatchConfig& config,
   DartInterpreterPatchApi api;
   return ApplyInterpreterPatch(config, *artifact, api, error);
 }
+bool ApplyInterpreterReplacementBase(
+    const InterpreterReplacementBaseConfig& config,
+    std::string* error) {
+  if (!config.validation_error.empty()) {
+    *error = config.validation_error;
+    return false;
+  }
+  auto artifact = fml::FileMapping::CreateReadOnly(config.path);
+  if (!artifact) {
+    *error = "Could not map bundled interpreter replacement base";
+    return false;
+  }
+  DartInterpreterPatchApi api;
+  // The signed application's immutable asset needs neither an envelope nor an
+  // app-owned AES key. Both paths use the same VM replacement loader.
+  return ApplyInterpreterReplacementBase(config, *artifact, api, error);
+}
 }  // namespace flutter::shorebird

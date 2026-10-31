@@ -8,6 +8,7 @@ import 'package:yaml_edit/yaml_edit.dart';
 import '../base/file_system.dart';
 import '../globals.dart' as globals;
 import 'shorebird_interpreter.dart';
+import 'shorebird_replacement.dart';
 
 /// The environment variable whose value is written to the generated
 /// shorebird.yaml as `patch_public_key`.
@@ -20,8 +21,9 @@ void updateShorebirdYaml(
   String? flavor,
   String shorebirdYamlPath, {
   required Map<String, String> environment,
+  FileSystem? fileSystem,
 }) {
-  final File shorebirdYaml = globals.fs.file(shorebirdYamlPath);
+  final File shorebirdYaml = (fileSystem ?? globals.fs).file(shorebirdYamlPath);
   if (!shorebirdYaml.existsSync()) {
     throw Exception('shorebird.yaml not found at $shorebirdYamlPath');
   }
@@ -31,6 +33,7 @@ void updateShorebirdYaml(
     yamlMap,
     flavor: flavor,
     environment: environment,
+    fileSystem: fileSystem,
   );
   // Currently we write out over the same yaml file, we should fix this to
   // write to a new .json file instead and avoid naming confusion between the
@@ -64,12 +67,17 @@ Map<String, dynamic> compileShorebirdYaml(
   YamlMap yamlMap, {
   required String? flavor,
   required Map<String, String> environment,
+  FileSystem? fileSystem,
 }) {
   final String appId = appIdForFlavor(yamlMap, flavor: flavor);
   final bool structuralUpdates = shorebirdStructuralUpdatesEnabled(yamlMap);
+  final bool fullReplacement = shorebirdFullReplacementEnabled(yamlMap);
   final compiled = <String, dynamic>{'app_id': appId};
   if (yamlMap.containsKey(kShorebirdStructuralUpdatesKey)) {
     compiled[kShorebirdStructuralUpdatesKey] = structuralUpdates;
+  }
+  if (yamlMap.containsKey(kShorebirdFullReplacementKey)) {
+    compiled[kShorebirdFullReplacementKey] = fullReplacement;
   }
   void copyIfSet(String key) {
     if (yamlMap[key] != null) {
@@ -143,5 +151,12 @@ Map<String, dynamic> compileShorebirdYaml(
   }
   // Runtime policy overrides must not contradict the source compiler profile.
   shorebirdStructuralUpdatesEnabled(compiled);
+  shorebirdFullReplacementEnabled(compiled);
+  if (fullReplacement) {
+    final inputs = ShorebirdReplacementInputs.read(fileSystem ?? globals.fs, environment);
+    compiled['aot_patch_replacement_base'] = kShorebirdReplacementBaseAsset;
+    compiled['aot_patch_host_abi'] = inputs.hostAbi;
+    compiled['aot_patch_base_snapshot_hash'] = inputs.snapshotHash;
+  }
   return compiled;
 }

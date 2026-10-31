@@ -28,6 +28,20 @@ struct InterpreterPatchConfig {
   std::string obfuscation_map_hash;
   std::string key_id;
   bool strict_verification = false;
+  bool full_replacement = false;
+  std::string host_abi;
+};
+
+// Signed bundle data, independent of updater availability and licensed keys.
+// An invalid compiled full-profile configuration is retained to fail startup;
+// silently dropping it would try to run the inactive native application.
+inline constexpr char kReplacementBaseAsset[] =
+    "shorebird_replacement_base.sbr";
+struct InterpreterReplacementBaseConfig {
+  std::string path;
+  std::string snapshot_hash;
+  std::string host_abi;
+  std::string validation_error;
 };
 
 using InterpreterKeyProvider =
@@ -70,6 +84,31 @@ bool ApplyInterpreterPatch(const InterpreterPatchConfig& config,
                            std::string* error);
 bool ApplyInterpreterPatch(const InterpreterPatchConfig& config,
                            std::string* error);
+
+// Choose exactly one install in a fresh group. An update failure returns to
+// the caller to destroy the group; it never installs base into a touched group.
+// Install callbacks let native tests verify selection without executing code.
+bool InstallInterpreterCodeForFreshGroup(
+    const InterpreterPatchConfig* patch,
+    const InterpreterReplacementBaseConfig* base,
+    const std::function<bool()>& install_patch,
+    const std::function<bool()>& install_base,
+    std::string* error);
+
+// Validation performs no VM mutation. The VM additionally validates the native
+// descriptor, complete library domain, root and component before installation.
+bool ValidateInterpreterReplacementBase(
+    const InterpreterReplacementBaseConfig& config,
+    const fml::Mapping& artifact,
+    std::string* error);
+bool ApplyInterpreterReplacementBase(
+    const InterpreterReplacementBaseConfig& config,
+    const fml::Mapping& artifact,
+    InterpreterPatchApi& api,
+    std::string* error);
+bool ApplyInterpreterReplacementBase(
+    const InterpreterReplacementBaseConfig& config,
+    std::string* error);
 
 }  // namespace flutter::shorebird
 #endif

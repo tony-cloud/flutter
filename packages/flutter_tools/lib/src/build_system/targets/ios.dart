@@ -49,6 +49,7 @@ abstract class AotAssemblyBase extends Target
   @override
   Future<void> build(Environment environment) async {
     final snapshotter = AOTSnapshotter(
+      projectDirectory: environment.projectDir,
       fileSystem: environment.fileSystem,
       logger: environment.logger,
       xcode: globals.xcode!,

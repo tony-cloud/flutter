@@ -14,6 +14,8 @@ import '../../devfs.dart';
 import '../../flutter_manifest.dart';
 import '../../isolated/native_assets/dart_hook_result.dart';
 import '../../shorebird/shorebird_build_key.dart';
+import '../../shorebird/shorebird_interpreter.dart';
+import '../../shorebird/shorebird_replacement.dart';
 import '../../shorebird/shorebird_yaml.dart';
 import '../build_system.dart';
 import '../depfile.dart';
@@ -43,6 +45,17 @@ Future<Depfile> copyAssets(
   List<File> additionalInputs = const <File>[],
   String? flavor,
 }) async {
+  final bool fullReplacement = shorebirdUsesIosFullReplacement(
+    environment.fileSystem,
+    targetPlatform.getName(),
+    projectDirectory: environment.projectDir,
+  );
+  if (fullReplacement && buildMode != BuildMode.release) {
+    throw const FormatException('Full replacement assets require a PRODUCT release build');
+  }
+  final ShorebirdReplacementInputs? replacement = fullReplacement
+      ? ShorebirdReplacementInputs.read(environment.fileSystem, environment.platform.environment)
+      : null;
   final File pubspecFile = environment.projectDir.childFile('pubspec.yaml');
   // Only the default asset bundle style is supported in assemble.
   final AssetBundle assetBundle = AssetBundleFactory.defaultInstance(
@@ -109,6 +122,27 @@ Future<Depfile> copyAssets(
       );
     }),
   };
+
+  if (replacement != null) {
+    final AssetBundleEntry? configuration = assetEntries['shorebird.yaml'];
+    if (configuration == null ||
+        configuration.content is! DevFSFileContent ||
+        configuration.transformers.isNotEmpty) {
+      throw const FormatException(
+        'Full replacement requires an untransformed shorebird.yaml file in the asset bundle',
+      );
+    }
+    assetEntries[kShorebirdReplacementBaseAsset] = AssetBundleEntry(
+      DevFSFileContent(replacement.base),
+      kind: AssetKind.regular,
+      transformers: const <AssetTransformerEntry>[],
+    );
+  } else {
+    final File staleBase = outputDirectory.childFile(kShorebirdReplacementBaseAsset);
+    if (staleBase.existsSync()) {
+      staleBase.deleteSync();
+    }
+  }
 
   // Suppress IconTreeShaker summary messages
   final quiet = environment.defines[kBuildSwiftPackage] == 'true';
@@ -196,6 +230,7 @@ Future<Depfile> copyAssets(
                   environment.defines[kFlavor],
                   file.path,
                   environment: environment.platform.environment,
+                  fileSystem: environment.fileSystem,
                 );
               } on Exception catch (error) {
                 throw Exception('Failed to generate shorebird configuration. Error: $error');

@@ -6,6 +6,8 @@ import '../artifacts.dart';
 import '../base/file_system.dart';
 import '../build_info.dart';
 import '../project.dart';
+import '../shorebird/shorebird_interpreter.dart';
+import '../shorebird/shorebird_replacement_host.dart';
 import 'build_system.dart';
 import 'exceptions.dart';
 
@@ -172,6 +174,23 @@ class SourceVisitor implements ResolvedFiles {
   /// these are updated to point towards the `engine.stamp` file instead of
   /// the artifact itself.
   void visitArtifact(Artifact artifact, TargetPlatform? platform, BuildMode? mode) {
+    if (artifact == Artifact.platformKernelDill &&
+        environment.artifacts.localEngineInfo != null &&
+        shorebirdUsesIosFullReplacement(
+          environment.fileSystem,
+          environment.defines[kTargetPlatform],
+          projectDirectory: environment.projectDir,
+        )) {
+      sources.add(
+        environment.fileSystem.file(
+          environment.fileSystem.path.join(
+            shorebirdReplacementSdkRoot(environment.artifacts, environment.fileSystem),
+            'platform_strong.dill',
+          ),
+        ),
+      );
+      return;
+    }
     // This is not a local engine.
     if (environment.engineVersion != null) {
       sources.add(
