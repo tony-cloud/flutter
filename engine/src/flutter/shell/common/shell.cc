@@ -115,6 +115,9 @@ void PerformInitializationTasks(Settings& settings) {
   settings.shorebird_launch_failure_callback = [] {
     shorebird::Updater::Instance().ReportLaunchFailure();
   };
+  settings.shorebird_launch_deferred_callback = [](const std::string& path) {
+    return shorebird::Updater::Instance().ReportLaunchDeferred(path);
+  };
 
   {
     fml::LogSettings log_settings;

@@ -175,18 +175,32 @@ std::shared_ptr<const InterpreterPatchConfig> SelectInterpreterPatchForProcess(
   return process_patch;
 }
 
-bool RejectInterpreterPatchForProcess() {
+bool RejectInterpreterPatchForProcess(
+    const std::function<void()>& report_outcome) {
   std::lock_guard<std::mutex> lock(provider_mutex);
   if (main_completed) {
     return false;
+  }
+  // Another UI runner must not select BASE or report its main's success until
+  // this candidate's outcome (including failed persistence) is finalized.
+  if (report_outcome) {
+    report_outcome();
   }
   process_patch.reset();
   boot_selected = true;
   return true;
 }
 
-void CompleteInterpreterMainForProcess(bool succeeded) {
+void CompleteInterpreterMainForProcess(
+    bool succeeded,
+    const std::function<void()>& report_outcome) {
   std::lock_guard<std::mutex> lock(provider_mutex);
+  // Order actual-main completion with rejection too. A later loader failure
+  // cannot claim the updater's outcome before this main's success report.
+  // Later reports retain the updater's once-only outcome/update-thread guards.
+  if (report_outcome) {
+    report_outcome();
+  }
   if (main_completed) {
     return;
   }
@@ -209,7 +223,11 @@ void ResetInterpreterKeyProviderForTesting() {
 bool ApplyInterpreterPatch(const InterpreterPatchConfig& config,
                            const fml::Mapping& artifact,
                            InterpreterPatchApi& api,
-                           std::string* error) {
+                           std::string* error,
+                           Dart_AotPatchInstallStatus* status) {
+  if (status) {
+    *status = kDartAotPatchInstallRejected;
+  }
   SealInterpreterKeyProvider();
   auto reject = [&](const char* message) {
     *error = message;
@@ -254,13 +272,6 @@ bool ApplyInterpreterPatch(const InterpreterPatchConfig& config,
     return reject(
         "Interpreter patch mode, payload hash, or key id does not match");
   }
-  {
-    std::lock_guard<std::mutex> lock(provider_mutex);
-    if (!key_provider) {
-      return reject("No app-owned interpreter key provider registered");
-    }
-  }
-
   const char* target_os;
   switch (config.target) {
     case InterpreterPatchTarget::kIOSArm64:
@@ -297,8 +308,13 @@ bool ApplyInterpreterPatch(const InterpreterPatchConfig& config,
   api.SetKeyCallback(ResolveKey);
   uint8_t* payload = nullptr;
   intptr_t length = 0;
-  bool installed = api.Install(artifact, options, &payload, &length, error);
+  Dart_AotPatchInstallStatus install_status = kDartAotPatchInstallRejected;
+  bool installed =
+      api.Install(artifact, options, &payload, &length, error, &install_status);
   expected_key_id = nullptr;
+  if (!installed && status && IsInterpreterPatchKeyFailure(install_status)) {
+    *status = install_status;
+  }
   bool reloaded = false;
   if (installed && payload && length > 0) {
     // Decryption/authentication stays unchanged. Reject profile mixing before
@@ -320,7 +336,15 @@ bool ApplyInterpreterPatch(const InterpreterPatchConfig& config,
   if (payload) {
     api.FreePayload(payload);
   }
+  if (installed && reloaded && status) {
+    *status = kDartAotPatchInstallSuccess;
+  }
   return installed && reloaded;
+}
+
+bool IsInterpreterPatchKeyFailure(Dart_AotPatchInstallStatus status) {
+  return status == kDartAotPatchInstallKeyUnavailable ||
+         status == kDartAotPatchInstallAuthenticationFailed;
 }
 bool InstallInterpreterCodeForFreshGroup(
     const InterpreterPatchConfig* patch,

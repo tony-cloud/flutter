@@ -584,12 +584,10 @@ bool RuntimeController::LaunchRootIsolate(
 
 #if FML_OS_MACOSX
   if (!strong_root_isolate && attempting_interpreter_patch &&
-      shorebird::RejectInterpreterPatchForProcess()) {
+      shorebird::RejectInterpreterPatchForProcess(
+          settings.shorebird_launch_failure_callback)) {
     // The rejected transient group has shut down before this call. Recreate
     // all base state; never continue in a group the bytecode loader touched.
-    if (settings.shorebird_launch_failure_callback) {
-      settings.shorebird_launch_failure_callback();
-    }
     Settings base_settings(settings);
     base_settings.shorebird_interpreter_patch.reset();
     // Keep shorebird_interpreter_replacement_base: full-profile native app

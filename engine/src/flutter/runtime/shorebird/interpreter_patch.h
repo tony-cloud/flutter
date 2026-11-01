@@ -59,8 +59,14 @@ void SealInterpreterKeyProvider();
 // downloads must not change code for a later independently created engine.
 std::shared_ptr<const InterpreterPatchConfig> SelectInterpreterPatchForProcess(
     std::shared_ptr<const InterpreterPatchConfig> candidate);
-bool RejectInterpreterPatchForProcess();
-void CompleteInterpreterMainForProcess(bool succeeded);
+// Outcome reporting and process selection are one ordered operation. These
+// synchronous callbacks run under the selection lock and must not re-enter
+// provider/selection APIs. Updater launch reports only take their own locks.
+bool RejectInterpreterPatchForProcess(
+    const std::function<void()>& report_outcome = {});
+void CompleteInterpreterMainForProcess(
+    bool succeeded,
+    const std::function<void()>& report_outcome = {});
 void ResetInterpreterKeyProviderForTesting();
 
 // Small seam for exercising the production install sequence without executing
@@ -73,7 +79,8 @@ class InterpreterPatchApi {
                        const Dart_AotPatchInstallOptions& options,
                        uint8_t** payload,
                        intptr_t* length,
-                       std::string* error) = 0;
+                       std::string* error,
+                       Dart_AotPatchInstallStatus* status) = 0;
   virtual bool Reload(const uint8_t* payload,
                       intptr_t length,
                       std::string* error) = 0;
@@ -85,9 +92,15 @@ class InterpreterPatchApi {
 bool ApplyInterpreterPatch(const InterpreterPatchConfig& config,
                            const fml::Mapping& artifact,
                            InterpreterPatchApi& api,
-                           std::string* error);
+                           std::string* error,
+                           Dart_AotPatchInstallStatus* status = nullptr);
 bool ApplyInterpreterPatch(const InterpreterPatchConfig& config,
-                           std::string* error);
+                           std::string* error,
+                           Dart_AotPatchInstallStatus* status = nullptr);
+
+// Only these typed, pre-execution SDK refusals can retain a candidate. A
+// malformed envelope, authenticated payload rejection, or VM failure cannot.
+bool IsInterpreterPatchKeyFailure(Dart_AotPatchInstallStatus status);
 
 // Choose exactly one install in a fresh group. An update failure returns to
 // the caller to destroy the group; it never installs base into a touched group.

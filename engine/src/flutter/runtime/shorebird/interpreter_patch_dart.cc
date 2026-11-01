@@ -18,13 +18,16 @@ class DartInterpreterPatchApi final : public InterpreterPatchApi {
                const Dart_AotPatchInstallOptions& options,
                uint8_t** payload,
                intptr_t* length,
-               std::string* error) override {
+               std::string* error,
+               Dart_AotPatchInstallStatus* status) override {
+    *status = kDartAotPatchInstallRejected;
     if (!Dart_IsPrecompiledRuntime() || !Dart_AotPatchingEnabled()) {
       *error = "Interpreter patch requires an AOT patch-enabled runtime";
       return false;
     }
-    return Check(Dart_InstallAotPatch(artifact.GetMapping(), artifact.GetSize(),
-                                      &options, payload, length),
+    return Check(Dart_InstallAotPatchWithStatus(artifact.GetMapping(),
+                                                artifact.GetSize(), &options,
+                                                payload, length, status),
                  error);
   }
   bool Reload(const uint8_t* payload,
@@ -48,14 +51,18 @@ class DartInterpreterPatchApi final : public InterpreterPatchApi {
 }  // namespace
 
 bool ApplyInterpreterPatch(const InterpreterPatchConfig& config,
-                           std::string* error) {
+                           std::string* error,
+                           Dart_AotPatchInstallStatus* status) {
+  if (status) {
+    *status = kDartAotPatchInstallRejected;
+  }
   auto artifact = fml::FileMapping::CreateReadOnly(config.path);
   if (!artifact) {
     *error = "Could not map selected interpreter patch";
     return false;
   }
   DartInterpreterPatchApi api;
-  return ApplyInterpreterPatch(config, *artifact, api, error);
+  return ApplyInterpreterPatch(config, *artifact, api, error, status);
 }
 bool ApplyInterpreterReplacementBase(
     const InterpreterReplacementBaseConfig& config,

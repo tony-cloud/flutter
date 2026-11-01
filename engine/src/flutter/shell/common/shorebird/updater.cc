@@ -269,6 +269,20 @@ void Updater::ReportLaunchFailure() {
   DoReportLaunchFailure();
 }
 
+bool Updater::ReportLaunchDeferred(const std::string& expected_patch_path) {
+  bool expected = false;
+  if (!launch_completed_.compare_exchange_strong(expected, true)) {
+    return !prepared_recovery_failed_.load();
+  }
+  // A later generic failure or BASE success must not consume this candidate's
+  // breadcrumb, including when the persistent abort itself fails.
+  if (!DoReportLaunchDeferred(expected_patch_path)) {
+    prepared_recovery_failed_.store(true);
+    return false;
+  }
+  return true;
+}
+
 #if SHOREBIRD_PLATFORM_SUPPORTED
 // RealUpdater implementation - wraps the Rust C API
 
@@ -404,6 +418,11 @@ void RealUpdater::DoReportLaunchFailure() {
   shorebird_report_launch_failure();
 }
 
+bool RealUpdater::DoReportLaunchDeferred(
+    const std::string& expected_patch_path) {
+  return shorebird_report_launch_deferred(expected_patch_path.c_str());
+}
+
 bool RealUpdater::ShouldAutoUpdate() {
   return shorebird_should_auto_update();
 }
@@ -448,6 +467,13 @@ void MockUpdater::DoReportLaunchFailure() {
   call_log_.push_back("ReportLaunchFailure");
 }
 
+bool MockUpdater::DoReportLaunchDeferred(
+    const std::string& expected_patch_path) {
+  launch_deferred_count_++;
+  call_log_.push_back("ReportLaunchDeferred");
+  return launch_deferred_result_;
+}
+
 bool MockUpdater::ShouldAutoUpdate() {
   call_log_.push_back("ShouldAutoUpdate");
   return should_auto_update_;
@@ -464,9 +490,11 @@ void MockUpdater::Reset() {
   launch_start_count_ = 0;
   launch_success_count_ = 0;
   launch_failure_count_ = 0;
+  launch_deferred_count_ = 0;
   start_update_thread_count_ = 0;
   init_result_ = true;
   should_auto_update_ = false;
+  launch_deferred_result_ = true;
   next_boot_patch_path_.clear();
   last_release_version_.clear();
   last_yaml_config_.clear();

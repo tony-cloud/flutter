@@ -182,6 +182,9 @@ class Updater {
   void ReportLaunchStart();
   void ReportLaunchSuccess();
   void ReportLaunchFailure();
+  // A typed key refusal freezes BASE for this process, retaining the encrypted
+  // candidate for a fresh process. False suppresses updates after I/O failure.
+  bool ReportLaunchDeferred(const std::string& expected_patch_path);
 
   // Update checking
   virtual bool ShouldAutoUpdate() = 0;
@@ -209,6 +212,9 @@ class Updater {
   virtual void DoReportLaunchStart() = 0;
   virtual void DoReportLaunchSuccess() = 0;
   virtual void DoReportLaunchFailure() = 0;
+  virtual bool DoReportLaunchDeferred(const std::string& expected_patch_path) {
+    return false;
+  }
 
  private:
   // Starts the update thread at most once per process, if the updater is
@@ -271,6 +277,7 @@ class RealUpdater : public Updater {
   void DoReportLaunchStart() override;
   void DoReportLaunchSuccess() override;
   void DoReportLaunchFailure() override;
+  bool DoReportLaunchDeferred(const std::string& expected_patch_path) override;
   bool ShouldAutoUpdate() override;
   void StartUpdateThread() override;
 };
@@ -289,6 +296,7 @@ class MockUpdater : public Updater {
   void DoReportLaunchStart() override;
   void DoReportLaunchSuccess() override;
   void DoReportLaunchFailure() override;
+  bool DoReportLaunchDeferred(const std::string& expected_patch_path) override;
   bool ShouldAutoUpdate() override;
   void StartUpdateThread() override;
 
@@ -298,6 +306,7 @@ class MockUpdater : public Updater {
   int launch_start_count() const { return launch_start_count_; }
   int launch_success_count() const { return launch_success_count_; }
   int launch_failure_count() const { return launch_failure_count_; }
+  int launch_deferred_count() const { return launch_deferred_count_; }
   int start_update_thread_count() const { return start_update_thread_count_; }
   const std::vector<std::string>& call_log() const { return call_log_; }
 
@@ -310,6 +319,9 @@ class MockUpdater : public Updater {
   // Test configuration
   void set_init_result(bool value) { init_result_ = value; }
   void set_should_auto_update(bool value) { should_auto_update_ = value; }
+  void set_launch_deferred_result(bool value) {
+    launch_deferred_result_ = value;
+  }
   void set_next_boot_patch_path(const std::string& path) {
     next_boot_patch_path_ = path;
   }
@@ -323,9 +335,11 @@ class MockUpdater : public Updater {
   int launch_start_count_ = 0;
   int launch_success_count_ = 0;
   int launch_failure_count_ = 0;
+  int launch_deferred_count_ = 0;
   int start_update_thread_count_ = 0;
   bool init_result_ = true;
   bool should_auto_update_ = false;
+  bool launch_deferred_result_ = true;
   std::string next_boot_patch_path_;
   std::string last_release_version_;
   std::string last_yaml_config_;

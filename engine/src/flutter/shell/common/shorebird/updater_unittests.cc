@@ -261,6 +261,48 @@ TEST_F(UpdaterTest, ReportLaunchFailureOnlyCallsOnce) {
   EXPECT_EQ(mock_->launch_failure_count(), 1);
 }
 
+TEST_F(UpdaterTest, KeyDeferralPreventsFallbackFailureAndPatchSuccessReports) {
+  ASSERT_TRUE(mock_->Init(AppConfig{}));
+  mock_->set_should_auto_update(true);
+  mock_->ReportLaunchStart();
+  EXPECT_TRUE(mock_->ReportLaunchDeferred("encrypted-patch"));
+  // The runtime's fresh-group BASE retry also reports generic failure, and
+  // its main later reports success. Neither outcome belongs to the patch.
+  mock_->ReportLaunchFailure();
+  mock_->ReportLaunchStart();
+  mock_->ReportLaunchSuccess();
+  EXPECT_TRUE(mock_->ReportLaunchDeferred("encrypted-patch"));
+  EXPECT_EQ(mock_->launch_deferred_count(), 1);
+  EXPECT_EQ(mock_->launch_start_count(), 1);
+  EXPECT_EQ(mock_->launch_failure_count(), 0);
+  EXPECT_EQ(mock_->launch_success_count(), 0);
+  EXPECT_EQ(mock_->start_update_thread_count(), 1);
+}
+
+TEST_F(UpdaterTest,
+       FailedKeyDeferralSuppressesPatchSuccessAndBackgroundUpdates) {
+  ASSERT_TRUE(mock_->Init(AppConfig{}));
+  mock_->set_should_auto_update(true);
+  mock_->set_launch_deferred_result(false);
+  mock_->ReportLaunchStart();
+  EXPECT_FALSE(mock_->ReportLaunchDeferred("encrypted-patch"));
+  mock_->ReportLaunchFailure();
+  mock_->ReportLaunchSuccess();
+  EXPECT_FALSE(mock_->ReportLaunchDeferred("encrypted-patch"));
+  EXPECT_EQ(mock_->launch_deferred_count(), 1);
+  EXPECT_EQ(mock_->launch_failure_count(), 0);
+  EXPECT_EQ(mock_->launch_success_count(), 0);
+  EXPECT_EQ(mock_->start_update_thread_count(), 0);
+}
+
+TEST_F(UpdaterTest, LaterKeyDeferralCannotChangeAcceptedPatch) {
+  mock_->ReportLaunchStart();
+  mock_->ReportLaunchSuccess();
+  EXPECT_TRUE(mock_->ReportLaunchDeferred("encrypted-patch"));
+  EXPECT_EQ(mock_->launch_success_count(), 1);
+  EXPECT_EQ(mock_->launch_deferred_count(), 0);
+}
+
 TEST_F(UpdaterTest, MockUpdaterTracksShouldAutoUpdate) {
   mock_->set_should_auto_update(false);
   EXPECT_FALSE(Updater::Instance().ShouldAutoUpdate());

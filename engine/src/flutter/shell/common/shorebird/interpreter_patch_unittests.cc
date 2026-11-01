@@ -5,9 +5,12 @@
 
 #include <algorithm>
 #include <array>
+#include <chrono>
 #include <cstring>
+#include <future>
 #include <vector>
 
+#include "flutter/shell/common/shorebird/updater.h"
 #include "gtest/gtest.h"
 
 namespace flutter::shorebird {
@@ -63,6 +66,8 @@ class FakeApi : public InterpreterPatchApi {
   bool install_ok = true;
   bool reload_ok = true;
   bool empty_payload = false;
+  Dart_AotPatchInstallStatus failure_status =
+      kDartAotPatchInstallAuthenticationFailed;
   Dart_AotPatchKeyCallback callback = nullptr;
   std::vector<std::string> calls;
   std::vector<uint8_t> plaintext = {1, 2, 3, 4};
@@ -78,7 +83,9 @@ class FakeApi : public InterpreterPatchApi {
                const Dart_AotPatchInstallOptions& options,
                uint8_t** payload,
                intptr_t* length,
-               std::string* error) override {
+               std::string* error,
+               Dart_AotPatchInstallStatus* status) override {
+    *status = kDartAotPatchInstallRejected;
     calls.emplace_back("install");
     EXPECT_STREQ(options.app_id, "app");
     EXPECT_STREQ(options.app_build_id, "1.0+1");
@@ -104,6 +111,7 @@ class FakeApi : public InterpreterPatchApi {
     EXPECT_FALSE(callback("wrong-key", key.data(), key.size(), &key_length));
     if (!callback("test-key", key.data(), key.size(), &key_length)) {
       *error = "key unavailable";
+      *status = kDartAotPatchInstallKeyUnavailable;
       return false;
     }
     EXPECT_EQ(key_length, 32);
@@ -112,6 +120,7 @@ class FakeApi : public InterpreterPatchApi {
     if (!install_ok) {
       *error = "authentication failed";
     }
+    *status = install_ok ? kDartAotPatchInstallSuccess : failure_status;
     return install_ok;
   }
   bool Reload(const uint8_t* payload,
@@ -161,11 +170,12 @@ class InterpreterPatchTest : public ::testing::Test {
         }));
   }
   bool Apply(const std::string& json = Envelope()) {
-    return ApplyInterpreterPatch(config, Artifact(json), api, &error);
+    return ApplyInterpreterPatch(config, Artifact(json), api, &error, &status);
   }
   InterpreterPatchConfig config;
   FakeApi api;
   std::string error;
+  Dart_AotPatchInstallStatus status = kDartAotPatchInstallRejected;
 };
 
 TEST_F(InterpreterPatchTest, InstallsThenReloadsAndFreesPlaintext) {
@@ -202,12 +212,14 @@ TEST_F(InterpreterPatchTest, InvalidTrustedTargetNeverCallsSdk) {
 }
 TEST_F(InterpreterPatchTest, MissingProviderDoesNotDecryptOrExecute) {
   EXPECT_FALSE(Apply());
-  EXPECT_TRUE(api.calls.empty());
+  EXPECT_EQ(api.calls, (std::vector<std::string>{"callback", "install"}));
+  EXPECT_EQ(status, kDartAotPatchInstallKeyUnavailable);
 }
 TEST_F(InterpreterPatchTest, WrongKeySizeDoesNotReload) {
   RegisterKey(16);
   EXPECT_FALSE(Apply());
   EXPECT_EQ(api.calls, (std::vector<std::string>{"callback", "install"}));
+  EXPECT_TRUE(IsInterpreterPatchKeyFailure(status));
 }
 TEST_F(InterpreterPatchTest, AuthenticationFailureNeverReloadsAndFrees) {
   RegisterKey();
@@ -215,6 +227,8 @@ TEST_F(InterpreterPatchTest, AuthenticationFailureNeverReloadsAndFrees) {
   EXPECT_FALSE(Apply());
   EXPECT_EQ(api.calls,
             (std::vector<std::string>{"callback", "install", "free"}));
+  EXPECT_EQ(status, kDartAotPatchInstallAuthenticationFailed);
+  EXPECT_TRUE(IsInterpreterPatchKeyFailure(status));
 }
 TEST_F(InterpreterPatchTest, ReloadFailureStillFreesPlaintext) {
   RegisterKey();
@@ -222,6 +236,30 @@ TEST_F(InterpreterPatchTest, ReloadFailureStillFreesPlaintext) {
   EXPECT_FALSE(Apply());
   EXPECT_EQ(api.calls.back(), "free");
   EXPECT_EQ(error, "bytecode rejected");
+  EXPECT_EQ(status, kDartAotPatchInstallRejected);
+  EXPECT_FALSE(IsInterpreterPatchKeyFailure(status));
+}
+
+TEST_F(InterpreterPatchTest, OnlyTypedKeyRefusalsAreRetryable) {
+  RegisterKey();
+  api.install_ok = false;
+  api.failure_status = kDartAotPatchInstallRejected;
+  // Even the same diagnostic text must not control persistent retry policy.
+  EXPECT_FALSE(Apply());
+  EXPECT_EQ(error, "authentication failed");
+  EXPECT_EQ(status, kDartAotPatchInstallRejected);
+  EXPECT_FALSE(IsInterpreterPatchKeyFailure(status));
+  api.failure_status = static_cast<Dart_AotPatchInstallStatus>(99);
+  EXPECT_FALSE(Apply());
+  EXPECT_EQ(status, kDartAotPatchInstallRejected);
+  EXPECT_FALSE(IsInterpreterPatchKeyFailure(status));
+}
+
+TEST_F(InterpreterPatchTest, ValidationRejectionClearsPriorRetryableStatus) {
+  EXPECT_FALSE(Apply());
+  EXPECT_TRUE(IsInterpreterPatchKeyFailure(status));
+  EXPECT_FALSE(Apply(Envelope("wrong-key")));
+  EXPECT_EQ(status, kDartAotPatchInstallRejected);
 }
 TEST_F(InterpreterPatchTest, EmptyPlaintextNeverReloads) {
   RegisterKey();
@@ -229,6 +267,7 @@ TEST_F(InterpreterPatchTest, EmptyPlaintextNeverReloads) {
   EXPECT_FALSE(Apply());
   EXPECT_EQ(api.calls,
             (std::vector<std::string>{"callback", "install", "free"}));
+  EXPECT_EQ(status, kDartAotPatchInstallRejected);
 }
 TEST_F(InterpreterPatchTest,
        RejectsNativeAndAmbiguousArtifactsBeforeKeyLookup) {
@@ -284,6 +323,144 @@ TEST_F(InterpreterPatchTest, FailedBootKeepsLaterEnginesOnCleanBase) {
   RejectInterpreterPatchForProcess();
   EXPECT_EQ(SelectInterpreterPatchForProcess(stale), nullptr);
 }
+
+TEST_F(InterpreterPatchTest, BaseSelectionWaitsForKeyDeferralBookkeeping) {
+  for (bool persisted : {false, true}) {
+    ResetInterpreterKeyProviderForTesting();
+    Updater::ResetLaunchStateForTesting();
+    MockUpdater updater;
+    ASSERT_TRUE(updater.Init(AppConfig{}));
+    updater.set_should_auto_update(true);
+    updater.set_launch_deferred_result(persisted);
+    updater.ReportLaunchStart();
+    auto patch = std::make_shared<InterpreterPatchConfig>(config);
+    patch->path = "encrypted-patch";
+    ASSERT_EQ(SelectInterpreterPatchForProcess(patch), patch);
+
+    // Pause engine A exactly before it claims/finalizes the updater outcome.
+    // Engine B has an independent UI runner and tries to select/run BASE in
+    // this window. It must remain blocked until bookkeeping has finished.
+    std::promise<void> reporting;
+    std::promise<void> finish_reporting;
+    auto finish = finish_reporting.get_future();
+    auto rejection = std::async(std::launch::async, [&] {
+      return RejectInterpreterPatchForProcess([&] {
+        reporting.set_value();
+        finish.wait();
+        EXPECT_EQ(updater.ReportLaunchDeferred(patch->path), persisted);
+      });
+    });
+    reporting.get_future().wait();
+    std::promise<void> selecting;
+    auto base_engine = std::async(std::launch::async, [&] {
+      selecting.set_value();
+      EXPECT_EQ(SelectInterpreterPatchForProcess(patch), nullptr);
+      CompleteInterpreterMainForProcess(true,
+                                        [&] { updater.ReportLaunchSuccess(); });
+    });
+    selecting.get_future().wait();
+    EXPECT_EQ(base_engine.wait_for(std::chrono::milliseconds(100)),
+              std::future_status::timeout);
+    finish_reporting.set_value();
+    EXPECT_TRUE(rejection.get());
+    base_engine.get();
+    EXPECT_EQ(updater.launch_deferred_count(), 1);
+    EXPECT_EQ(updater.launch_success_count(), 0);
+    EXPECT_EQ(updater.launch_failure_count(), 0);
+    EXPECT_EQ(updater.start_update_thread_count(), persisted ? 1 : 0);
+  }
+  Updater::ResetLaunchStateForTesting();
+}
+
+TEST_F(InterpreterPatchTest, PermanentRejectionIsReportedBeforeBaseSelection) {
+  Updater::ResetLaunchStateForTesting();
+  MockUpdater updater;
+  ASSERT_TRUE(updater.Init(AppConfig{}));
+  updater.set_should_auto_update(true);
+  auto patch = std::make_shared<InterpreterPatchConfig>(config);
+  ASSERT_EQ(SelectInterpreterPatchForProcess(patch), patch);
+  ASSERT_TRUE(
+      RejectInterpreterPatchForProcess([&] { updater.ReportLaunchFailure(); }));
+  EXPECT_EQ(SelectInterpreterPatchForProcess(patch), nullptr);
+  CompleteInterpreterMainForProcess(true,
+                                    [&] { updater.ReportLaunchSuccess(); });
+  EXPECT_EQ(updater.launch_failure_count(), 1);
+  EXPECT_EQ(updater.launch_success_count(), 0);
+  EXPECT_EQ(updater.launch_deferred_count(), 0);
+  EXPECT_EQ(updater.start_update_thread_count(), 1);
+  Updater::ResetLaunchStateForTesting();
+}
+
+TEST_F(InterpreterPatchTest, CompletedMainWinsBeforeConcurrentKeyRejection) {
+  Updater::ResetLaunchStateForTesting();
+  MockUpdater updater;
+  auto patch = std::make_shared<InterpreterPatchConfig>(config);
+  ASSERT_EQ(SelectInterpreterPatchForProcess(patch), patch);
+  std::promise<void> reporting;
+  std::promise<void> finish_reporting;
+  auto finish = finish_reporting.get_future();
+  auto main = std::async(std::launch::async, [&] {
+    CompleteInterpreterMainForProcess(true, [&] {
+      reporting.set_value();
+      finish.wait();
+      updater.ReportLaunchSuccess();
+    });
+  });
+  reporting.get_future().wait();
+  std::promise<void> rejecting;
+  auto rejection = std::async(std::launch::async, [&] {
+    rejecting.set_value();
+    return RejectInterpreterPatchForProcess(
+        [&] { updater.ReportLaunchDeferred(patch->path); });
+  });
+  rejecting.get_future().wait();
+  EXPECT_EQ(rejection.wait_for(std::chrono::milliseconds(100)),
+            std::future_status::timeout);
+  finish_reporting.set_value();
+  main.get();
+  EXPECT_FALSE(rejection.get());
+  EXPECT_EQ(SelectInterpreterPatchForProcess(nullptr), patch);
+  EXPECT_EQ(updater.launch_success_count(), 1);
+  EXPECT_EQ(updater.launch_deferred_count(), 0);
+  Updater::ResetLaunchStateForTesting();
+}
+
+TEST_F(InterpreterPatchTest,
+       CompletedMainWinsBeforeConcurrentEntrypointFailure) {
+  Updater::ResetLaunchStateForTesting();
+  MockUpdater updater;
+  auto patch = std::make_shared<InterpreterPatchConfig>(config);
+  ASSERT_EQ(SelectInterpreterPatchForProcess(patch), patch);
+  std::promise<void> reporting;
+  std::promise<void> finish_reporting;
+  auto finish = finish_reporting.get_future();
+  auto main = std::async(std::launch::async, [&] {
+    CompleteInterpreterMainForProcess(true, [&] {
+      reporting.set_value();
+      finish.wait();
+      updater.ReportLaunchSuccess();
+    });
+  });
+  reporting.get_future().wait();
+  std::promise<void> failing_entrypoint;
+  auto failure = std::async(std::launch::async, [&] {
+    failing_entrypoint.set_value();
+    // The RunFromLibrary failure path uses this ordered rejection, too.
+    return RejectInterpreterPatchForProcess(
+        [&] { updater.ReportLaunchFailure(); });
+  });
+  failing_entrypoint.get_future().wait();
+  EXPECT_EQ(failure.wait_for(std::chrono::milliseconds(100)),
+            std::future_status::timeout);
+  finish_reporting.set_value();
+  main.get();
+  EXPECT_FALSE(failure.get());
+  EXPECT_EQ(SelectInterpreterPatchForProcess(nullptr), patch);
+  EXPECT_EQ(updater.launch_success_count(), 1);
+  EXPECT_EQ(updater.launch_failure_count(), 0);
+  Updater::ResetLaunchStateForTesting();
+}
+
 TEST_F(InterpreterPatchTest,
        LaterEngineErrorCannotRollbackAcceptedProcessPatch) {
   auto patch = std::make_shared<InterpreterPatchConfig>(config);
@@ -391,6 +568,7 @@ TEST_F(InterpreterPatchTest, ProfileMismatchRejectsBeforeReloadAndStillFrees) {
   config.full_replacement = true;
   config.host_abi = std::string(64, 'a');
   EXPECT_FALSE(Apply());  // DBC3/body profile cannot activate a full baseline.
+  EXPECT_EQ(status, kDartAotPatchInstallRejected);
   EXPECT_EQ(api.calls,
             (std::vector<std::string>{"callback", "install", "free"}));
   api.calls.clear();

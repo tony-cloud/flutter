@@ -148,6 +148,7 @@ struct Settings {
   // Supplied by the shell; runtime startup stays independent of updater APIs.
   fml::closure shorebird_launch_success_callback;
   fml::closure shorebird_launch_failure_callback;
+  std::function<bool(const std::string&)> shorebird_launch_deferred_callback;
 
   // Path to a library containing compiled Dart code usable for launching
   // the VM service isolate.

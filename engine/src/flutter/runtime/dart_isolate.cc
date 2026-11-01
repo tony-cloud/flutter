@@ -52,14 +52,8 @@ UIDartState::Context WithShorebirdMainResult(
     return result;
   }
   result.shorebird_main_result_callback = [success, failure](bool succeeded) {
-    shorebird::CompleteInterpreterMainForProcess(succeeded);
-    if (succeeded) {
-      if (success) {
-        success();
-      }
-    } else if (failure) {
-      failure();
-    }
+    shorebird::CompleteInterpreterMainForProcess(succeeded,
+                                                 succeeded ? success : failure);
   };
   return result;
 }
@@ -175,13 +169,15 @@ std::weak_ptr<DartIsolate> DartIsolate::CreateRunningRootIsolate(
   const auto& bundled_base = settings.shorebird_interpreter_replacement_base;
   if (!spawning_isolate && (selected_patch || bundled_base)) {
     std::string error;
+    Dart_AotPatchInstallStatus install_status = kDartAotPatchInstallRejected;
     bool installed;
     {
       tonic::DartState::Scope scope(isolate.get());
       installed = shorebird::InstallInterpreterCodeForFreshGroup(
           selected_patch.get(), bundled_base.get(),
           [&] {
-            return shorebird::ApplyInterpreterPatch(*selected_patch, &error);
+            return shorebird::ApplyInterpreterPatch(*selected_patch, &error,
+                                                    &install_status);
           },
           [&] {
             return shorebird::ApplyInterpreterReplacementBase(*bundled_base,
@@ -193,10 +189,19 @@ std::weak_ptr<DartIsolate> DartIsolate::CreateRunningRootIsolate(
       FML_LOG(ERROR) << "Shorebird interpreter installation rejected: "
                      << error;
       if (selected_patch) {
-        shorebird::RejectInterpreterPatchForProcess();
-        if (settings.shorebird_launch_failure_callback) {
-          settings.shorebird_launch_failure_callback();
-        }
+        shorebird::RejectInterpreterPatchForProcess([&] {
+          if (shorebird::IsInterpreterPatchKeyFailure(install_status) &&
+              settings.shorebird_launch_deferred_callback) {
+            // Finalize the outcome before BASE becomes visible to any engine,
+            // including engines on independent UI task runners.
+            if (!settings.shorebird_launch_deferred_callback(
+                    selected_patch->path)) {
+              FML_LOG(ERROR) << "Could not defer interpreter patch boot";
+            }
+          } else if (settings.shorebird_launch_failure_callback) {
+            settings.shorebird_launch_failure_callback();
+          }
+        });
       }
       // shutdown_on_error destroys this entire transient isolate group. A
       // caller may install the retained bundled base in a fresh group, but
@@ -239,7 +244,17 @@ std::weak_ptr<DartIsolate> DartIsolate::CreateRunningRootIsolate(
                                std::move(dart_entrypoint),          //
                                dart_entrypoint_args)) {
     FML_LOG(ERROR) << "Could not run the run main Dart entrypoint.";
-    if (settings.shorebird_launch_failure_callback) {
+#if FML_OS_MACOSX
+    if (settings.shorebird_interpreter_patch ||
+        settings.shorebird_interpreter_replacement_base) {
+      // A different UI runner may already be completing a successful main.
+      // Order this startup failure before publishing BASE, while preserving
+      // RuntimeController's fresh-group retry when no main has completed yet.
+      shorebird::RejectInterpreterPatchForProcess(
+          settings.shorebird_launch_failure_callback);
+    } else
+#endif
+        if (settings.shorebird_launch_failure_callback) {
       settings.shorebird_launch_failure_callback();
     }
     return {};
