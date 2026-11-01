@@ -336,7 +336,9 @@ class KernelCompiler {
         );
       }
       final String root = _fileSystem.path.normalize(_projectDirectory.absolute.path);
-      final String path = _fileSystem.path.normalize(fileUri.toFilePath());
+      final String path = _fileSystem.path.normalize(
+        fileUri.toFilePath(windows: _fileSystem.path.separator == r'\'),
+      );
       if (path != root && !_fileSystem.path.isWithin(root, path)) {
         throw const FormatException('Full replacement source must be inside the project root');
       }

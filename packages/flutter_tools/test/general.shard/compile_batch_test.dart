@@ -198,22 +198,34 @@ void main() {
     },
   );
 
-  for (final (bool interpreter, bool structural, bool full, String? targetOS)
-      in <(bool, bool, bool, String?)>[
-        (false, false, false, null),
-        (true, false, false, 'ios'),
-        (true, true, false, 'ios'),
-        (true, true, false, 'android'),
-        (true, false, true, 'ios'),
+  for (final (bool interpreter, bool structural, bool full, String? targetOS, FileSystemStyle style)
+      in <(bool, bool, bool, String?, FileSystemStyle)>[
+        (false, false, false, null, FileSystemStyle.posix),
+        (true, false, false, 'ios', FileSystemStyle.posix),
+        (true, true, false, 'ios', FileSystemStyle.posix),
+        (true, true, false, 'android', FileSystemStyle.posix),
+        (true, false, true, 'ios', FileSystemStyle.posix),
+        (true, false, true, 'ios', FileSystemStyle.windows),
       ]) {
+    final fileSystemName = style == FileSystemStyle.windows ? 'windows' : 'posix';
     testWithoutContext(
-      'KernelCompiler AOT profile: $interpreter/$structural/$full/$targetOS',
+      'KernelCompiler AOT profile: $interpreter/$structural/$full/$targetOS/$fileSystemName',
       () async {
-        final fileSystem = MemoryFileSystem.test();
+        final fileSystem = MemoryFileSystem.test(style: style);
+        final String projectRoot = fileSystem.path.join(
+          fileSystem.currentDirectory.path,
+          'path',
+          'to',
+        );
+        final String buildRoot = fileSystem.path.join(projectRoot, '.dart_tool', 'flutter_build');
+        final String mainPath = full
+            ? fileSystem.path.join(projectRoot, 'lib', 'main.dart')
+            : '/path/to/main.dart';
+        final String depFilePath = fileSystem.path.join(projectRoot, 'main.d');
         if (full) {
-          fileSystem.currentDirectory = fileSystem.directory('/path/to')
+          fileSystem.currentDirectory = fileSystem.directory(projectRoot)
             ..createSync(recursive: true);
-          fileSystem.file('/path/to/.dart_tool/flutter_build/dart_plugin_registrant.dart')
+          fileSystem.file(fileSystem.path.join(buildRoot, 'dart_plugin_registrant.dart'))
             ..createSync(recursive: true)
             ..writeAsStringSync('// registrant');
         }
@@ -232,6 +244,13 @@ void main() {
                 hostAbi: writeShorebirdReplacementHost(fileSystem, Artifacts.test()),
               )
             : <String, String>{};
+        if (full) {
+          // The shared fixture uses a POSIX path; qualify its drive for Windows.
+          environment['SHOREBIRD_AOT_REPLACEMENT_BASE'] = fileSystem
+              .file(environment['SHOREBIRD_AOT_REPLACEMENT_BASE'])
+              .absolute
+              .path;
+        }
         final logger = BufferLogger.test();
         final stdoutHandler = StdoutHandler(logger: logger, fileSystem: fileSystem);
         final completer = Completer<void>();
@@ -266,7 +285,7 @@ void main() {
                 if (structural && targetOS == 'ios') '--shorebird-structural-patching',
                 if (full) ...<String>[
                   '--shorebird-full-replacement',
-                  '--shorebird-replacement-base=/private/base.sbr',
+                  '--shorebird-replacement-base=${environment['SHOREBIRD_AOT_REPLACEMENT_BASE']}',
                   '--shorebird-host-abi=${environment['SHOREBIRD_AOT_HOST_ABI']}',
                 ],
                 if (targetOS != null) ...<String>['--target-os', targetOS],
@@ -277,9 +296,9 @@ void main() {
                   '.dart_tool/package_config.json',
                 if (full) ...<String>[
                   '--depfile',
-                  '/path/to/main.d',
+                  depFilePath,
                   '--filesystem-root',
-                  '/path/to',
+                  projectRoot,
                   '--filesystem-scheme',
                   'org-dartlang-root',
                   '--source',
@@ -289,7 +308,7 @@ void main() {
                   '-Dflutter.dart_plugin_registrant=org-dartlang-root:///.dart_tool/flutter_build/dart_plugin_registrant.dart',
                 ],
                 '--verbosity=error',
-                if (full) 'org-dartlang-root:///main.dart' else 'file:///path/to/main.dart',
+                if (full) 'org-dartlang-root:///lib/main.dart' else 'file:///path/to/main.dart',
               ],
               completer: completer,
             ),
@@ -298,13 +317,13 @@ void main() {
         );
         final Future<CompilerOutput?> output = kernelCompiler.compile(
           sdkRoot: '/path/to/sdkroot',
-          mainPath: '/path/to/main.dart',
+          mainPath: mainPath,
           buildMode: full ? BuildMode.release : BuildMode.profile,
           trackWidgetCreation: false,
           aot: true,
-          buildDir: full ? fileSystem.directory('/path/to/.dart_tool/flutter_build/hash') : null,
+          buildDir: full ? fileSystem.directory(fileSystem.path.join(buildRoot, 'hash')) : null,
           checkDartPluginRegistry: full,
-          depFilePath: full ? '/path/to/main.d' : null,
+          depFilePath: full ? depFilePath : null,
           targetOS: targetOS,
           dartDefines: const <String>[],
           packageConfig: PackageConfig.empty,
