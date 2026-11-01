@@ -14,6 +14,9 @@
 namespace flutter {
 
 class DartSnapshot;
+namespace shorebird {
+struct AppConfig;
+}
 
 // Release-owned resource policy, independent of unsigned patch metadata. The
 // current measured fixtures top out at 13,336,480 bytes (~40x below this
@@ -40,6 +43,7 @@ struct ShorebirdConfigArgs {
   std::string shorebird_yaml;
   ReleaseVersion release_version;
   uint64_t max_native_image_bytes = 0;
+  std::string assets_path;
 
   ShorebirdConfigArgs(std::string code_cache_path,
                       std::string app_storage_path,
@@ -61,8 +65,8 @@ bool ConfigureShorebird(const ShorebirdConfigArgs& args,
                         std::string& patch_path);
 
 // Private macOS full-profile settings route. Preserves the desktop updater's
-// app-id cache scope and whole-framework input. Updater/key availability never
-// prevents installing the signed bundled replacement base.
+// app-id cache scope and whole-framework input. V1 updater/key availability
+// never prevents installing bundled base; v2 requires checked initialization.
 bool ConfigureShorebirdInterpreter(const ShorebirdConfigArgs& args,
                                    Settings& settings);
 
@@ -74,6 +78,14 @@ CreateInterpreterPatchConfig(
     const std::string& active_path,
     const shorebird::InterpreterReplacementBaseConfig* base,
     shorebird::InterpreterPatchTarget target);
+
+void ResetSelectionV2BaselineForTesting();
+// Returns false for a malformed protocol marker or invalid v2 compiled scope.
+// A present v2 marker requires checked tokens even if configuration fails.
+bool ConfigureSelectionV2(shorebird::AppConfig& config,
+                          const std::string& assets_path,
+                          const std::string& platform,
+                          const std::string& arch);
 
 /// Loads the AOT code for this boot with |load|, which returns whether it
 /// loaded the library at the path it is given. Tries |patch_path| first,

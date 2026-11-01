@@ -153,6 +153,7 @@ if (enable_unittests) {
       "//flutter/common",
       "//flutter/fml",
       "//flutter/lib/snapshot",
+      "//flutter/runtime/shorebird:interpreter_patch",
       "//flutter/shell/common:shell_test_fixture_sources",
       "//flutter/skia",
       "//flutter/testing",

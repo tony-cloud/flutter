@@ -12,6 +12,7 @@ import 'shorebird_dd.dart';
 import 'shorebird_interpreter.dart';
 import 'shorebird_replacement.dart';
 import 'shorebird_replacement_host.dart';
+import 'shorebird_selection.dart';
 import 'shorebird_yaml.dart';
 
 /// Folds a digest of Shorebird environment [values] into [buildKey].
@@ -38,6 +39,11 @@ mixin ShorebirdPublicKeyBuildKey on Target {
     final String? publicKey = environment.platform.environment[kShorebirdPublicKeyEnvVar];
     return _withShorebirdDigest(super.buildKeyFor(environment), <String, String>{
       kShorebirdPublicKeyEnvVar: ?publicKey,
+      kShorebirdReleaseScopeEnvVar: ?environment.platform.environment[kShorebirdReleaseScopeEnvVar],
+      if (environment.platform.environment[kShorebirdInterpreterBaseEnvVar] case final String path)
+        'shorebirdInterpreterBaseSha256': sha256
+            .convert(environment.fileSystem.file(path).readAsBytesSync())
+            .toString(),
       ..._replacementBuildKey(environment),
       for (final String key in const <String>[
         'SHOREBIRD_AOT_BASE_SNAPSHOT_HASH',

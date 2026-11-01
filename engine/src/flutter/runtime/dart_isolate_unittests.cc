@@ -2,6 +2,7 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
+#include "flutter/fml/closure.h"
 #include "flutter/fml/mapping.h"
 #include "flutter/fml/synchronization/count_down_latch.h"
 #include "flutter/fml/synchronization/waitable_event.h"
@@ -11,6 +12,7 @@
 #include "flutter/runtime/dart_vm_lifecycle.h"
 #include "flutter/runtime/isolate_configuration.h"
 #include "flutter/runtime/platform_isolate_manager.h"
+#include "flutter/runtime/shorebird/interpreter_patch.h"
 #include "flutter/testing/dart_isolate_runner.h"
 #include "flutter/testing/fixture_test.h"
 #include "flutter/testing/testing.h"
@@ -122,6 +124,71 @@ TEST_F(DartIsolateTest, IsolateShutdownCallbackIsInIsolateScope) {
   ASSERT_TRUE(root_isolate->Shutdown());
   ASSERT_EQ(destruction_callback_count, 1u);
 }
+
+#if FML_OS_MACOSX
+TEST_F(DartIsolateTest,
+       UncommittedInterpreterGroupSuppressesApplicationShutdownCallback) {
+  shorebird::ResetInterpreterKeyProviderForTesting();
+  fml::ScopedCleanupClosure reset_selection(
+      [] { shorebird::ResetInterpreterKeyProviderForTesting(); });
+  ASSERT_FALSE(DartVMRef::IsInstanceRunning());
+  auto settings = CreateSettingsForFixture();
+  auto vm_ref = DartVMRef::Create(settings);
+  ASSERT_TRUE(vm_ref);
+  auto vm_data = vm_ref.GetVMData();
+  ASSERT_TRUE(vm_data);
+  auto patch = std::make_shared<shorebird::InterpreterPatchConfig>();
+  patch->path = "/missing/transient-interpreter-artifact";
+  settings.shorebird_interpreter_patch =
+      shorebird::SelectInterpreterPatchForProcess(patch);
+  size_t application_shutdowns = 0;
+  settings.isolate_shutdown_callback = [&] { ++application_shutdowns; };
+  TaskRunners runners(GetCurrentTestName(), GetCurrentTaskRunner(),
+                      GetCurrentTaskRunner(), GetCurrentTaskRunner(),
+                      GetCurrentTaskRunner());
+  UIDartState::Context context(runners);
+  auto result = DartIsolate::CreateRunningRootIsolate(
+      settings, vm_data->GetIsolateSnapshot(), nullptr, DartIsolate::Flags{},
+      nullptr, settings.isolate_create_callback,
+      settings.isolate_shutdown_callback, "main", std::nullopt, {},
+      IsolateConfiguration::InferFromSettings(settings), context);
+  EXPECT_TRUE(result.expired());
+  // Internal isolate/group teardown still ran, but an application callback
+  // (which may legally Dart_Invoke during shutdown) cannot observe this group.
+  EXPECT_EQ(application_shutdowns, 0u);
+}
+TEST_F(DartIsolateTest,
+       CommittedInterpreterGroupRetainsApplicationShutdownCallback) {
+  shorebird::ResetInterpreterKeyProviderForTesting();
+  fml::ScopedCleanupClosure reset_selection(
+      [] { shorebird::ResetInterpreterKeyProviderForTesting(); });
+  ASSERT_FALSE(DartVMRef::IsInstanceRunning());
+  auto settings = CreateSettingsForFixture();
+  auto vm_ref = DartVMRef::Create(settings);
+  ASSERT_TRUE(vm_ref);
+  auto vm_data = vm_ref.GetVMData();
+  ASSERT_TRUE(vm_data);
+  settings.shorebird_interpreter_begin_base = [] { return true; };
+  size_t application_shutdowns = 0;
+  settings.isolate_shutdown_callback = [&] {
+    EXPECT_NE(Dart_CurrentIsolate(), nullptr);
+    ++application_shutdowns;
+  };
+  TaskRunners runners(GetCurrentTestName(), GetCurrentTaskRunner(),
+                      GetCurrentTaskRunner(), GetCurrentTaskRunner(),
+                      GetCurrentTaskRunner());
+  UIDartState::Context context(runners);
+  auto result = DartIsolate::CreateRunningRootIsolate(
+      settings, vm_data->GetIsolateSnapshot(), nullptr, DartIsolate::Flags{},
+      nullptr, settings.isolate_create_callback,
+      settings.isolate_shutdown_callback, "main", std::nullopt, {},
+      IsolateConfiguration::InferFromSettings(settings), context);
+  auto isolate = result.lock();
+  ASSERT_TRUE(isolate);
+  ASSERT_TRUE(isolate->Shutdown());
+  EXPECT_EQ(application_shutdowns, 1u);
+}
+#endif
 
 TEST_F(DartIsolateTest, IsolateCanLoadAndRunDartCode) {
   ASSERT_FALSE(DartVMRef::IsInstanceRunning());

@@ -43,6 +43,28 @@ static NSString* const kAppBundleIdentifier = @"io.flutter.flutter.app";
   NSString* _ICUDataPath;
 }
 
++ (BOOL)setShorebirdAotPatchKeyProviderV2:(FlutterShorebirdAotPatchKeyProviderV2)provider {
+  if (!provider) {
+    return NO;
+  }
+  FlutterShorebirdAotPatchKeyProviderV2 retainedProvider = [provider copy];
+  return flutter::shorebird::RegisterInterpreterKeyProviderV2(
+      [retainedProvider](const char* keyId, const std::string& context, uint8_t* buffer,
+                         intptr_t capacity, intptr_t* length) {
+        @autoreleasepool {
+          NSString* identifier = [NSString stringWithUTF8String:keyId];
+          NSData* selection = [NSData dataWithBytes:context.data() length:context.size()];
+          NSData* key = identifier ? retainedProvider(identifier, selection) : nil;
+          if (!key || key.length != 32 || capacity < 32) {
+            return false;
+          }
+          [key getBytes:buffer length:32];
+          *length = 32;
+          return true;
+        }
+      });
+}
+
 + (BOOL)setShorebirdAotPatchKeyProvider:(FlutterShorebirdAotPatchKeyProvider)provider {
   if (!provider) {
     return NO;

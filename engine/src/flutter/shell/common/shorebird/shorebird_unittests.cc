@@ -1,9 +1,13 @@
 #include "flutter/shell/common/shorebird/shorebird.h"
 
 #include <algorithm>
+#include <fstream>
 #include <memory>
+
 #include <string>
 #include <vector>
+#include "flutter/fml/file.h"
+#include "flutter/fml/paths.h"
 
 #include "flutter/runtime/shorebird/interpreter_patch.h"
 #include "flutter/shell/common/shorebird/updater.h"
@@ -96,6 +100,18 @@ namespace {
 class RecordingUpdater : public shorebird::MockUpdater {
  public:
   shorebird::AppConfig last_config;
+  int prepared_count = 0;
+  int begun_count = 0;
+  std::unique_ptr<shorebird::PreparedBootSource> PrepareBootSource() override {
+    ++prepared_count;
+    return std::make_unique<shorebird::PreparedBootSource>(
+        shorebird::PreparedBootSource::Kind::kBase, 42, 0, 0, -1, "");
+  }
+  bool DoBeginBootSource(uint64_t id) override {
+    EXPECT_EQ(id, 42u);
+    ++begun_count;
+    return true;
+  }
   bool DoInit(const shorebird::AppConfig& config) override {
     last_config = config;
     return MockUpdater::DoInit(config);
@@ -118,6 +134,8 @@ class DesktopInterpreterConfigTest : public ::testing::Test {
  protected:
   void SetUp() override {
     shorebird::ResetInterpreterKeyProviderForTesting();
+    shorebird::Updater::ResetLaunchStateForTesting();
+    ResetSelectionV2BaselineForTesting();
     auto updater = std::make_unique<RecordingUpdater>();
     updater_ = updater.get();
     shorebird::Updater::SetInstanceForTesting(std::move(updater));
@@ -126,6 +144,8 @@ class DesktopInterpreterConfigTest : public ::testing::Test {
   void TearDown() override {
     shorebird::Updater::ResetInstanceForTesting();
     shorebird::ResetInterpreterKeyProviderForTesting();
+    shorebird::Updater::ResetLaunchStateForTesting();
+    ResetSelectionV2BaselineForTesting();
   }
   ShorebirdConfigArgs Args() {
     return {"/root/cache",
@@ -138,6 +158,68 @@ class DesktopInterpreterConfigTest : public ::testing::Test {
   Settings settings_;
 };
 }  // namespace
+
+TEST_F(DesktopInterpreterConfigTest, CompiledV2MissingScopeRefusesStartup) {
+  auto args = Args();
+  args.shorebird_yaml += "selection_protocol: 2\n";
+  EXPECT_FALSE(ConfigureShorebirdInterpreter(args, settings_));
+  EXPECT_EQ(updater_->init_count(), 0);
+  EXPECT_EQ(updater_->prepared_count, 0);
+  EXPECT_EQ(settings_.shorebird_interpreter_patch, nullptr);
+}
+#if FML_OS_MACOSX && !FML_OS_IOS && FML_ARCH_CPU_ARM64
+TEST_F(DesktopInterpreterConfigTest,
+       V2CheckedInitFailureRefusesUnpreparedBase) {
+  fml::ScopedTemporaryDirectory assets;
+  settings_.assets_path = assets.path();
+  auto args = Args();
+  args.shorebird_yaml += "selection_protocol: 2\n";
+  const auto scope =
+      R"({"app_id":"app","release_version":"1.0+2","platform":"macos","arch":"aarch64","base_artifact_hash":")" +
+      std::string(64, 'b') + R"(","host_abi_hash":")" + std::string(64, 'a') +
+      R"(","runtime_profile":"interpreter-full"})";
+  {
+    std::ofstream file(fml::paths::JoinPaths(
+        {assets.path(), "shorebird_release_scope_macos_aarch64.json"}));
+    file << scope;
+    std::ofstream baseline(fml::paths::JoinPaths(
+        {assets.path(), shorebird::kReplacementBaseAsset}));
+    baseline << "original-full-baseline";
+  }
+  updater_->set_init_result(false);
+  EXPECT_FALSE(ConfigureShorebirdInterpreter(args, settings_));
+  EXPECT_EQ(updater_->init_count(), 1);
+  EXPECT_EQ(updater_->prepared_count, 0);
+  EXPECT_TRUE(updater_->last_config.selection_protocol_v2);
+  EXPECT_NE(updater_->last_config.release_baseline_callbacks.open, nullptr);
+}
+TEST_F(DesktopInterpreterConfigTest, ValidV2NoGrantBeginsPreparedFreeBase) {
+  fml::ScopedTemporaryDirectory assets;
+  settings_.assets_path = assets.path();
+  auto args = Args();
+  args.shorebird_yaml += "selection_protocol: 2\n";
+  {
+    std::ofstream file(fml::paths::JoinPaths(
+        {assets.path(), "shorebird_release_scope_macos_aarch64.json"}));
+    file
+        << R"({"app_id":"app","release_version":"1.0+2","platform":"macos","arch":"aarch64","base_artifact_hash":")" +
+               std::string(64, 'b') + R"(","host_abi_hash":")" +
+               std::string(64, 'a') +
+               R"(","runtime_profile":"interpreter-full"})";
+    std::ofstream baseline(fml::paths::JoinPaths(
+        {assets.path(), shorebird::kReplacementBaseAsset}));
+    baseline << "original-full-baseline";
+  }
+  ASSERT_TRUE(ConfigureShorebirdInterpreter(args, settings_));
+  EXPECT_EQ(settings_.shorebird_interpreter_patch, nullptr);
+  ASSERT_TRUE(settings_.shorebird_interpreter_begin_base);
+  EXPECT_EQ(updater_->begun_count, 0);
+  EXPECT_TRUE(settings_.shorebird_interpreter_begin_base());
+  EXPECT_EQ(updater_->begun_count, 1);
+  EXPECT_EQ(updater_->validate_count(), 0);
+}
+
+#endif
 
 TEST_F(DesktopInterpreterConfigTest, PreservesDesktopScopeAndWholeFramework) {
   updater_->set_next_boot_patch_path("/cache/update.aotpatch");

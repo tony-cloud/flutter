@@ -56,7 +56,10 @@ bool ApplyInterpreterPatch(const InterpreterPatchConfig& config,
   if (status) {
     *status = kDartAotPatchInstallRejected;
   }
-  auto artifact = fml::FileMapping::CreateReadOnly(config.path);
+  std::shared_ptr<const fml::Mapping> artifact =
+      config.selection_protocol_v2
+          ? config.owned_artifact
+          : fml::FileMapping::CreateReadOnly(config.path);
   if (!artifact) {
     *error = "Could not map selected interpreter patch";
     return false;

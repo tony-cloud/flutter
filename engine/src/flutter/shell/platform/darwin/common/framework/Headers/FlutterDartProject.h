@@ -26,6 +26,15 @@ typedef bool (*FlutterShorebirdPatchDecryptionKeyProvider)(const char* _Nonnull 
                                                            uint8_t* _Nonnull key_out,
                                                            size_t capacity,
                                                            size_t* _Nonnull written);
+typedef bool (*FlutterShorebirdPatchDecryptionKeyProviderV2)(
+    const char* _Nonnull key_id,
+    const char* _Nonnull aad,
+    const char* _Nonnull verified_selection_context_json,
+    uint8_t* _Nonnull key_out,
+    size_t capacity,
+    size_t* _Nonnull written);
+bool shorebird_set_patch_decryption_key_provider_v2(
+    FlutterShorebirdPatchDecryptionKeyProviderV2 _Nullable provider);
 // Non-null enables required encrypted delivery; null disables it before init.
 // Returns false after initialization. Requires strict signed-response policies.
 bool shorebird_set_patch_decryption_key_provider(
@@ -42,6 +51,13 @@ NS_ASSUME_NONNULL_BEGIN
  * The provider may run on the engine UI thread and must not perform network I/O.
  */
 typedef NSData* _Nullable (^FlutterShorebirdAotPatchKeyProvider)(NSString* keyIdentifier);
+
+/** Receives copied updater-verified v2 descriptor/digest JSON. Authenticate
+ * provisioning independently; this context is authorization metadata, not a
+ * credential. V2 never falls back to the legacy single-argument provider.
+ */
+typedef NSData* _Nullable (^FlutterShorebirdAotPatchKeyProviderV2)(NSString* keyIdentifier,
+                                                                   NSData* verifiedSelectionJSON);
 
 /**
  * A set of Flutter and Dart assets used by a `FlutterEngine` to initialize execution.
@@ -81,6 +97,10 @@ FLUTTER_DARWIN_EXPORT
  */
 + (BOOL)setShorebirdAotPatchKeyProvider:(FlutterShorebirdAotPatchKeyProvider)provider
     NS_SWIFT_NAME(setShorebirdAotPatchKeyProvider(_:));
+
+/** Registers a selection-aware provider under the same startup lifetime rules. */
++ (BOOL)setShorebirdAotPatchKeyProviderV2:(FlutterShorebirdAotPatchKeyProviderV2)provider
+    NS_SWIFT_NAME(setShorebirdAotPatchKeyProviderV2(_:));
 
 /**
  * An NSArray of NSStrings to be passed as command line arguments to the Dart entrypoint.

@@ -130,12 +130,35 @@ std::weak_ptr<DartIsolate> DartIsolate::CreateRunningRootIsolate(
       isolate_configuration->IsNullSafetyEnabled(*isolate_snapshot));
   isolate_flags.SetIsDontNeedSafe(isolate_snapshot->IsDontNeedSafe());
 
+#if FML_OS_MACOSX
+  const bool interpreter_source =
+      settings.shorebird_interpreter_patch ||
+      settings.shorebird_interpreter_replacement_base ||
+      settings.shorebird_interpreter_begin_base;
+  // SDK shutdown callbacks may execute Dart. Guard the application's callback
+  // before group construction, including VM initialization failure, so no
+  // discarded transient group can execute either source through teardown.
+  std::shared_ptr<std::atomic<bool>> callbacks_committed;
+  fml::closure guarded_shutdown_callback = isolate_shutdown_callback;
+  if (interpreter_source) {
+    callbacks_committed = std::make_shared<std::atomic<bool>>(false);
+    guarded_shutdown_callback = [callbacks_committed,
+                                 isolate_shutdown_callback] {
+      if (callbacks_committed->load() && isolate_shutdown_callback) {
+        isolate_shutdown_callback();
+      }
+    };
+  }
+#else
+  const auto& guarded_shutdown_callback = isolate_shutdown_callback;
+#endif
+
   auto isolate = CreateRootIsolate(settings,                           //
                                    isolate_snapshot,                   //
                                    std::move(platform_configuration),  //
                                    isolate_flags,                      //
                                    isolate_create_callback,            //
-                                   isolate_shutdown_callback,          //
+                                   guarded_shutdown_callback,          //
                                    context,                            //
                                    spawning_isolate,                   //
                                    std::move(native_assets_manager)    //
@@ -167,6 +190,12 @@ std::weak_ptr<DartIsolate> DartIsolate::CreateRunningRootIsolate(
                                         settings.shorebird_interpreter_patch)
                                   : nullptr;
   const auto& bundled_base = settings.shorebird_interpreter_replacement_base;
+  if (!spawning_isolate && !selected_patch &&
+      settings.shorebird_interpreter_begin_base &&
+      !settings.shorebird_interpreter_begin_base()) {
+    FML_LOG(ERROR) << "Could not begin bundled interpreter selection";
+    return {};
+  }
   if (!spawning_isolate && (selected_patch || bundled_base)) {
     std::string error;
     Dart_AotPatchInstallStatus install_status = kDartAotPatchInstallRejected;
@@ -190,7 +219,8 @@ std::weak_ptr<DartIsolate> DartIsolate::CreateRunningRootIsolate(
                      << error;
       if (selected_patch) {
         shorebird::RejectInterpreterPatchForProcess([&] {
-          if (shorebird::IsInterpreterPatchKeyFailure(install_status) &&
+          if (shorebird::IsInterpreterPatchRetryableFailure(*selected_patch,
+                                                            install_status) &&
               settings.shorebird_launch_deferred_callback) {
             // Finalize the outcome before BASE becomes visible to any engine,
             // including engines on independent UI task runners.
@@ -209,6 +239,23 @@ std::weak_ptr<DartIsolate> DartIsolate::CreateRunningRootIsolate(
       return {};
     }
   }
+  // Install and key callbacks intentionally run without a process lock. The
+  // commitment arbitrates any concurrent refusal before making this group
+  // runnable: a stale installed group is destroyed and can retry only BASE.
+  if (interpreter_source &&
+      !shorebird::CommitInterpreterSourceForProcess(selected_patch.get())) {
+    FML_LOG(ERROR) << "Interpreter process source changed during installation";
+    return {};
+  }
+  if (callbacks_committed) {
+    callbacks_committed->store(true);
+  }
+  fml::ScopedCleanupClosure report_committed_startup_failure([&] {
+    if (interpreter_source) {
+      shorebird::CompleteInterpreterMainForProcess(
+          false, settings.shorebird_launch_failure_callback);
+    }
+  });
 #endif
 
   if (!isolate_configuration->PrepareIsolate(*isolate.get())) {
@@ -245,16 +292,12 @@ std::weak_ptr<DartIsolate> DartIsolate::CreateRunningRootIsolate(
                                dart_entrypoint_args)) {
     FML_LOG(ERROR) << "Could not run the run main Dart entrypoint.";
 #if FML_OS_MACOSX
-    if (settings.shorebird_interpreter_patch ||
-        settings.shorebird_interpreter_replacement_base) {
-      // A different UI runner may already be completing a successful main.
-      // Order this startup failure before publishing BASE, while preserving
-      // RuntimeController's fresh-group retry when no main has completed yet.
-      shorebird::RejectInterpreterPatchForProcess(
-          settings.shorebird_launch_failure_callback);
-    } else
+    // Committed interpreter failures are reported by the cleanup below. They
+    // retain the process source; RuntimeController must not retry BASE.
+    if (!interpreter_source && settings.shorebird_launch_failure_callback) {
+#else
+    if (settings.shorebird_launch_failure_callback) {
 #endif
-        if (settings.shorebird_launch_failure_callback) {
       settings.shorebird_launch_failure_callback();
     }
     return {};
@@ -265,6 +308,9 @@ std::weak_ptr<DartIsolate> DartIsolate::CreateRunningRootIsolate(
         settings.root_isolate_shutdown_callback);
   }
 
+#if FML_OS_MACOSX
+  report_committed_startup_failure.Release();
+#endif
   shutdown_on_error.Release();
 
   return isolate;

@@ -42,6 +42,25 @@ FLUTTER_ASSERT_ARC
   flutter::shorebird::ResetInterpreterKeyProviderForTesting();
 }
 
+- (void)testSelectionAwareInterpreterProviderMustBeRegisteredBeforeStartup {
+  flutter::shorebird::ResetInterpreterKeyProviderForTesting();
+  XCTAssertTrue([FlutterDartProject
+      setShorebirdAotPatchKeyProviderV2:^NSData*(NSString* keyId, NSData* selection) {
+        return selection.length ? [NSMutableData dataWithLength:32] : nil;
+      }]);
+  XCTAssertFalse([FlutterDartProject
+      setShorebirdAotPatchKeyProviderV2:^NSData*(NSString* keyId, NSData* selection) {
+        return nil;
+      }]);
+  flutter::shorebird::ResetInterpreterKeyProviderForTesting();
+  __unused FlutterDartProject* project = [[FlutterDartProject alloc] init];
+  XCTAssertFalse([FlutterDartProject
+      setShorebirdAotPatchKeyProviderV2:^NSData*(NSString* keyId, NSData* selection) {
+        return nil;
+      }]);
+  flutter::shorebird::ResetInterpreterKeyProviderForTesting();
+}
+
 - (void)testOldGenHeapSizeSetting {
   FlutterDartProject* project = [[FlutterDartProject alloc] init];
   int64_t old_gen_heap_size =

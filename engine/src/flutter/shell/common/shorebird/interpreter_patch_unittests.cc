@@ -12,6 +12,7 @@
 
 #include "flutter/shell/common/shorebird/updater.h"
 #include "gtest/gtest.h"
+#include "openssl/sha.h"
 
 namespace flutter::shorebird {
 namespace {
@@ -127,6 +128,11 @@ class FakeApi : public InterpreterPatchApi {
               intptr_t length,
               std::string* error) override {
     calls.emplace_back("reload");
+    if (callback) {
+      std::array<uint8_t, 32> key;
+      intptr_t key_length = 0;
+      EXPECT_FALSE(callback("test-key", key.data(), key.size(), &key_length));
+    }
     reloaded_payload = payload;
     reloaded_length = length;
     if (expect_decrypted_payload) {
@@ -177,6 +183,319 @@ class InterpreterPatchTest : public ::testing::Test {
   std::string error;
   Dart_AotPatchInstallStatus status = kDartAotPatchInstallRejected;
 };
+
+std::string ArtifactDigest(const std::string& bytes) {
+  uint8_t digest[SHA256_DIGEST_LENGTH];
+  SHA256(reinterpret_cast<const uint8_t*>(bytes.data()), bytes.size(), digest);
+  const char* hex = "0123456789abcdef";
+  std::string result;
+  for (uint8_t byte : digest) {
+    result += hex[byte >> 4];
+    result += hex[byte & 15];
+  }
+  return result;
+}
+std::string V2Envelope() {
+  auto envelope = Envelope();
+  envelope.insert(envelope.find("\"metadata\":{") + 12,
+                  "\"app_id\":\"app\",\"app_build_id\":\"1.0+1\",\"base_"
+                  "snapshot_hash\":\"" +
+                      std::string(64, 'a') + "\",");
+  return envelope;
+}
+std::string V2Context(const std::string& artifact_hash,
+                      const std::string& expiry = "null") {
+  return R"({"version":2,"selection_digest":")" + std::string(64, 'c') +
+         R"(","selection":{"epoch":"11","scope":{"app_id":"app","release_version":"1.0+1","platform":"ios","arch":"aarch64","client_id_hash":")" +
+         std::string(64, 'd') + R"(","base_artifact_hash":")" +
+         std::string(64, 'a') +
+         R"(","host_abi_hash":null,"runtime_profile":"interpreter-structural"},"channel":"stable","variant_id":"pro","license_type":"pro","entitlement_revision":"grant-7","target":{"kind":"patch","patch_number":"2","artifact_hash":")" +
+         artifact_hash +
+         R"(","encryption":"artifact-aes-256-gcm","artifact_key_id":"test-key"},"not_before":"0","offline_valid_until":)" +
+         expiry +
+         R"(,"fallback":{"kind":"base","variant_id":"free","license_type":"free"}}})";
+}
+class InterpreterSelectionV2Test : public InterpreterPatchTest {
+ protected:
+  void SetUp() override {
+    InterpreterPatchTest::SetUp();
+    config.selection_protocol_v2 = true;
+    config.selection_id = 42;
+    config.patch_number = 2;
+    config.release_version = "1.0+1";
+    config.runtime_profile = "interpreter-structural";
+    // V2 authorizes the selected variant rather than the release's v1 key.
+    config.flavor_id = "free";
+    config.license_type = "free";
+    config.key_id = "obsolete-v1-key";
+    config.begin_boot_source = [&] {
+      ++begins;
+      return begin_ok;
+    };
+    SetArtifact(V2Envelope());
+  }
+  void SetArtifact(const std::string& bytes) {
+    config.owned_artifact = std::make_shared<Artifact>(bytes);
+    config.verified_selection_json = V2Context(ArtifactDigest(bytes));
+  }
+  void RegisterV2() {
+    ASSERT_TRUE(RegisterInterpreterKeyProviderV2(
+        [&](const char* key, const std::string& context, uint8_t* buffer,
+            intptr_t, intptr_t* length) {
+          EXPECT_EQ(begins, 1);
+          EXPECT_STREQ(key, "test-key");
+          EXPECT_EQ(context, config.verified_selection_json);
+          ++key_calls;
+          std::memset(buffer, 7, 32);
+          *length = 32;
+          return true;
+        }));
+  }
+  bool ApplyV2() {
+    return ApplyInterpreterPatch(config, *config.owned_artifact, api, &error,
+                                 &status);
+  }
+  int begins = 0;
+  int key_calls = 0;
+  bool begin_ok = true;
+};
+TEST_F(InterpreterSelectionV2Test,
+       BeginsSameTokenBeforeSelectionAwareKeyRelease) {
+  RegisterV2();
+  EXPECT_TRUE(ApplyV2()) << error;
+  EXPECT_EQ(begins, 1);
+  EXPECT_EQ(key_calls, 1);
+  std::array<uint8_t, 32> key;
+  intptr_t length = 0;
+  EXPECT_FALSE(api.callback("test-key", key.data(), key.size(), &length));
+}
+TEST_F(InterpreterSelectionV2Test, V2NeverFallsBackToLegacyProvider) {
+  RegisterKey();
+  EXPECT_FALSE(ApplyV2());
+  EXPECT_EQ(status, kDartAotPatchInstallKeyUnavailable);
+  EXPECT_EQ(begins, 1);
+  EXPECT_EQ(key_calls, 0);
+}
+TEST_F(InterpreterSelectionV2Test, StaleTokenDoesNotReleaseKeyOrTouchVm) {
+  RegisterV2();
+  begin_ok = false;
+  EXPECT_FALSE(ApplyV2());
+  EXPECT_EQ(begins, 1);
+  EXPECT_EQ(key_calls, 0);
+  EXPECT_TRUE(api.calls.empty());
+}
+TEST_F(InterpreterSelectionV2Test,
+       MissingContextNeverBeginsOrCallsKeyProvider) {
+  RegisterV2();
+  config.verified_selection_json.clear();
+  EXPECT_FALSE(ApplyV2());
+  EXPECT_EQ(begins, 0);
+  EXPECT_TRUE(api.calls.empty());
+}
+TEST_F(InterpreterSelectionV2Test,
+       ArtifactMutationCannotReuseVerifiedAuthority) {
+  RegisterV2();
+  auto changed = V2Envelope() + " ";
+  config.owned_artifact = std::make_shared<Artifact>(changed);
+  EXPECT_FALSE(ApplyV2());
+  EXPECT_EQ(begins, 0);
+  EXPECT_TRUE(api.calls.empty());
+}
+TEST_F(InterpreterSelectionV2Test,
+       RejectsReplayProfileLeaseAndAmbiguousContext) {
+  RegisterV2();
+  const auto original = config.verified_selection_json;
+  for (const auto& pair : std::vector<std::pair<std::string, std::string>>{
+           {"\"platform\":\"ios\"", "\"platform\":\"macos\""},
+           {"\"runtime_profile\":\"interpreter-structural\"",
+            "\"runtime_profile\":\"interpreter-full\""},
+           {"\"variant_id\":\"pro\"", "\"variant_id\":\"enterprise\""},
+           {"\"artifact_key_id\":\"test-key\"",
+            "\"artifact_key_id\":\"other\""},
+           {"\"offline_valid_until\":null", "\"offline_valid_until\":\"1\""},
+           {"\"epoch\":\"11\"", "\"epoch\":\"11\",\"epoch\":\"11\""},
+           {"\"version\":2", "\"version\":2,\"unknown\":true"}}) {
+    config.verified_selection_json = original;
+    const auto position = config.verified_selection_json.find(pair.first);
+    ASSERT_NE(position, std::string::npos);
+    config.verified_selection_json.replace(position, pair.first.size(),
+                                           pair.second);
+    EXPECT_FALSE(ApplyV2()) << pair.second;
+    EXPECT_EQ(begins, 0);
+    EXPECT_TRUE(api.calls.empty());
+  }
+}
+TEST_F(InterpreterSelectionV2Test, WireAarch64NeverAcceptsX64EnvelopeMetadata) {
+  RegisterV2();
+  auto bytes = V2Envelope();
+  bytes.replace(bytes.find("arm64"), 5, "x64");
+  SetArtifact(bytes);
+  EXPECT_FALSE(ApplyV2());
+  EXPECT_EQ(begins, 0);
+  EXPECT_TRUE(api.calls.empty());
+}
+TEST_F(InterpreterSelectionV2Test, BegunAuthorityKeepsLaterEnginesCoherent) {
+  RegisterV2();
+  // Model an already-begun, process-owned source whose original grant now
+  // passes its lease boundary. Revalidation must not choose another variant.
+  config.boot_source_begun->store(true);
+  config.verified_selection_json =
+      V2Context(ArtifactDigest(V2Envelope()), "\"1\"");
+  EXPECT_TRUE(ApplyV2()) << error;
+  EXPECT_EQ(begins, 1);
+}
+TEST_F(InterpreterSelectionV2Test,
+       ConcurrentBaseWinDiscardsInstalledPatchBeforeMain) {
+  std::atomic<int> begins{0};
+  config.begin_boot_source = [&] {
+    ++begins;
+    return true;
+  };
+  auto patch = std::make_shared<InterpreterPatchConfig>(config);
+  ASSERT_EQ(SelectInterpreterPatchForProcess(patch), patch);
+  std::promise<void> first_in_provider;
+  std::promise<void> release_first;
+  auto released = release_first.get_future().share();
+  std::atomic<int> key_calls{0};
+  std::atomic<int> patch_mains{0};
+  ASSERT_TRUE(RegisterInterpreterKeyProviderV2(
+      [&](const char*, const std::string&, uint8_t* buffer, intptr_t,
+          intptr_t* length) {
+        // Application callbacks can re-enter provider/selection APIs. No
+        // process commitment/provider mutex may be held across this call.
+        EXPECT_EQ(SelectInterpreterPatchForProcess(patch), patch);
+        SealInterpreterKeyProvider();
+        EXPECT_FALSE(RegisterInterpreterKeyProviderV2({}));
+        if (key_calls.fetch_add(1) == 0) {
+          first_in_provider.set_value();
+          released.wait();
+          std::memset(buffer, 7, 32);
+          *length = 32;
+          return true;
+        }
+        return false;
+      }));
+  auto first = std::async(std::launch::async, [&] {
+    FakeApi first_api;
+    std::string first_error;
+    Dart_AotPatchInstallStatus first_status;
+    const bool installed = ApplyInterpreterPatch(
+        *patch, *patch->owned_artifact, first_api, &first_error, &first_status);
+    EXPECT_TRUE(installed) << first_error;
+    if (!installed || !CommitInterpreterSourceForProcess(patch.get()))
+      return false;
+    ++patch_mains;
+    CompleteInterpreterMainForProcess(true);
+    return true;
+  });
+  first_in_provider.get_future().wait();
+  FakeApi second_api;
+  std::string second_error;
+  Dart_AotPatchInstallStatus second_status;
+  EXPECT_FALSE(ApplyInterpreterPatch(*patch, *patch->owned_artifact, second_api,
+                                     &second_error, &second_status));
+  EXPECT_EQ(second_status, kDartAotPatchInstallKeyUnavailable);
+  int aborts = 0;
+  EXPECT_TRUE(RejectInterpreterPatchForProcess([&] { ++aborts; }));
+  EXPECT_TRUE(CommitInterpreterSourceForProcess(nullptr));
+  int base_mains = 0;
+  ++base_mains;
+  CompleteInterpreterMainForProcess(true);
+  release_first.set_value();
+  EXPECT_FALSE(first.get());
+  EXPECT_EQ(begins, 2);
+  EXPECT_EQ(aborts, 1);
+  EXPECT_EQ(patch_mains, 0);
+  EXPECT_EQ(base_mains, 1);
+  EXPECT_EQ(SelectInterpreterPatchForProcess(patch), nullptr);
+  // The discarded group may recreate only the same committed BASE.
+  EXPECT_TRUE(RejectInterpreterPatchForProcess([&] { ++aborts; }));
+  EXPECT_TRUE(CommitInterpreterSourceForProcess(nullptr));
+  EXPECT_EQ(aborts, 1);
+}
+TEST_F(InterpreterSelectionV2Test,
+       ConcurrentPatchCommitPreventsBaseBeforeMainCompletes) {
+  std::atomic<int> begins{0};
+  config.begin_boot_source = [&] {
+    ++begins;
+    return true;
+  };
+  auto patch = std::make_shared<InterpreterPatchConfig>(config);
+  ASSERT_EQ(SelectInterpreterPatchForProcess(patch), patch);
+  std::promise<void> first_in_provider;
+  std::promise<void> release_first;
+  auto released = release_first.get_future().share();
+  std::atomic<int> key_calls{0};
+  std::atomic<int> aborts{0};
+  ASSERT_TRUE(RegisterInterpreterKeyProviderV2(
+      [&](const char*, const std::string&, uint8_t* buffer, intptr_t,
+          intptr_t* length) {
+        EXPECT_EQ(SelectInterpreterPatchForProcess(patch), patch);
+        SealInterpreterKeyProvider();
+        if (key_calls.fetch_add(1) == 0) {
+          first_in_provider.set_value();
+          released.wait();
+          return false;
+        }
+        std::memset(buffer, 7, 32);
+        *length = 32;
+        return true;
+      }));
+  auto refusing_engine = std::async(std::launch::async, [&] {
+    FakeApi refusing_api;
+    std::string refusing_error;
+    Dart_AotPatchInstallStatus refusing_status;
+    EXPECT_FALSE(ApplyInterpreterPatch(*patch, *patch->owned_artifact,
+                                       refusing_api, &refusing_error,
+                                       &refusing_status));
+    EXPECT_EQ(refusing_status, kDartAotPatchInstallKeyUnavailable);
+    return RejectInterpreterPatchForProcess([&] { ++aborts; });
+  });
+  first_in_provider.get_future().wait();
+  FakeApi installing_api;
+  std::string installing_error;
+  Dart_AotPatchInstallStatus installing_status;
+  EXPECT_TRUE(ApplyInterpreterPatch(*patch, *patch->owned_artifact,
+                                    installing_api, &installing_error,
+                                    &installing_status));
+  EXPECT_TRUE(CommitInterpreterSourceForProcess(patch.get()));
+  // Main has not completed yet. Commitment alone must exclude BASE.
+  release_first.set_value();
+  EXPECT_FALSE(refusing_engine.get());
+  EXPECT_EQ(aborts, 0);
+  EXPECT_FALSE(CommitInterpreterSourceForProcess(nullptr));
+  EXPECT_EQ(SelectInterpreterPatchForProcess(nullptr), patch);
+  CompleteInterpreterMainForProcess(true);
+  EXPECT_TRUE(CommitInterpreterSourceForProcess(patch.get()));
+  EXPECT_FALSE(RejectInterpreterPatchForProcess([&] { ++aborts; }));
+  EXPECT_EQ(aborts, 0);
+  EXPECT_EQ(begins, 2);
+}
+TEST_F(InterpreterSelectionV2Test,
+       UnreadableOwnedArtifactIsRetryableWithoutForgedKeyStatus) {
+  config.owned_artifact.reset();
+  config.owned_artifact_read_failed = true;
+  EXPECT_EQ(LoadOwnedInterpreterArtifact("/missing/owned-interpreter-artifact"),
+            nullptr);
+  EXPECT_TRUE(
+      IsInterpreterPatchRetryableFailure(config, kDartAotPatchInstallRejected));
+  EXPECT_FALSE(IsInterpreterPatchKeyFailure(kDartAotPatchInstallRejected));
+  config.owned_artifact_read_failed = false;
+  EXPECT_FALSE(
+      IsInterpreterPatchRetryableFailure(config, kDartAotPatchInstallRejected));
+  config.selection_protocol_v2 = false;
+  config.owned_artifact_read_failed = true;
+  EXPECT_FALSE(
+      IsInterpreterPatchRetryableFailure(config, kDartAotPatchInstallRejected));
+}
+TEST_F(InterpreterSelectionV2Test, WrongProvisionedKeyRetainsTypedDeferral) {
+  RegisterV2();
+  api.install_ok = false;
+  EXPECT_FALSE(ApplyV2());
+  EXPECT_EQ(status, kDartAotPatchInstallAuthenticationFailed);
+  EXPECT_TRUE(IsInterpreterPatchKeyFailure(status));
+  EXPECT_EQ(api.calls.back(), "free");
+}
 
 TEST_F(InterpreterPatchTest, InstallsThenReloadsAndFreesPlaintext) {
   RegisterKey();
@@ -470,12 +789,30 @@ TEST_F(InterpreterPatchTest,
   EXPECT_FALSE(RejectInterpreterPatchForProcess());
   EXPECT_EQ(SelectInterpreterPatchForProcess(nullptr), patch);
 }
-TEST_F(InterpreterPatchTest, FailedActualMainPreventsLaterPatchPromotion) {
+TEST_F(InterpreterPatchTest,
+       FailedCommittedMainRefusesFreshGroupsUntilColdRestart) {
   auto patch = std::make_shared<InterpreterPatchConfig>(config);
   EXPECT_EQ(SelectInterpreterPatchForProcess(patch), patch);
-  CompleteInterpreterMainForProcess(false);
+  EXPECT_TRUE(CommitInterpreterSourceForProcess(patch.get()));
+  int failures = 0;
+  CompleteInterpreterMainForProcess(false, [&] { ++failures; });
+  EXPECT_EQ(failures, 1);
+  EXPECT_EQ(SelectInterpreterPatchForProcess(nullptr), patch);
+  EXPECT_FALSE(CommitInterpreterSourceForProcess(patch.get()));
+  EXPECT_FALSE(CommitInterpreterSourceForProcess(nullptr));
+  EXPECT_FALSE(RejectInterpreterPatchForProcess());
   CompleteInterpreterMainForProcess(true);
-  EXPECT_EQ(SelectInterpreterPatchForProcess(patch), nullptr);
+  EXPECT_FALSE(CommitInterpreterSourceForProcess(patch.get()));
+}
+TEST_F(InterpreterPatchTest, CommittedBaseFailureCannotRetryAnotherSource) {
+  EXPECT_EQ(SelectInterpreterPatchForProcess(nullptr), nullptr);
+  EXPECT_TRUE(CommitInterpreterSourceForProcess(nullptr));
+  CompleteInterpreterMainForProcess(false);
+  EXPECT_FALSE(CommitInterpreterSourceForProcess(nullptr));
+  EXPECT_FALSE(RejectInterpreterPatchForProcess());
+  EXPECT_EQ(SelectInterpreterPatchForProcess(
+                std::make_shared<InterpreterPatchConfig>(config)),
+            nullptr);
 }
 TEST_F(InterpreterPatchTest, ProviderCannotBeReplacedOrInstalledAfterStartup) {
   RegisterKey();

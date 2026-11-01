@@ -19,6 +19,20 @@ namespace flutter {
 namespace shorebird {
 namespace testing {
 
+TEST(UpdaterV2Marker, DirectConfigurationCannotIgnoreCompiledProtocol) {
+  Updater::ResetLaunchStateForTesting();
+  MockUpdater updater;
+  AppConfig config;
+  config.yaml_config = "selection_protocol: 2\n";
+  EXPECT_FALSE(updater.Init(config));
+  EXPECT_EQ(updater.init_count(), 0);
+  EXPECT_TRUE(updater.UsesPreparedBootSource());
+  config.yaml_config.clear();
+  EXPECT_FALSE(updater.Init(config));
+  EXPECT_EQ(updater.init_count(), 0);
+  Updater::ResetLaunchStateForTesting();
+}
+
 class PreparedUpdater : public MockUpdater {
  public:
   std::vector<std::string> events;
@@ -82,6 +96,35 @@ class PreparedUpdaterTest : public ::testing::Test {
   }
   PreparedUpdater* updater_;
 };
+
+TEST_F(PreparedUpdaterTest, KeyRefusalAbortsSameTokenAndAllowsFreshBase) {
+  ASSERT_TRUE(updater_->BeginBootSource(1));
+  EXPECT_TRUE(updater_->ReportLaunchDeferred("patch.so"));
+  EXPECT_EQ(updater_->launch_deferred_count(), 0);
+  EXPECT_EQ(updater_->events,
+            (std::vector<std::string>{"begin:1", "prepare", "abort:1"}));
+  auto base = updater_->PrepareBootSource();
+  ASSERT_NE(base, nullptr);
+  EXPECT_EQ(base->kind(), PreparedBootSource::Kind::kBase);
+  EXPECT_TRUE(updater_->BeginBootSource(base->selection_id()));
+  updater_->ReportLaunchFailure();
+  EXPECT_EQ(updater_->launch_failure_count(), 0);
+}
+TEST_F(PreparedUpdaterTest, KeyRefusalCannotAbortAnotherSelectedPath) {
+  EXPECT_FALSE(updater_->ReportLaunchDeferred("another-patch.so"));
+  EXPECT_TRUE(updater_->patch);
+  EXPECT_EQ(updater_->events, (std::vector<std::string>{"prepare"}));
+  updater_->set_should_auto_update(true);
+  updater_->ReportLaunchSuccess();
+  EXPECT_EQ(updater_->start_update_thread_count(), 0);
+}
+TEST_F(PreparedUpdaterTest, FailedKeyAbortSuppressesFurtherUpdates) {
+  updater_->abort_result = false;
+  EXPECT_FALSE(updater_->ReportLaunchDeferred("patch.so"));
+  updater_->set_should_auto_update(true);
+  updater_->ReportLaunchSuccess();
+  EXPECT_EQ(updater_->start_update_thread_count(), 0);
+}
 
 TEST_F(PreparedUpdaterTest, BeginsBeforeTheLoaderAndDoesNotStartLegacyBoot) {
   updater_->ReportLaunchStart();

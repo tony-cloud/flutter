@@ -13,9 +13,21 @@
 #ifdef __cplusplus
 extern "C" {
 #endif
-typedef bool (*FlutterShorebirdPatchDecryptionKeyProvider)(
-    const char* key_id, const char* aad, uint8_t* key_out,
-    size_t capacity, size_t* written);
+typedef bool (*FlutterShorebirdPatchDecryptionKeyProvider)(const char* key_id,
+                                                           const char* aad,
+                                                           uint8_t* key_out,
+                                                           size_t capacity,
+                                                           size_t* written);
+typedef bool (*FlutterShorebirdPatchDecryptionKeyProviderV2)(
+    const char* key_id,
+    const char* aad,
+    const char* verified_selection_context_json,
+    uint8_t* key_out,
+    size_t capacity,
+    size_t* written);
+// Mutually exclusive with v1. Context strings are borrowed for this call only.
+bool shorebird_set_patch_decryption_key_provider_v2(
+    FlutterShorebirdPatchDecryptionKeyProviderV2 provider);
 // Non-null enables required encrypted delivery; null disables it before init.
 // Returns false after initialization. Requires strict signed-response policies.
 bool shorebird_set_patch_decryption_key_provider(

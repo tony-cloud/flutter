@@ -6,6 +6,10 @@ EXPORTS
   shorebird_init = shorebird_init
   shorebird_set_device_id_override = shorebird_set_device_id_override
   shorebird_set_patch_decryption_key_provider = shorebird_set_patch_decryption_key_provider
+  shorebird_set_patch_decryption_key_provider_v2 = shorebird_set_patch_decryption_key_provider_v2
+  shorebird_installation_id = shorebird_installation_id
+  shorebird_selection_status_json = shorebird_selection_status_json
+  shorebird_free_status_string = shorebird_free_status_string
   shorebird_next_boot_patch_number = shorebird_next_boot_patch_number
   shorebird_next_boot_patch_path = shorebird_next_boot_patch_path
   shorebird_validate_next_boot_patch = shorebird_validate_next_boot_patch

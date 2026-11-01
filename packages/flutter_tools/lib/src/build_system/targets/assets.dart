@@ -2,7 +2,10 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
+import 'dart:convert';
+
 import 'package:pool/pool.dart';
+import 'package:yaml/yaml.dart';
 
 import '../../artifacts.dart';
 import '../../asset.dart';
@@ -17,6 +20,7 @@ import '../../shorebird/shorebird_build_key.dart';
 import '../../shorebird/shorebird_interpreter.dart';
 import '../../shorebird/shorebird_native_assets.dart';
 import '../../shorebird/shorebird_replacement.dart';
+import '../../shorebird/shorebird_selection.dart';
 import '../../shorebird/shorebird_yaml.dart';
 import '../build_system.dart';
 import '../depfile.dart';
@@ -123,6 +127,49 @@ Future<Depfile> copyAssets(
       );
     }),
   };
+
+  // Scope and baseline bypass user transformers: the measured original bytes
+  // must be the bytes the updater later opens, on every release and patch build.
+  final AssetBundleEntry? shorebirdConfiguration = assetEntries['shorebird.yaml'];
+  ShorebirdSelectionInputs? selection;
+  if (shorebirdConfiguration?.content case final DevFSFileContent content) {
+    final Object? config = loadYaml(await (content.file as File).readAsString());
+    if (config is YamlMap && config['selection_protocol'] == 2) {
+      if (buildMode != BuildMode.release || shorebirdConfiguration!.transformers.isNotEmpty) {
+        throw const FormatException(
+          'Protocol 2 requires a release build and untransformed shorebird.yaml',
+        );
+      }
+      selection = ShorebirdSelectionInputs.read(
+        environment.fileSystem,
+        environment.platform.environment,
+      );
+      if (shorebirdTargetOS(targetPlatform.getName()) != selection.scope['platform']) {
+        throw const FormatException('Release scope platform differs from build target');
+      }
+      assetEntries[selection.assetName] = AssetBundleEntry(
+        DevFSStringContent(jsonEncode(selection.scope)),
+        kind: AssetKind.regular,
+        transformers: const <AssetTransformerEntry>[],
+      );
+      assetEntries[selection.baselineAsset] = AssetBundleEntry(
+        DevFSFileContent(selection.baseline),
+        kind: AssetKind.regular,
+        transformers: const <AssetTransformerEntry>[],
+      );
+    }
+  }
+  // Removed scopes must not survive a protocol or target change in cached output.
+  for (final File stale
+      in outputDirectory.existsSync() ? outputDirectory.listSync().whereType<File>() : <File>[]) {
+    final String name = stale.basename;
+    if ((name.startsWith('shorebird_release_scope_') &&
+            name.endsWith('.json') &&
+            name != selection?.assetName) ||
+        (name == kShorebirdInterpreterBaseAsset && selection?.baselineAsset != name)) {
+      stale.deleteSync();
+    }
+  }
 
   if (replacement != null) {
     final AssetBundleEntry? configuration = assetEntries['shorebird.yaml'];

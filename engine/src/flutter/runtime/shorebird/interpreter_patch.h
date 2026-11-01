@@ -4,6 +4,7 @@
 #ifndef FLUTTER_RUNTIME_SHOREBIRD_INTERPRETER_PATCH_H_
 #define FLUTTER_RUNTIME_SHOREBIRD_INTERPRETER_PATCH_H_
 
+#include <atomic>
 #include <functional>
 #include <memory>
 #include <string>
@@ -34,6 +35,21 @@ struct InterpreterPatchConfig {
   bool strict_verification = false;
   bool full_replacement = false;
   std::string host_abi;
+  // V2 authority is copied from the prepared updater token, never from YAML
+  // or envelope strings. Keep the exact bytes alive across later engines.
+  bool selection_protocol_v2 = false;
+  std::string release_version;
+  std::string runtime_profile;
+  std::string verified_selection_json;
+  uint64_t selection_id = 0;
+  uint64_t patch_number = 0;
+  std::shared_ptr<const fml::Mapping> owned_artifact;
+  bool owned_artifact_read_failed = false;
+  std::function<bool()> begin_boot_source;
+  // Authorization is checked at cold process begin. Later engines reuse the
+  // same begun authority; envelope content expiry remains a VM requirement.
+  std::shared_ptr<std::atomic<bool>> boot_source_begun =
+      std::make_shared<std::atomic<bool>>(false);
 };
 
 // Signed bundle data, independent of updater availability and licensed keys.
@@ -48,6 +64,13 @@ struct InterpreterReplacementBaseConfig {
   std::string validation_error;
 };
 
+inline constexpr char kInterpreterBaseAsset[] =
+    "shorebird_interpreter_base.bytecode";
+
+using InterpreterKeyProviderV2 = std::function<
+    bool(const char*, const std::string&, uint8_t*, intptr_t, intptr_t*)>;
+bool RegisterInterpreterKeyProviderV2(InterpreterKeyProviderV2 provider);
+
 using InterpreterKeyProvider =
     std::function<bool(const char*, uint8_t*, intptr_t, intptr_t*)>;
 
@@ -59,6 +82,12 @@ void SealInterpreterKeyProvider();
 // downloads must not change code for a later independently created engine.
 std::shared_ptr<const InterpreterPatchConfig> SelectInterpreterPatchForProcess(
     std::shared_ptr<const InterpreterPatchConfig> candidate);
+// Commit the installed source before making its group runnable or invoking
+// application callbacks. A racing BASE rejection invalidates a stale patch;
+// once PATCH commits, later engine failures cannot switch this process to BASE.
+// No provider or VM callback runs under this operation's lock.
+bool CommitInterpreterSourceForProcess(const InterpreterPatchConfig* expected);
+
 // Outcome reporting and process selection are one ordered operation. These
 // synchronous callbacks run under the selection lock and must not re-enter
 // provider/selection APIs. Updater launch reports only take their own locks.
@@ -87,6 +116,11 @@ class InterpreterPatchApi {
   virtual void FreePayload(uint8_t* payload) = 0;
 };
 
+// Reads a bounded file into owned storage. Verification and VM installation
+// consume these same immutable bytes, independent of future path mutations.
+std::shared_ptr<const fml::Mapping> LoadOwnedInterpreterArtifact(
+    const std::string& path);
+
 // Called inside the base root isolate's Dart scope, after libraries exist and
 // before making it runnable. Failure requires destroying that isolate group.
 bool ApplyInterpreterPatch(const InterpreterPatchConfig& config,
@@ -101,6 +135,10 @@ bool ApplyInterpreterPatch(const InterpreterPatchConfig& config,
 // Only these typed, pre-execution SDK refusals can retain a candidate. A
 // malformed envelope, authenticated payload rejection, or VM failure cannot.
 bool IsInterpreterPatchKeyFailure(Dart_AotPatchInstallStatus status);
+// An unavailable bounded owned read is retryable too: no corrupt artifact was
+// proven and no VM code was installed. This is distinct from SDK key statuses.
+bool IsInterpreterPatchRetryableFailure(const InterpreterPatchConfig& config,
+                                        Dart_AotPatchInstallStatus status);
 
 // Choose exactly one install in a fresh group. An update failure returns to
 // the caller to destroy the group; it never installs base into a touched group.

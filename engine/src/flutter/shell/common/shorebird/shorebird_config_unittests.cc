@@ -3,14 +3,89 @@
 // found in the LICENSE file.
 #include "flutter/shell/common/shorebird/shorebird.h"
 
+#include <fstream>
 #include <utility>
 #include <vector>
 
+#include "flutter/fml/file.h"
 #include "flutter/fml/paths.h"
 #include "flutter/runtime/shorebird/interpreter_patch.h"
+#include "flutter/shell/common/shorebird/updater.h"
 #include "gtest/gtest.h"
 
 namespace flutter::testing {
+
+TEST(Shorebird, V2ScopeNeverDowngradesWhenMissingOrAmbiguous) {
+  for (const auto& yaml : {"selection_protocol: 2\n", "selection_protocol: 9\n",
+                           "selection_protocol: 1\nselection_protocol: 2\n"}) {
+    shorebird::Updater::ResetLaunchStateForTesting();
+    shorebird::AppConfig config;
+    config.yaml_config = yaml;
+    EXPECT_FALSE(
+        ConfigureSelectionV2(config, "/missing/assets", "macos", "aarch64"));
+    EXPECT_TRUE(config.selection_protocol_v2);
+    EXPECT_TRUE(shorebird::Updater::Instance().UsesPreparedBootSource());
+    // A different engine's legacy initializer cannot recover by downgrading.
+    shorebird::MockUpdater mock;
+    EXPECT_FALSE(mock.Init(shorebird::AppConfig{}));
+    EXPECT_EQ(mock.init_count(), 0);
+  }
+  shorebird::Updater::ResetLaunchStateForTesting();
+}
+TEST(Shorebird, V2OriginalBytecodeStreamIsIndependentOwnedAndFreshOnEveryOpen) {
+  ResetSelectionV2BaselineForTesting();
+  shorebird::Updater::ResetLaunchStateForTesting();
+  fml::ScopedTemporaryDirectory assets;
+  auto write = [&](const char* name, const std::string& data) {
+    std::ofstream stream(fml::paths::JoinPaths({assets.path(), name}),
+                         std::ios::binary);
+    stream << data;
+  };
+  const std::string hash(64, 'a');
+  const auto scope =
+      R"({"app_id":"app","release_version":"1.0+1","platform":"ios","arch":"aarch64","base_artifact_hash":")" +
+      hash +
+      R"(","host_abi_hash":null,"runtime_profile":"interpreter-structural"})";
+  const char* scope_name = "shorebird_release_scope_ios_aarch64.json";
+  write(scope_name, scope);
+  write(shorebird::kInterpreterBaseAsset, "original-released-bytecode");
+  shorebird::AppConfig config;
+  config.release_version = "1.0+1";
+  config.yaml_config =
+      "selection_protocol: 2\napp_id: app\n"
+      "aot_patch_runtime_mode: dart-bytecode-interpreter\n"
+      "aot_patch_structural_updates: true\naot_patch_base_snapshot_hash: " +
+      hash + "\n";
+  ASSERT_TRUE(ConfigureSelectionV2(config, assets.path(), "ios", "aarch64"));
+  EXPECT_EQ(config.release_scope_json, scope);
+  EXPECT_EQ(config.file_callbacks.open, nullptr);
+  const auto& callbacks = config.release_baseline_callbacks;
+  ASSERT_NE(callbacks.open, nullptr);
+  // Changes to the asset path after configuration cannot alter these streams.
+  write(shorebird::kInterpreterBaseAsset, "another-file-at-the-same-path");
+  void* first = callbacks.open();
+  void* second = callbacks.open();
+  ASSERT_NE(first, nullptr);
+  ASSERT_NE(second, nullptr);
+  uint8_t bytes[64] = {};
+  EXPECT_EQ(callbacks.read(first, bytes, 8), 8u);
+  const auto count = callbacks.read(second, bytes, sizeof(bytes));
+  EXPECT_EQ(std::string(reinterpret_cast<char*>(bytes), count),
+            "original-released-bytecode");
+  EXPECT_EQ(callbacks.seek(first, 0, SEEK_SET), 0);
+  EXPECT_EQ(callbacks.read(first, bytes, 8), 8u);
+  EXPECT_EQ(std::string(reinterpret_cast<char*>(bytes), 8), "original");
+  EXPECT_EQ(callbacks.seek(first, -100, SEEK_CUR), -1);
+  callbacks.close(first);
+  callbacks.close(second);
+  // Duplicate/extra scope members and a different host architecture fail.
+  write(scope_name, scope.substr(0, scope.size() - 1) + ",\"unknown\":null}");
+  EXPECT_FALSE(ConfigureSelectionV2(config, assets.path(), "ios", "aarch64"));
+  write(scope_name, scope);
+  EXPECT_FALSE(ConfigureSelectionV2(config, assets.path(), "ios", "x86_64"));
+  ResetSelectionV2BaselineForTesting();
+  shorebird::Updater::ResetLaunchStateForTesting();
+}
 
 TEST(Shorebird, GetValueFromYamlValueExists) {
   std::string yaml = "appid: com.example.app\nversion: 1.0.0\n";

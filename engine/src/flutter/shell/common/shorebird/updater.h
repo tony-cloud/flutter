@@ -38,7 +38,8 @@ class PreparedBootSource {
                      uint64_t image_size,
                      int fd,
                      std::string path,
-                     std::shared_ptr<const uint8_t> memory = nullptr);
+                     std::shared_ptr<const uint8_t> memory = nullptr,
+                     std::string verified_selection_json = "");
   ~PreparedBootSource();
   PreparedBootSource(const PreparedBootSource&) = delete;
   PreparedBootSource& operator=(const PreparedBootSource&) = delete;
@@ -51,6 +52,9 @@ class PreparedBootSource {
   const std::string& path() const { return path_; }
   const uint8_t* memory() const { return memory_.get(); }
   int TakeFD();
+  const std::string& verified_selection_json() const {
+    return verified_selection_json_;
+  }
 
  private:
   const Kind kind_;
@@ -60,6 +64,7 @@ class PreparedBootSource {
   int fd_;
   const std::string path_;
   const std::shared_ptr<const uint8_t> memory_;
+  const std::string verified_selection_json_;
 };
 
 /// Configuration for initializing the Shorebird updater.
@@ -78,10 +83,16 @@ struct AppConfig {
   std::string code_cache_dir;
 
   /// Callbacks for iOS patch file access (can be null callbacks on Android).
-  FileCallbacks file_callbacks;
+  FileCallbacks file_callbacks = {};
 
   /// YAML configuration from shorebird.yaml.
   std::string yaml_config;
+
+  // Compiled release scope plus an independent stream over the ORIGINAL
+  // interpreter bytecode. Native Mach-O snapshot callbacks are not bytecode.
+  bool selection_protocol_v2 = false;
+  std::string release_scope_json;
+  FileCallbacks release_baseline_callbacks = {};
 
   /// Release-owned decoded-image budget. Zero preserves the legacy route.
   /// Linux/Android advertise sealed FDs; Windows advertises verified memory.
@@ -163,6 +174,8 @@ class Updater {
   // Require checked selection before native configuration parsing/init.
   virtual bool SupportsPreparedBootSources() const { return false; }
   void RequirePreparedBootSource();
+  void RequireSelectionV2();
+  bool RequiresSelectionV2() const;
   bool UsesPreparedBootSource() const;
   virtual std::unique_ptr<PreparedBootSource> PrepareBootSource();
   bool BeginBootSource(uint64_t selection_id);
@@ -228,6 +241,7 @@ class Updater {
 
   // Once-per-process guards for launch lifecycle.
   static std::atomic<bool> prepared_sources_;
+  static std::atomic<bool> selection_v2_required_;
   static std::atomic<bool> prepared_configuration_failed_;
   static std::atomic<bool> prepared_recovery_failed_;
   static std::atomic<bool> launch_started_;
@@ -248,7 +262,7 @@ class NoOpUpdater : public Updater {
   ~NoOpUpdater() override = default;
 
   bool DoInit(const AppConfig& config) override {
-    return config.max_native_image_bytes == 0;
+    return config.max_native_image_bytes == 0 && !config.selection_protocol_v2;
   }
   void ValidateNextBootPatch() override {}
   std::string NextBootPatchPath() override { return ""; }

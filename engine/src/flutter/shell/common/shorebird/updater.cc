@@ -4,6 +4,7 @@
 
 #include "flutter/shell/common/shorebird/updater.h"
 
+#include <sstream>
 #include <utility>
 
 #include "flutter/fml/build_config.h"
@@ -26,14 +27,16 @@ PreparedBootSource::PreparedBootSource(Kind kind,
                                        uint64_t image_size,
                                        int fd,
                                        std::string path,
-                                       std::shared_ptr<const uint8_t> memory)
+                                       std::shared_ptr<const uint8_t> memory,
+                                       std::string verified_selection_json)
     : kind_(kind),
       selection_id_(selection_id),
       patch_number_(patch_number),
       image_size_(image_size),
       fd_(fd),
       path_(std::move(path)),
-      memory_(std::move(memory)) {}
+      memory_(std::move(memory)),
+      verified_selection_json_(std::move(verified_selection_json)) {}
 
 PreparedBootSource::~PreparedBootSource() {
 #if !FML_OS_WIN
@@ -55,6 +58,7 @@ std::mutex Updater::instance_mutex_;
 std::mutex Updater::prepared_load_mutex_;
 std::atomic<uint64_t> Updater::loaded_selection_id_{0};
 std::atomic<bool> Updater::prepared_sources_{false};
+std::atomic<bool> Updater::selection_v2_required_{false};
 std::atomic<bool> Updater::prepared_configuration_failed_{false};
 std::atomic<bool> Updater::prepared_recovery_failed_{false};
 std::atomic<bool> Updater::launch_started_{false};
@@ -87,6 +91,7 @@ void Updater::ResetInstanceForTesting() {
 void Updater::ResetLaunchStateForTesting() {
   loaded_selection_id_.store(0);
   prepared_sources_.store(false);
+  selection_v2_required_.store(false);
   prepared_configuration_failed_.store(false);
   prepared_recovery_failed_.store(false);
   launch_started_.store(false);
@@ -96,7 +101,29 @@ void Updater::ResetLaunchStateForTesting() {
 }
 
 bool Updater::Init(const AppConfig& config) {
-  if (config.max_native_image_bytes != 0) {
+  // A compiled protocol marker cannot be ignored by an older initializer or
+  // by a later independently created engine after failed v2 configuration.
+  std::stringstream lines(config.yaml_config);
+  std::string line;
+  size_t protocol_keys = 0;
+  while (std::getline(lines, line)) {
+    if (line.compare(0, 19, "selection_protocol:") != 0)
+      continue;
+    ++protocol_keys;
+    const auto begin = line.find_first_not_of(" \t\r", 19);
+    const auto end = line.find_last_not_of(" \t\r");
+    const auto value =
+        begin == std::string::npos ? "" : line.substr(begin, end - begin + 1);
+    if (value != "1" && value != "\"1\"" && value != "'1'")
+      RequireSelectionV2();
+  }
+  if (protocol_keys > 1)
+    RequireSelectionV2();
+  if (config.selection_protocol_v2)
+    RequireSelectionV2();
+  if (selection_v2_required_.load() && !config.selection_protocol_v2)
+    return false;
+  if (config.max_native_image_bytes != 0 || config.selection_protocol_v2) {
     RequirePreparedBootSource();
   }
   bool result = DoInit(config);
@@ -104,11 +131,20 @@ bool Updater::Init(const AppConfig& config) {
   // later failure must not forget that the process already configured.
   if (result) {
     initialized_.store(true);
-    if (config.max_native_image_bytes != 0) {
+    if (config.max_native_image_bytes != 0 || config.selection_protocol_v2) {
       prepared_configuration_failed_.store(false);
     }
   }
   return result;
+}
+
+bool Updater::RequiresSelectionV2() const {
+  return selection_v2_required_.load();
+}
+
+void Updater::RequireSelectionV2() {
+  selection_v2_required_.store(true);
+  RequirePreparedBootSource();
 }
 
 void Updater::RequirePreparedBootSource() {
@@ -276,11 +312,22 @@ bool Updater::ReportLaunchDeferred(const std::string& expected_patch_path) {
   }
   // A later generic failure or BASE success must not consume this candidate's
   // breadcrumb, including when the persistent abort itself fails.
-  if (!DoReportLaunchDeferred(expected_patch_path)) {
-    prepared_recovery_failed_.store(true);
-    return false;
+  bool deferred;
+  if (UsesPreparedBootSource()) {
+    // Legacy deferral forbids every later preparation. Prepared interpreters
+    // instead abort this exact token retryably, retaining encrypted content
+    // and authorization while allowing a begun BASE in a fresh group.
+    auto source = PrepareBootSource();
+    deferred = source && source->kind() == PreparedBootSource::Kind::kPath &&
+               source->path() == expected_patch_path &&
+               AbortBootSource(source->selection_id());
+  } else {
+    deferred = DoReportLaunchDeferred(expected_patch_path);
   }
-  return true;
+  if (!deferred) {
+    prepared_recovery_failed_.store(true);
+  }
+  return deferred;
 }
 
 #if SHOREBIRD_PLATFORM_SUPPORTED
@@ -315,6 +362,24 @@ bool RealUpdater::DoInit(const AppConfig& config) {
   rust_callbacks.read = config.file_callbacks.read;
   rust_callbacks.seek = config.file_callbacks.seek;
   rust_callbacks.close = config.file_callbacks.close;
+
+  if (config.selection_protocol_v2) {
+    ::FileCallbacks baseline = {config.release_baseline_callbacks.open,
+                                config.release_baseline_callbacks.read,
+                                config.release_baseline_callbacks.seek,
+                                config.release_baseline_callbacks.close};
+    ShorebirdEngineOptions options = {};
+    options.struct_size = sizeof(options);
+#if FML_OS_WIN
+    options.native_source_capability = 2;
+#elif FML_OS_LINUX || (FML_OS_ANDROID && !SHOREBIRD_USE_INTERPRETER)
+    options.native_source_capability = 1;
+#endif
+    options.max_native_image_bytes = config.max_native_image_bytes;
+    return shorebird_init_selection_v2(
+        &params, rust_callbacks, config.yaml_config.c_str(), &options,
+        config.release_scope_json.c_str(), baseline);
+  }
 
   if (config.max_native_image_bytes != 0) {
 #if FML_OS_LINUX || FML_OS_WIN || (FML_OS_ANDROID && !SHOREBIRD_USE_INTERPRETER)
@@ -375,10 +440,16 @@ std::unique_ptr<PreparedBootSource> RealUpdater::PrepareBootSource() {
           shorebird_release_boot_source_memory(&lease);
         });
   }
+  char* context = shorebird_boot_selection_context_json(source.selection_id);
+  std::string verified_context = context ? context : "";
+  if (context) {
+    shorebird_free_string(context);
+  }
   auto result = std::make_unique<PreparedBootSource>(
       static_cast<PreparedBootSource::Kind>(source.kind), source.selection_id,
       source.patch_number, source.image_size, source.fd,
-      source.path ? source.path : "", std::move(memory));
+      source.path ? source.path : "", std::move(memory),
+      std::move(verified_context));
   source.fd = -1;  // Ownership transferred to the C++ source.
   shorebird_release_boot_source(&source);
   return result;

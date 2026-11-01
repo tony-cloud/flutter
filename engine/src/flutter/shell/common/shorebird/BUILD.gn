@@ -163,6 +163,7 @@ if (enable_unittests) {
       "//flutter/runtime",
       "//flutter/runtime/shorebird:interpreter_patch",
       "//flutter/runtime/shorebird:patch_cache",
+      "//flutter/third_party/boringssl",
       "//flutter/testing",
       "//flutter/testing:fixture_test",
     ]

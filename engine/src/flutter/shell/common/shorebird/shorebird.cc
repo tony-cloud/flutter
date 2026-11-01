@@ -98,6 +98,75 @@ shorebird::FileCallbacks ShorebirdFileCallbacks() {
   };
 }
 
+namespace {
+std::string HostPlatform() {
+#if FML_OS_IOS
+  return "ios";
+#elif FML_OS_MACOSX
+  return "macos";
+#elif FML_OS_ANDROID
+  return "android";
+#elif FML_OS_WIN
+  return "windows";
+#else
+  return "linux";
+#endif
+}
+std::string HostArch() {
+#if FML_ARCH_CPU_ARM64
+  return "aarch64";
+#elif FML_ARCH_CPU_ARMEL
+  return "arm";
+#elif FML_ARCH_CPU_X86
+  return "x86";
+#else
+  return "x86_64";
+#endif
+}
+void SelectPreparedInterpreterPatch(const std::string& yaml,
+                                    const std::string& version,
+                                    Settings& settings,
+                                    shorebird::InterpreterPatchTarget target) {
+  auto& updater = shorebird::Updater::Instance();
+  settings.shorebird_interpreter_begin_base = [] {
+    auto& updater = shorebird::Updater::Instance();
+    auto source = updater.PrepareBootSource();
+    return source &&
+           source->kind() == shorebird::PreparedBootSource::Kind::kBase &&
+           updater.BeginBootSource(source->selection_id());
+  };
+  auto source = updater.PrepareBootSource();
+  std::shared_ptr<const shorebird::InterpreterPatchConfig> candidate;
+  if (source && source->kind() == shorebird::PreparedBootSource::Kind::kPath) {
+    auto parsed = CreateInterpreterPatchConfig(
+        yaml, version, source->path(),
+        settings.shorebird_interpreter_replacement_base.get(), target);
+    if (parsed) {
+      auto patch = std::make_shared<shorebird::InterpreterPatchConfig>(*parsed);
+      patch->selection_protocol_v2 = true;
+      patch->release_version = version;
+      patch->runtime_profile =
+          patch->full_replacement ? "interpreter-full"
+          : GetValueFromYaml(yaml, "aot_patch_structural_updates") == "true"
+              ? "interpreter-structural"
+              : "interpreter-body";
+      patch->verified_selection_json = source->verified_selection_json();
+      patch->selection_id = source->selection_id();
+      patch->patch_number = source->patch_number();
+      patch->owned_artifact =
+          shorebird::LoadOwnedInterpreterArtifact(source->path());
+      patch->owned_artifact_read_failed = !patch->owned_artifact;
+      patch->begin_boot_source = [id = source->selection_id()] {
+        return shorebird::Updater::Instance().BeginBootSource(id);
+      };
+      candidate = std::move(patch);
+    }
+  }
+  settings.shorebird_interpreter_patch =
+      shorebird::SelectInterpreterPatchForProcess(std::move(candidate));
+}
+}  // namespace
+
 /// Newer api, used by Desktop implementations.
 /// Does not directly manipulate Settings.
 // TODO(eseidel): Consolidate this with the other ConfigureShorebird() API.
@@ -137,6 +206,10 @@ bool ConfigureShorebird(const ShorebirdConfigArgs& args,
   config.file_callbacks = ShorebirdFileCallbacks();
   config.yaml_config = args.shorebird_yaml;
   config.max_native_image_bytes = args.max_native_image_bytes;
+  if (!ConfigureSelectionV2(config, args.assets_path, HostPlatform(),
+                            HostArch())) {
+    return false;
+  }
 #if FML_OS_LINUX || FML_OS_WIN
   if (shorebird::Updater::Instance().SupportsPreparedBootSources() &&
       DartVM::IsRunningPrecompiledCode()) {
@@ -157,7 +230,7 @@ bool ConfigureShorebird(const ShorebirdConfigArgs& args,
 
   bool init_result = shorebird::Updater::Instance().Init(config);
 
-  if (config.max_native_image_bytes != 0) {
+  if (config.max_native_image_bytes != 0 || config.selection_protocol_v2) {
     // Selection occurs at the actual loader. In particular, do not ask the
     // legacy path validator to interpret encrypted persistent state.
     return init_result;
@@ -195,12 +268,31 @@ bool ConfigureShorebirdInterpreter(const ShorebirdConfigArgs& args,
     return false;
   }
   std::string active_path;
-  if (!ConfigureShorebird(args, active_path)) {
+  auto interpreter_args = args;
+  interpreter_args.assets_path = settings.assets_path;
+  const bool initialized = ConfigureShorebird(interpreter_args, active_path);
+  if (!initialized) {
+    if (shorebird::Updater::Instance().RequiresSelectionV2()) {
+      FML_LOG(ERROR) << "Invalid compiled v2 scope or checked updater "
+                        "initialization failed";
+      return false;
+    }
     active_path.clear();
   }
   auto version = args.release_version.version;
   if (!args.release_version.build_number.empty()) {
     version += "+" + args.release_version.build_number;
+  }
+  if (GetValueFromYaml(args.shorebird_yaml, "selection_protocol") == "2") {
+    if (initialized) {
+      SelectPreparedInterpreterPatch(
+          args.shorebird_yaml, version, settings,
+          shorebird::InterpreterPatchTarget::kMacOSArm64);
+    } else {
+      settings.shorebird_interpreter_patch =
+          shorebird::SelectInterpreterPatchForProcess(nullptr);
+    }
+    return true;
   }
   settings.shorebird_interpreter_patch =
       shorebird::SelectInterpreterPatchForProcess(CreateInterpreterPatchConfig(
@@ -267,6 +359,22 @@ void ConfigureShorebird(std::string code_cache_path,
   config.file_callbacks = ShorebirdFileCallbacks();
   config.yaml_config = shorebird_yaml;
   config.max_native_image_bytes = max_native_image_bytes;
+  auto reject_v2_configuration = [&settings] {
+    auto invalid =
+        std::make_shared<shorebird::InterpreterReplacementBaseConfig>();
+    invalid->validation_error =
+        "Invalid compiled v2 scope or checked updater initialization failed";
+    settings.shorebird_interpreter_replacement_base = std::move(invalid);
+    settings.shorebird_interpreter_patch =
+        shorebird::SelectInterpreterPatchForProcess(nullptr);
+    FML_LOG(ERROR)
+        << "Invalid compiled v2 scope or checked updater initialization failed";
+  };
+  if (!ConfigureSelectionV2(config, settings.assets_path, HostPlatform(),
+                            HostArch())) {
+    reject_v2_configuration();
+    return;
+  }
 #if FML_OS_ANDROID && !SHOREBIRD_USE_INTERPRETER
   if (shorebird::Updater::Instance().SupportsPreparedBootSources() &&
       DartVM::IsRunningPrecompiledCode()) {
@@ -287,6 +395,10 @@ void ConfigureShorebird(std::string code_cache_path,
 #endif
   if (!shorebird::Updater::Instance().Init(config)) {
     FML_LOG(ERROR) << "Shorebird updater initialization failed";
+    if (shorebird::Updater::Instance().RequiresSelectionV2()) {
+      reject_v2_configuration();
+      return;
+    }
 #if FML_OS_IOS
     settings.shorebird_interpreter_patch =
         shorebird::SelectInterpreterPatchForProcess(nullptr);
@@ -302,6 +414,13 @@ void ConfigureShorebird(std::string code_cache_path,
 #endif
 
   if (shorebird::Updater::Instance().UsesPreparedBootSource()) {
+#if FML_OS_IOS
+    if (config.selection_protocol_v2) {
+      SelectPreparedInterpreterPatch(
+          shorebird_yaml, config.release_version, settings,
+          shorebird::InterpreterPatchTarget::kIOSArm64);
+    }
+#endif
     // Preserve release paths for BASE; the actual loader begins the source.
     return;
   }

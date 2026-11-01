@@ -198,8 +198,10 @@ TEST_F(FlutterEngineTest, CanLaunch) {
 }
 
 TEST_F(FlutterEngineTest, FullInterpreterNeverUsesNativeOrElfRoute) {
-  for (NSString* profile in
-       @[ @"aot_patch_full_replacement: true\n", @"aot_patch_full_replacement: invalid\n" ]) {
+  for (NSString* profile in @[
+         @"aot_patch_full_replacement: true\n", @"aot_patch_full_replacement: invalid\n",
+         @"selection_protocol: 2\naot_patch_full_replacement: true\n"
+       ]) {
     ShorebirdCustomProject* project =
         [[ShorebirdCustomProject alloc] initWithAssetsPath:@"/signed/custom/flutter_assets"
                                                ICUDataPath:@"/signed/icudtl.dat"];
@@ -290,6 +292,34 @@ TEST(FlutterDartProjectShorebirdTest, ProviderIsRetainedAndCustomAssetsSealRegis
   EXPECT_FALSE([FlutterDartProject setShorebirdAotPatchKeyProvider:^NSData*(NSString* keyId) {
     return nil;
   }]);
+  flutter::shorebird::ResetInterpreterKeyProviderForTesting();
+}
+
+TEST(FlutterDartProjectShorebirdTest, V2ProviderRetainsContextBlockAndSealsAtStartup) {
+  flutter::shorebird::ResetInterpreterKeyProviderForTesting();
+  __weak NSObject* capturedObject;
+  @autoreleasepool {
+    NSObject* token = [[NSObject alloc] init];
+    capturedObject = token;
+    EXPECT_TRUE([FlutterDartProject
+        setShorebirdAotPatchKeyProviderV2:^NSData*(NSString* keyId, NSData* selection) {
+          [token description];
+          return selection.length ? [NSMutableData dataWithLength:32] : nil;
+        }]);
+  }
+  EXPECT_NE(capturedObject, nil);
+  EXPECT_FALSE([FlutterDartProject
+      setShorebirdAotPatchKeyProviderV2:^NSData*(NSString* keyId, NSData* selection) {
+        return nil;
+      }]);
+  flutter::shorebird::ResetInterpreterKeyProviderForTesting();
+  EXPECT_EQ(capturedObject, nil);
+  __unused FlutterDartProject* project =
+      [[FlutterDartProject alloc] initWithAssetsPath:@"/custom/assets" ICUDataPath:@"/custom/icu"];
+  EXPECT_FALSE([FlutterDartProject
+      setShorebirdAotPatchKeyProviderV2:^NSData*(NSString* keyId, NSData* selection) {
+        return nil;
+      }]);
   flutter::shorebird::ResetInterpreterKeyProviderForTesting();
 }
 

@@ -145,6 +145,9 @@ struct Settings {
   // Retain this independently of the optional update, including retry startup.
   std::shared_ptr<const shorebird::InterpreterReplacementBaseConfig>
       shorebird_interpreter_replacement_base;
+  // V2 bundled code requires a checked BASE token before the fresh group runs.
+  std::function<bool()> shorebird_interpreter_begin_base;
+
   // Supplied by the shell; runtime startup stays independent of updater APIs.
   fml::closure shorebird_launch_success_callback;
   fml::closure shorebird_launch_failure_callback;

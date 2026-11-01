@@ -9,6 +9,7 @@ import '../base/file_system.dart';
 import '../globals.dart' as globals;
 import 'shorebird_interpreter.dart';
 import 'shorebird_replacement.dart';
+import 'shorebird_selection.dart';
 
 /// The environment variable whose value is written to the generated
 /// shorebird.yaml as `patch_public_key`.
@@ -170,6 +171,32 @@ Map<String, dynamic> compileShorebirdYaml(
     compiled['aot_patch_replacement_base'] = kShorebirdReplacementBaseAsset;
     compiled['aot_patch_host_abi'] = inputs.hostAbi;
     compiled['aot_patch_base_snapshot_hash'] = inputs.snapshotHash;
+  }
+  if (yamlMap.containsKey('selection_protocol')) {
+    final Object? protocol = yamlMap['selection_protocol'];
+    if (protocol is! int || (protocol != 1 && protocol != 2)) {
+      throw const FormatException('selection_protocol must be integer 1 or 2');
+    }
+    compiled['selection_protocol'] = protocol;
+    if (protocol == 2) {
+      final inputs = ShorebirdSelectionInputs.read(fileSystem ?? globals.fs, environment);
+      final profile = fullReplacement
+          ? 'interpreter-full'
+          : structuralUpdates
+          ? 'interpreter-structural'
+          : 'interpreter-body';
+      if (compiled['aot_patch_runtime_mode'] != 'dart-bytecode-interpreter' ||
+          compiled['patch_verification'] != 'strict' ||
+          compiled['patch_response_verification'] != 'required' ||
+          compiled['patch_public_key'] is! String ||
+          (compiled['patch_public_key'] as String).trim().isEmpty ||
+          inputs.scope['app_id'] != appId ||
+          inputs.scope['runtime_profile'] != profile ||
+          inputs.scope['base_artifact_hash'] != compiled['aot_patch_base_snapshot_hash'] ||
+          inputs.scope['host_abi_hash'] != compiled['aot_patch_host_abi']) {
+        throw const FormatException('Compiled policy differs from immutable release scope');
+      }
+    }
   }
   return compiled;
 }

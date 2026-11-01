@@ -3,12 +3,18 @@
 // found in the LICENSE file.
 #include "flutter/shell/common/shorebird/shorebird.h"
 
+#include <algorithm>
+#include <cstdio>
 #include <cstring>
 #include <limits>
+#include <mutex>
+#include <set>
 #include <sstream>
+#include <vector>
 
 #include "flutter/fml/paths.h"
 #include "flutter/runtime/shorebird/interpreter_patch.h"
+#include "flutter/shell/common/shorebird/updater.h"
 #include "rapidjson/document.h"
 
 namespace flutter {
@@ -94,6 +100,170 @@ bool ResolveNativePatchMaxBytes(const std::string& compiled_yaml,
     return false;
   }
   max_bytes = parsed;
+  return true;
+}
+
+namespace {
+constexpr size_t kMaximumInterpreterArtifactBytes = 256 * 1024 * 1024;
+std::mutex baseline_mutex;
+std::string baseline_identity;
+std::shared_ptr<const std::vector<uint8_t>> baseline_bytes;
+struct BaselineStream {
+  std::shared_ptr<const std::vector<uint8_t>> bytes;
+  size_t position = 0;
+};
+void* OpenReleaseBaseline() {
+  std::lock_guard<std::mutex> lock(baseline_mutex);
+  return baseline_bytes ? new BaselineStream{baseline_bytes} : nullptr;
+}
+uintptr_t ReadReleaseBaseline(void* handle, uint8_t* buffer, uintptr_t length) {
+  auto* stream = static_cast<BaselineStream*>(handle);
+  const size_t count =
+      std::min<size_t>(length, stream->bytes->size() - stream->position);
+  std::memcpy(buffer, stream->bytes->data() + stream->position, count);
+  stream->position += count;
+  return count;
+}
+int64_t SeekReleaseBaseline(void* handle, int64_t offset, int32_t whence) {
+  auto* stream = static_cast<BaselineStream*>(handle);
+  int64_t origin;
+  if (whence == SEEK_SET) {
+    origin = 0;
+  } else if (whence == SEEK_CUR) {
+    origin = stream->position;
+  } else if (whence == SEEK_END) {
+    origin = stream->bytes->size();
+  } else {
+    return -1;
+  }
+  if (offset < -origin ||
+      offset > static_cast<int64_t>(stream->bytes->size()) - origin) {
+    return -1;
+  }
+  stream->position = origin + offset;
+  return stream->position;
+}
+void CloseReleaseBaseline(void* handle) {
+  delete static_cast<BaselineStream*>(handle);
+}
+bool ReadOwnedFile(const std::string& path,
+                   size_t limit,
+                   std::vector<uint8_t>* bytes) {
+  std::unique_ptr<FILE, decltype(&std::fclose)> file(
+      std::fopen(path.c_str(), "rb"), std::fclose);
+  if (!file || std::fseek(file.get(), 0, SEEK_END) != 0)
+    return false;
+  const long length = std::ftell(file.get());
+  if (length <= 0 || static_cast<uint64_t>(length) > limit ||
+      std::fseek(file.get(), 0, SEEK_SET) != 0)
+    return false;
+  bytes->resize(length);
+  return std::fread(bytes->data(), 1, bytes->size(), file.get()) ==
+             bytes->size() &&
+         std::fgetc(file.get()) == EOF;
+}
+}  // namespace
+
+void ResetSelectionV2BaselineForTesting() {
+  std::lock_guard<std::mutex> lock(baseline_mutex);
+  baseline_identity.clear();
+  baseline_bytes.reset();
+}
+
+bool ConfigureSelectionV2(shorebird::AppConfig& config,
+                          const std::string& assets_path,
+                          const std::string& platform,
+                          const std::string& arch) {
+  std::stringstream lines(config.yaml_config);
+  std::string line;
+  size_t count = 0;
+  while (std::getline(lines, line)) {
+    count += line.compare(0, 19, "selection_protocol:") == 0;
+  }
+  if (count == 0)
+    return true;
+  const auto protocol =
+      GetValueFromYaml(config.yaml_config, "selection_protocol");
+  if (count == 1 && protocol == "1")
+    return true;
+  config.selection_protocol_v2 = true;
+  shorebird::Updater::Instance().RequireSelectionV2();
+  if (count != 1 || protocol != "2" || assets_path.empty())
+    return false;
+  std::vector<uint8_t> bytes;
+  if (!ReadOwnedFile(fml::paths::JoinPaths(
+                         {assets_path, "shorebird_release_scope_" + platform +
+                                           "_" + arch + ".json"}),
+                     64 * 1024, &bytes))
+    return false;
+  rapidjson::Document scope;
+  scope.Parse<rapidjson::kParseValidateEncodingFlag>(
+      reinterpret_cast<const char*>(bytes.data()), bytes.size());
+  if (scope.HasParseError() || !scope.IsObject() || scope.MemberCount() != 7)
+    return false;
+  std::set<std::string> fields;
+  for (auto it = scope.MemberBegin(); it != scope.MemberEnd(); ++it) {
+    if (!fields.emplace(it->name.GetString(), it->name.GetStringLength())
+             .second)
+      return false;
+  }
+  if (fields != std::set<std::string>{"app_id", "release_version", "platform",
+                                      "arch", "base_artifact_hash",
+                                      "host_abi_hash", "runtime_profile"})
+    return false;
+  auto text = [&](const char* name) -> std::string {
+    const auto& value = scope[name];
+    return value.IsString() &&
+                   std::strlen(value.GetString()) == value.GetStringLength()
+               ? value.GetString()
+               : "";
+  };
+  const auto profile = text("runtime_profile");
+  const bool full = profile == "interpreter-full";
+  const bool interpreter = full || profile == "interpreter-body" ||
+                           profile == "interpreter-structural";
+  if (text("app_id") != GetValueFromYaml(config.yaml_config, "app_id") ||
+      text("release_version") != config.release_version ||
+      text("platform") != platform || text("arch") != arch ||
+      (!interpreter && profile != "native-aot") ||
+      (full ? text("host_abi_hash") !=
+                  GetValueFromYaml(config.yaml_config, "aot_patch_host_abi")
+            : !scope["host_abi_hash"].IsNull()))
+    return false;
+  if (!interpreter &&
+      GetValueFromYaml(config.yaml_config, "aot_patch_runtime_mode") ==
+          "dart-bytecode-interpreter")
+    return false;
+  if (interpreter) {
+    if (text("base_artifact_hash") !=
+            GetValueFromYaml(config.yaml_config,
+                             "aot_patch_base_snapshot_hash") ||
+        GetValueFromYaml(config.yaml_config, "aot_patch_runtime_mode") !=
+            "dart-bytecode-interpreter" ||
+        (GetValueFromYaml(config.yaml_config, "aot_patch_full_replacement") ==
+         "true") != full ||
+        (GetValueFromYaml(config.yaml_config, "aot_patch_structural_updates") ==
+         "true") != (profile == "interpreter-structural"))
+      return false;
+    const auto path = fml::paths::JoinPaths(
+        {assets_path, full ? shorebird::kReplacementBaseAsset
+                           : shorebird::kInterpreterBaseAsset});
+    std::vector<uint8_t> baseline;
+    if (!ReadOwnedFile(path, kMaximumInterpreterArtifactBytes, &baseline))
+      return false;
+    std::lock_guard<std::mutex> lock(baseline_mutex);
+    const std::string identity(bytes.begin(), bytes.end());
+    if (baseline_bytes &&
+        (baseline_identity != identity || *baseline_bytes != baseline))
+      return false;
+    baseline_identity = identity;
+    baseline_bytes =
+        std::make_shared<const std::vector<uint8_t>>(std::move(baseline));
+    config.release_baseline_callbacks = {
+        OpenReleaseBaseline, ReadReleaseBaseline, SeekReleaseBaseline,
+        CloseReleaseBaseline};
+  }
+  config.release_scope_json.assign(bytes.begin(), bytes.end());
   return true;
 }
 
