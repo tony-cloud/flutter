@@ -270,8 +270,9 @@ TEST(Shorebird,
 TEST(Shorebird, NativeScopeFileReaderSupportsUnicodeWindowsAssetsPath) {
   shorebird::Updater::ResetLaunchStateForTesting();
   fml::ScopedTemporaryDirectory temporary;
-  const auto assets = std::filesystem::u8path(temporary.path()) /
-                      std::filesystem::u8path("发布-данные");
+  const auto assets = std::filesystem::path(std::u8string(
+                          temporary.path().begin(), temporary.path().end())) /
+                      u8"发布-данные";
   ASSERT_TRUE(std::filesystem::create_directory(assets));
   const auto json = NativeScope("windows", "aarch64");
   {
