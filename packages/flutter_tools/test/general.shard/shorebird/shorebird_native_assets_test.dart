@@ -163,6 +163,37 @@ void main() {
     }
   });
 
+  testWithoutContext('descriptor target comes from the build OS and rejects cross-OS bytes', () {
+    final File descriptor = environment.buildDir.childFile(kShorebirdNativeAssetsDescriptor);
+    final String macOS = _absent.replaceFirst('ios_arm64', 'macos_arm64');
+    for (final targetOS in <String>['ios', 'macos']) {
+      descriptor.writeAsStringSync(targetOS == 'ios' ? _absent : macOS);
+      expect(
+        shorebirdReadNativeAssetsDescriptor(
+          environment.buildDir,
+          targetOS: targetOS,
+        ).readAsStringSync(),
+        targetOS == 'ios' ? _absent : macOS,
+      );
+      expect(
+        () => shorebirdReadNativeAssetsDescriptor(
+          environment.buildDir,
+          targetOS: targetOS == 'ios' ? 'macos' : 'ios',
+        ),
+        throwsFormatException,
+      );
+    }
+    expect(
+      shorebirdNativeAssetsFrontendOptions(
+        fullReplacement: true,
+        descriptorPath: descriptor.path,
+        targetOS: 'macos',
+        extraFrontEndOptions: null,
+      ),
+      contains('--shorebird-native-assets-target=macos_arm64'),
+    );
+  });
+
   testWithoutContext('kernel output comparison normalizes absolute and relative paths', () {
     shorebirdValidateNativeAssetsKernelOutput(
       fileSystem,
@@ -253,121 +284,139 @@ void main() {
     overrides: <Type, Generator>{FeatureFlags: () => TestFeatureFlags()},
   );
 
-  for (final (bool success, bool redirected) in <(bool, bool)>[
-    (true, false),
-    (false, false),
-    (true, true),
-  ]) {
-    testUsingContext(
-      'kernel requests compiler descriptor and clears stale output '
-      '(success=$success, redirected=$redirected)',
-      () async {
-        enableFullReplacement();
-        final artifacts = Artifacts.test();
-        final Map<String, String> binding = writeShorebirdReplacementBase(
-          fileSystem,
-          hostAbi: writeShorebirdReplacementHost(fileSystem, artifacts),
-        );
-        final processManager = FakeProcessManager.empty();
-        environment = Environment.test(
-          fileSystem.currentDirectory,
-          fileSystem: fileSystem,
-          logger: logger,
-          artifacts: artifacts,
-          processManager: processManager,
-          platform: FakePlatform(environment: binding),
-          defines: <String, String>{
-            kBuildMode: 'release',
-            kTargetPlatform: 'ios',
-            kExtraFrontEndOptions: '--native-assets=/native_assets.yaml',
-          },
-        );
-        fileSystem.file('.dart_tool/package_config.json')
-          ..createSync(recursive: true)
-          ..writeAsStringSync('{"configVersion":2,"packages":[]}');
-        final File descriptor = environment.buildDir.childFile(kShorebirdNativeAssetsDescriptor)
-          ..createSync(recursive: true)
-          ..writeAsStringSync('stale');
-        final String build = environment.buildDir.path;
-        final File expectedKernel = environment.buildDir.childFile('app.dill')
-          ..writeAsStringSync('stale expected kernel');
-        final String reportedKernel = redirected ? '$build/other.dill' : expectedKernel.path;
-        processManager.addCommands(<FakeCommand>[
-          ...shorebirdReplacementVersionCommands(artifacts),
-          FakeCommand(
-            command: <String>[
-              artifacts.getArtifactPath(Artifact.engineDartAotRuntime),
-              artifacts.getArtifactPath(Artifact.frontendServerSnapshotForEngineDartSdk),
-              '--sdk-root',
-              'Artifact.flutterPatchedSdkPath.TargetPlatform.ios.release/',
-              '--target=flutter',
-              '--no-print-incremental-dependencies',
-              ...buildModeOptions(BuildMode.release, <String>[]),
-              '--aot',
-              '--no-tfa',
-              '--shorebird-full-replacement',
-              '--shorebird-replacement-base=/private/base.sbr',
-              '--shorebird-host-abi=${binding['SHOREBIRD_AOT_HOST_ABI']}',
-              '--target-os',
-              'ios',
-              '--packages',
-              'org-dartlang-root:///.dart_tool/package_config.json',
-              '--output-dill',
-              '$build/app.dill',
-              '--depfile',
-              '$build/${KernelSnapshot.depfile}',
-              '--filesystem-root',
-              '/',
-              '--filesystem-scheme',
-              'org-dartlang-root',
-              '--shorebird-native-assets-descriptor=${descriptor.path}',
-              '--shorebird-native-assets-target=ios_arm64',
-              '--verbosity=error',
-              '--native-assets=/native_assets.yaml',
-              'org-dartlang-root:///lib/main.dart',
-            ],
-            onRun: (List<String> command) {
-              expect(descriptor.existsSync(), isFalse);
-              if (success) {
-                descriptor.writeAsStringSync('$_absent\n');
-                if (redirected) {
-                  fileSystem.file(reportedKernel).writeAsStringSync('fresh redirected kernel');
-                }
-              }
-            },
-            exitCode: success ? 0 : 1,
-            stdout: success ? 'result boundary\nboundary\nboundary $reportedKernel 0\n' : '',
-          ),
-        ]);
-        if (success && !redirected) {
-          await const KernelSnapshot().build(environment);
-          expect(descriptor.readAsStringSync(), '$_absent\n');
-        } else {
-          await expectLater(
-            const KernelSnapshot().build(environment),
-            redirected
-                ? throwsA(
-                    isA<FormatException>().having(
-                      (FormatException error) => error.message,
-                      'message',
-                      contains('expected kernel'),
-                    ),
-                  )
-                : throwsException,
-          );
-          expect(descriptor.existsSync(), success);
-          expect(expectedKernel.readAsStringSync(), 'stale expected kernel');
-          if (redirected) {
-            expect(fileSystem.file(reportedKernel).readAsStringSync(), 'fresh redirected kernel');
+  for (final targetOS in <String>['ios', 'macos']) {
+    for (final (bool success, bool redirected) in <(bool, bool)>[
+      (true, false),
+      (false, false),
+      (true, true),
+    ]) {
+      testUsingContext(
+        'kernel requests compiler descriptor and clears stale output '
+        '(target=$targetOS, success=$success, redirected=$redirected)',
+        () async {
+          enableFullReplacement();
+          final Artifacts artifacts;
+          if (targetOS == 'macos') {
+            artifacts = Artifacts.testLocalEngine(
+              localEngine: '/engine/macos_release_arm64',
+              localEngineHost: '/engine/host',
+            );
+            fileSystem.file('/engine/macos_release_arm64/args.gn')
+              ..createSync(recursive: true)
+              ..writeAsStringSync(shorebirdMacOSReplacementArgs);
+          } else {
+            artifacts = Artifacts.test();
           }
-        }
-        expect(processManager, hasNoRemainingExpectations);
-      },
-      overrides: <Type, Generator>{
-        FeatureFlags: () => TestFeatureFlags(),
-        FileSystem: () => fileSystem,
-        ProcessManager: () => environment.processManager,
-      },
-    );
+          final String expectedDescriptor = _absent.replaceFirst('ios_arm64', '${targetOS}_arm64');
+          final Map<String, String> binding = writeShorebirdReplacementBase(
+            fileSystem,
+            hostAbi: writeShorebirdReplacementHost(fileSystem, artifacts, targetOS: targetOS),
+          );
+          final processManager = FakeProcessManager.empty();
+          environment = Environment.test(
+            fileSystem.currentDirectory,
+            fileSystem: fileSystem,
+            logger: logger,
+            artifacts: artifacts,
+            processManager: processManager,
+            platform: FakePlatform(environment: binding),
+            defines: <String, String>{
+              kBuildMode: 'release',
+              kTargetPlatform: targetOS == 'macos' ? 'darwin' : 'ios',
+              if (targetOS == 'macos') kDarwinArchs: 'arm64',
+              kExtraFrontEndOptions: '--native-assets=/native_assets.yaml',
+            },
+          );
+          fileSystem.file('.dart_tool/package_config.json')
+            ..createSync(recursive: true)
+            ..writeAsStringSync('{"configVersion":2,"packages":[]}');
+          final File descriptor = environment.buildDir.childFile(kShorebirdNativeAssetsDescriptor)
+            ..createSync(recursive: true)
+            ..writeAsStringSync('stale');
+          final String build = environment.buildDir.path;
+          final File expectedKernel = environment.buildDir.childFile('app.dill')
+            ..writeAsStringSync('stale expected kernel');
+          final String reportedKernel = redirected ? '$build/other.dill' : expectedKernel.path;
+          processManager.addCommands(<FakeCommand>[
+            ...shorebirdReplacementVersionCommands(artifacts, targetOS: targetOS),
+            FakeCommand(
+              command: <String>[
+                artifacts.getArtifactPath(Artifact.engineDartAotRuntime),
+                artifacts.getArtifactPath(Artifact.frontendServerSnapshotForEngineDartSdk),
+                '--sdk-root',
+                if (targetOS == 'ios')
+                  'Artifact.flutterPatchedSdkPath.TargetPlatform.ios.release/'
+                else
+                  '/engine/macos_release_arm64/flutter_patched_sdk/',
+                '--target=flutter',
+                '--no-print-incremental-dependencies',
+                ...buildModeOptions(BuildMode.release, <String>[]),
+                '--aot',
+                '--no-tfa',
+                '--shorebird-full-replacement',
+                '--shorebird-replacement-base=/private/base.sbr',
+                '--shorebird-host-abi=${binding['SHOREBIRD_AOT_HOST_ABI']}',
+                '--target-os',
+                targetOS,
+                '--packages',
+                'org-dartlang-root:///.dart_tool/package_config.json',
+                '--output-dill',
+                '$build/app.dill',
+                '--depfile',
+                '$build/${KernelSnapshot.depfile}',
+                '--filesystem-root',
+                '/',
+                '--filesystem-scheme',
+                'org-dartlang-root',
+                '--shorebird-native-assets-descriptor=${descriptor.path}',
+                '--shorebird-native-assets-target=${targetOS}_arm64',
+                '--verbosity=error',
+                '--native-assets=/native_assets.yaml',
+                'org-dartlang-root:///lib/main.dart',
+              ],
+              onRun: (List<String> command) {
+                expect(descriptor.existsSync(), isFalse);
+                if (success) {
+                  descriptor.writeAsStringSync('$expectedDescriptor\n');
+                  if (redirected) {
+                    fileSystem.file(reportedKernel).writeAsStringSync('fresh redirected kernel');
+                  }
+                }
+              },
+              exitCode: success ? 0 : 1,
+              stdout: success ? 'result boundary\nboundary\nboundary $reportedKernel 0\n' : '',
+            ),
+          ]);
+          if (success && !redirected) {
+            await const KernelSnapshot().build(environment);
+            expect(descriptor.readAsStringSync(), '$expectedDescriptor\n');
+          } else {
+            await expectLater(
+              const KernelSnapshot().build(environment),
+              redirected
+                  ? throwsA(
+                      isA<FormatException>().having(
+                        (FormatException error) => error.message,
+                        'message',
+                        contains('expected kernel'),
+                      ),
+                    )
+                  : throwsException,
+            );
+            expect(descriptor.existsSync(), success);
+            expect(expectedKernel.readAsStringSync(), 'stale expected kernel');
+            if (redirected) {
+              expect(fileSystem.file(reportedKernel).readAsStringSync(), 'fresh redirected kernel');
+            }
+          }
+          expect(processManager, hasNoRemainingExpectations);
+        },
+        overrides: <Type, Generator>{
+          FeatureFlags: () => TestFeatureFlags(),
+          FileSystem: () => fileSystem,
+          ProcessManager: () => environment.processManager,
+        },
+      );
+    }
   }
 }

@@ -8,12 +8,22 @@ import '../base/file_system.dart';
 import '../build_info.dart';
 import '../build_system/build_system.dart';
 import 'shorebird_interpreter.dart';
+import 'shorebird_replacement_host.dart';
 
 /// Compiler-owned description of the effective legacy native-assets carrier.
 const kShorebirdNativeAssetsDescriptor = 'shorebird_native_assets.json';
 
-/// The frozen full-replacement profile supports physical arm64 iOS only.
+/// The original physical arm64 iOS descriptor target.
 const kShorebirdNativeAssetsTarget = 'ios_arm64';
+
+/// Derives the descriptor target from trusted build settings, never its JSON.
+String shorebirdNativeAssetsTarget(String targetOS) {
+  return switch (shorebirdTargetOS(targetOS)) {
+    'ios' => kShorebirdNativeAssetsTarget,
+    'macos' => 'macos_arm64',
+    _ => throw const FormatException('Unsupported full replacement native-assets target OS'),
+  };
+}
 
 /// Declares the descriptor even before compilation, so missing or modified
 /// sidecars invalidate a cached kernel. Generic builds have no extra output.
@@ -32,7 +42,7 @@ class ShorebirdNativeAssetsOutput implements Source {
   }
 }
 
-bool _fullReplacement(Environment environment) => shorebirdUsesIosFullReplacement(
+bool _fullReplacement(Environment environment) => shorebirdUsesFullReplacement(
   environment.fileSystem,
   environment.defines[kTargetPlatform],
   projectDirectory: environment.projectDir,
@@ -46,12 +56,19 @@ String? shorebirdPrepareNativeAssetsDescriptor(Environment environment) {
   if (descriptor.existsSync()) {
     descriptor.deleteSync();
   }
-  return _fullReplacement(environment) ? descriptor.absolute.path : null;
+  if (!_fullReplacement(environment)) {
+    return null;
+  }
+  if (shorebirdTargetOS(environment.defines[kTargetPlatform]) == 'macos') {
+    shorebirdValidateMacOSReplacementArchitectures(getDarwinArchsFromEnv(environment.defines));
+  }
+  return descriptor.absolute.path;
 }
 
 /// Prevents user options from overriding the trusted full-replacement binding.
 List<String> shorebirdNativeAssetsFrontendOptions({
   required bool fullReplacement,
+  String targetOS = 'ios',
   required String? descriptorPath,
   required List<String>? extraFrontEndOptions,
 }) {
@@ -79,7 +96,7 @@ List<String> shorebirdNativeAssetsFrontendOptions({
   }
   return <String>[
     '--shorebird-native-assets-descriptor=$descriptorPath',
-    '--shorebird-native-assets-target=$kShorebirdNativeAssetsTarget',
+    '--shorebird-native-assets-target=${shorebirdNativeAssetsTarget(targetOS)}',
   ];
 }
 
@@ -100,7 +117,8 @@ void shorebirdValidateNativeAssetsKernelOutput(
 
 /// Validates the compiler descriptor without reinterpreting native-assets YAML
 /// or replacing its exact bytes with a tool-generated serialization.
-File shorebirdReadNativeAssetsDescriptor(Directory buildDirectory) {
+File shorebirdReadNativeAssetsDescriptor(Directory buildDirectory, {String targetOS = 'ios'}) {
+  final String target = shorebirdNativeAssetsTarget(targetOS);
   final File descriptor = buildDirectory.childFile(kShorebirdNativeAssetsDescriptor);
   if (!descriptor.existsSync()) {
     throw const FormatException('Missing compiler-produced shorebird_native_assets.json');
@@ -113,7 +131,7 @@ File shorebirdReadNativeAssetsDescriptor(Directory buildDirectory) {
   if (value is! Map<String, Object?> ||
       value['schema'] is! int ||
       value['schema'] != 1 ||
-      value['target'] != kShorebirdNativeAssetsTarget ||
+      value['target'] != target ||
       value['carrier_present'] is! bool) {
     throw const FormatException('Invalid compiler native-assets descriptor');
   }
@@ -126,7 +144,7 @@ File shorebirdReadNativeAssetsDescriptor(Directory buildDirectory) {
   }
   final String canonical = jsonEncode(<String, Object>{
     'schema': 1,
-    'target': kShorebirdNativeAssetsTarget,
+    'target': target,
     'carrier_present': present,
     if (present) 'mapping_sha256': digest! as String,
   });

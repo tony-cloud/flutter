@@ -27,6 +27,8 @@ import '../migrations/xcode_script_build_phase_migration.dart';
 import '../migrations/xcode_thin_binary_build_phase_input_paths_migration.dart';
 import '../project.dart';
 import '../shorebird/ios_build_trace_session.dart';
+import '../shorebird/shorebird_interpreter.dart';
+import '../shorebird/shorebird_replacement_host.dart';
 import 'application_package.dart';
 import 'cocoapod_utils.dart';
 import 'darwin_dependency_management.dart';
@@ -86,7 +88,19 @@ Future<void> buildMacOS({
   bool configOnly = false,
   SizeAnalyzer? sizeAnalyzer,
   bool usingCISystem = false,
+  List<DarwinArch>? darwinArchitectures,
 }) async {
+  // Shorebird: preserve the requested architecture set, including no selection.
+  if (shorebirdUsesFullReplacement(
+    globals.fs,
+    'macos',
+    projectDirectory: flutterProject.directory,
+  )) {
+    shorebirdValidateMacOSReplacementArchitectures(darwinArchitectures ?? <DarwinArch>[]);
+    if (!buildInfo.isRelease) {
+      throwToolExit('Full replacement requires a PRODUCT release build');
+    }
+  }
   if (globals.xcodeProjectInterpreter?.isInstalled != true) {
     throwToolExit(globals.userMessages.xcodeMissing);
   }
@@ -251,7 +265,10 @@ Future<void> buildMacOS({
   final String destination;
   // The archtectures to specify in xcode project's build setting.
   final String? archs;
-  if (buildInfo.isDebug) {
+  if (darwinArchitectures != null) {
+    destination = XcodeSdk.MacOSX.genericPlatform;
+    archs = darwinArchitectures.map((DarwinArch architecture) => architecture.name).join(' ');
+  } else if (buildInfo.isDebug) {
     // Debug builds default to current host architecture
     destination = 'platform=${XcodeSdk.MacOSX.displayName},arch=$hostArch';
     archs = null;

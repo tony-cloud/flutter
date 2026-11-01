@@ -38,6 +38,76 @@ void main() {
     );
   });
 
+  testWithoutContext('macOS host ABI has an independent domain and golden', () {
+    expect(
+      shorebirdReplacementHostAbi(
+        targetOS: 'macos',
+        engineHash: 'a' * 64,
+        genSnapshotHash: 'b' * 64,
+        platformHash: 'c' * 64,
+      ),
+      'c8ad62729c6baf7b76f9ae6ae0591ee2ba9b1fca858c9b84a14630d9210eaaaa',
+    );
+  });
+
+  testWithoutContext('macOS requires verified local release interpreter args', () {
+    final fileSystem = MemoryFileSystem.test();
+    expect(
+      () => shorebirdReplacementSdkRoot(Artifacts.test(), fileSystem, targetOS: 'macos'),
+      throwsFormatException,
+    );
+    final artifacts = Artifacts.testLocalEngine(
+      localEngine: '/engine/macos_release_arm64',
+      localEngineHost: '/engine/host',
+    );
+    final File args = fileSystem.file('/engine/macos_release_arm64/args.gn')
+      ..createSync(recursive: true)
+      ..writeAsStringSync(shorebirdMacOSReplacementArgs);
+    expect(
+      shorebirdReplacementSdkRoot(artifacts, fileSystem, targetOS: 'macos'),
+      '/engine/macos_release_arm64/flutter_patched_sdk',
+    );
+    final String expected = writeShorebirdReplacementHost(fileSystem, artifacts, targetOS: 'macos');
+    ShorebirdReplacementHost.read(
+      fileSystem,
+      artifacts,
+      buildMode: BuildMode.release,
+      targetOS: 'macos',
+      processManager: FakeProcessManager.list(
+        shorebirdReplacementVersionCommands(artifacts, targetOS: 'macos'),
+      ),
+    ).validate(expected);
+    for (final String line in shorebirdMacOSReplacementArgs.trim().split('\n')) {
+      args.writeAsStringSync(shorebirdMacOSReplacementArgs.replaceFirst(line, ''));
+      expect(
+        () => shorebirdReplacementSdkRoot(artifacts, fileSystem, targetOS: 'macos'),
+        throwsFormatException,
+        reason: line,
+      );
+    }
+    args.writeAsStringSync(_releaseArgs);
+    expect(
+      () => shorebirdReplacementSdkRoot(artifacts, fileSystem, targetOS: 'macos'),
+      throwsFormatException,
+    );
+  });
+
+  testWithoutContext('macOS rejects default, universal, x64, and empty architecture sets', () {
+    shorebirdValidateMacOSReplacementArchitectures(<DarwinArch>[DarwinArch.arm64]);
+    for (final architectures in <List<DarwinArch>>[
+      getDarwinArchsFromEnv(<String, String>{}),
+      <DarwinArch>[DarwinArch.x86_64],
+      <DarwinArch>[DarwinArch.arm64, DarwinArch.x86_64],
+      <DarwinArch>[],
+      <DarwinArch>[DarwinArch.arm64, DarwinArch.arm64],
+    ]) {
+      expect(
+        () => shorebirdValidateMacOSReplacementArchitectures(architectures),
+        throwsFormatException,
+      );
+    }
+  });
+
   testWithoutContext('actual artifact changes invalidate an otherwise matching host stamp', () {
     final fileSystem = MemoryFileSystem.test();
     final artifacts = Artifacts.test();

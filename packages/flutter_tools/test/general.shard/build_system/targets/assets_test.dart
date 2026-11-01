@@ -308,77 +308,82 @@ flutter:
     );
   });
 
-  testUsingContext(
-    'full replacement copies exact base bytes and tracks the wrapper dependency',
-    () async {
-      final processEnvironment = <String, String>{
-        ...writeShorebirdReplacementBase(fileSystem),
-        'SHOREBIRD_PUBLIC_KEY': 'publisher',
-      };
-      environment = Environment.test(
-        fileSystem.currentDirectory,
-        processManager: FakeProcessManager.any(),
-        artifacts: Artifacts.test(),
-        fileSystem: fileSystem,
-        logger: logger,
-        platform: FakePlatform(environment: processEnvironment),
-        defines: <String, String>{kBuildMode: 'release', kTargetPlatform: 'ios'},
-      );
-      fileSystem
-          .file('pubspec.yaml')
-          .writeAsStringSync('name: example\nflutter:\n  assets:\n    - shorebird.yaml\n');
-      fileSystem
-          .file('shorebird.yaml')
-          .writeAsStringSync(
-            'app_id: app\naot_patch_runtime_mode: dart-bytecode-interpreter\n'
-            'aot_patch_full_replacement: true\n',
-          );
-      writePackageConfigFiles(directory: globals.fs.currentDirectory, mainLibName: 'example');
-      final File descriptor = environment.buildDir.childFile(kShorebirdNativeAssetsDescriptor)
-        ..createSync(recursive: true)
-        ..writeAsStringSync(
-          '{"schema":1,"target":"ios_arm64","carrier_present":true,'
-          '"mapping_sha256":"${'a' * 64}"}\n',
+  for (final targetPlatform in <TargetPlatform>[TargetPlatform.ios, TargetPlatform.darwin]) {
+    testUsingContext(
+      'full replacement $targetPlatform copies exact base and compiler descriptor bytes',
+      () async {
+        final processEnvironment = <String, String>{
+          ...writeShorebirdReplacementBase(fileSystem),
+          'SHOREBIRD_PUBLIC_KEY': 'publisher',
+        };
+        environment = Environment.test(
+          fileSystem.currentDirectory,
+          processManager: FakeProcessManager.any(),
+          artifacts: Artifacts.test(),
+          fileSystem: fileSystem,
+          logger: logger,
+          platform: FakePlatform(environment: processEnvironment),
+          defines: <String, String>{
+            kBuildMode: 'release',
+            kTargetPlatform: targetPlatform == TargetPlatform.ios ? 'ios' : 'darwin',
+          },
         );
-      // Bundling consumes the compiler result, never the YAML that produced it.
-      fileSystem.file('/native_assets.yaml').writeAsStringSync('malformed: [');
-      await const CopyAssets().build(environment, targetPlatform: TargetPlatform.ios);
-      final File base = fileSystem.file('/private/base.sbr');
-      final Directory assets = environment.buildDir.childDirectory('flutter_assets');
-      expect(
-        assets.childFile('shorebird_replacement_base.sbr').readAsBytesSync(),
-        base.readAsBytesSync(),
-      );
-      final compiled = loadYaml(assets.childFile('shorebird.yaml').readAsStringSync()) as YamlMap;
-      expect(compiled['aot_patch_replacement_base'], 'shorebird_replacement_base.sbr');
-      final Depfile dependencies = environment.depFileService.parse(
-        environment.buildDir.childFile('flutter_assets.d'),
-      );
-      expect(dependencies.inputs.map((File file) => file.path), contains(base.path));
-      expect(dependencies.inputs.map((File file) => file.path), contains(descriptor.path));
-      expect(
-        assets.childFile(kShorebirdNativeAssetsDescriptor).readAsBytesSync(),
-        descriptor.readAsBytesSync(),
-      );
-      expect(
-        dependencies.outputs.map((File file) => file.path),
-        contains(assets.childFile(kShorebirdNativeAssetsDescriptor).path),
-      );
-      expect(
-        dependencies.outputs.map((File file) => file.path),
-        contains(assets.childFile('shorebird_replacement_base.sbr').path),
-      );
-      environment.defines[kBuildMode] = 'debug';
-      await expectLater(
-        const CopyAssets().build(environment, targetPlatform: TargetPlatform.ios),
-        throwsFormatException,
-      );
-    },
-    overrides: <Type, Generator>{
-      FileSystem: () => fileSystem,
-      ProcessManager: () => FakeProcessManager.any(),
-    },
-  );
+        fileSystem
+            .file('pubspec.yaml')
+            .writeAsStringSync('name: example\nflutter:\n  assets:\n    - shorebird.yaml\n');
+        fileSystem
+            .file('shorebird.yaml')
+            .writeAsStringSync(
+              'app_id: app\naot_patch_runtime_mode: dart-bytecode-interpreter\n'
+              'aot_patch_full_replacement: true\n',
+            );
+        writePackageConfigFiles(directory: globals.fs.currentDirectory, mainLibName: 'example');
+        final File descriptor = environment.buildDir.childFile(kShorebirdNativeAssetsDescriptor)
+          ..createSync(recursive: true)
+          ..writeAsStringSync(
+            '{"schema":1,"target":"${targetPlatform == TargetPlatform.ios ? 'ios' : 'macos'}_arm64","carrier_present":true,'
+            '"mapping_sha256":"${'a' * 64}"}\n',
+          );
+        // Bundling consumes the compiler result, never the YAML that produced it.
+        fileSystem.file('/native_assets.yaml').writeAsStringSync('malformed: [');
+        await const CopyAssets().build(environment, targetPlatform: targetPlatform);
+        final File base = fileSystem.file('/private/base.sbr');
+        final Directory assets = environment.buildDir.childDirectory('flutter_assets');
+        expect(
+          assets.childFile('shorebird_replacement_base.sbr').readAsBytesSync(),
+          base.readAsBytesSync(),
+        );
+        final compiled = loadYaml(assets.childFile('shorebird.yaml').readAsStringSync()) as YamlMap;
+        expect(compiled['aot_patch_replacement_base'], 'shorebird_replacement_base.sbr');
+        final Depfile dependencies = environment.depFileService.parse(
+          environment.buildDir.childFile('flutter_assets.d'),
+        );
+        expect(dependencies.inputs.map((File file) => file.path), contains(base.path));
+        expect(dependencies.inputs.map((File file) => file.path), contains(descriptor.path));
+        expect(
+          assets.childFile(kShorebirdNativeAssetsDescriptor).readAsBytesSync(),
+          descriptor.readAsBytesSync(),
+        );
+        expect(
+          dependencies.outputs.map((File file) => file.path),
+          contains(assets.childFile(kShorebirdNativeAssetsDescriptor).path),
+        );
+        expect(
+          dependencies.outputs.map((File file) => file.path),
+          contains(assets.childFile('shorebird_replacement_base.sbr').path),
+        );
+        environment.defines[kBuildMode] = 'debug';
+        await expectLater(
+          const CopyAssets().build(environment, targetPlatform: targetPlatform),
+          throwsFormatException,
+        );
+      },
+      overrides: <Type, Generator>{
+        FileSystem: () => fileSystem,
+        ProcessManager: () => FakeProcessManager.any(),
+      },
+    );
+  }
 
   for (final descriptorContents in <String?>[
     null,

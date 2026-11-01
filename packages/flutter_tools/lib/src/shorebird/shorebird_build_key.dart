@@ -81,24 +81,22 @@ mixin ShorebirdLegacyNativeLinkerBuildKey on Target {
       });
 }
 
-/// Invalidates kernel and AOT output when the iOS interpreter profile changes.
+/// Invalidates kernel and AOT output when the target interpreter profile changes.
 mixin ShorebirdInterpreterBuildKey on Target {
   @override
   String? buildKeyFor(Environment environment) {
-    final bool enabled =
-        environment.defines[kTargetPlatform] == 'ios' &&
-        shorebirdUsesIosBytecodeInterpreter(
-          environment.fileSystem,
-          'ios',
-          projectDirectory: environment.projectDir,
-        );
+    final bool enabled = shorebirdUsesBytecodeInterpreter(
+      environment.fileSystem,
+      environment.defines[kTargetPlatform],
+      projectDirectory: environment.projectDir,
+    );
     return _withShorebirdDigest(super.buildKeyFor(environment), <String, String>{
       if (enabled) 'shorebirdInterpreterTfa': 'disabled',
       ..._replacementBuildKey(environment),
       if (enabled &&
           shorebirdUsesIosStructuralUpdates(
             environment.fileSystem,
-            'ios',
+            environment.defines[kTargetPlatform],
             projectDirectory: environment.projectDir,
           ))
         'shorebirdStructuralPatching': 'enabled',
@@ -107,12 +105,16 @@ mixin ShorebirdInterpreterBuildKey on Target {
 }
 
 Map<String, String> _replacementBuildKey(Environment environment) {
-  if (!shorebirdUsesIosFullReplacement(
+  if (!shorebirdUsesFullReplacement(
     environment.fileSystem,
     environment.defines[kTargetPlatform],
     projectDirectory: environment.projectDir,
   )) {
     return const <String, String>{};
+  }
+  final String targetOS = shorebirdTargetOS(environment.defines[kTargetPlatform])!;
+  if (targetOS == 'macos') {
+    shorebirdValidateMacOSReplacementArchitectures(getDarwinArchsFromEnv(environment.defines));
   }
   final buildMode = BuildMode.fromCliName(environment.defines[kBuildMode]!);
   if (buildMode != BuildMode.release) {
@@ -126,6 +128,12 @@ Map<String, String> _replacementBuildKey(Environment environment) {
     environment.fileSystem,
     environment.artifacts,
     buildMode: buildMode,
+    targetOS: targetOS,
   )..validate(inputs.hostAbi);
-  return <String, String>{...inputs.buildKey, ...host.artifactHashes};
+  return <String, String>{
+    'shorebirdReplacementTargetOS': targetOS,
+    'shorebirdReplacementProfile': 'full-replacement-v1',
+    ...inputs.buildKey,
+    ...host.artifactHashes,
+  };
 }

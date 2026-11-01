@@ -222,18 +222,23 @@ class AOTSnapshotter {
     // Public native updates use full snapshots; interpreter updates replace
     // bytecode bodies. Neither needs private native linker flags or DD. Keep
     // the legacy compiler route behind the CLI's explicit development opt-in.
-    final bool usesInterpreter = shorebirdUsesIosBytecodeInterpreter(
+    final bool usesInterpreter = shorebirdUsesBytecodeInterpreter(
       _fileSystem,
       platform.getName(),
       projectDirectory: _projectDirectory,
     );
-    if (shorebirdUsesIosFullReplacement(
+    if (shorebirdUsesFullReplacement(
       _fileSystem,
       platform.getName(),
       projectDirectory: _projectDirectory,
     )) {
       if (buildMode != BuildMode.release) {
         throw const FormatException('Full replacement requires a PRODUCT release build');
+      }
+      if (platform == TargetPlatform.darwin) {
+        shorebirdValidateMacOSReplacementArchitectures(<DarwinArch>[
+          if (darwinArch != null) darwinArch,
+        ]);
       }
       if (darwinArch != DarwinArch.arm64 ||
           (sdkRoot?.toLowerCase().contains('iphonesimulator') ?? false)) {
@@ -247,6 +252,7 @@ class AOTSnapshotter {
         _fileSystem,
         _artifacts,
         buildMode: buildMode,
+        targetOS: platform.getName(),
         processManager: _processManager,
       ).validate(inputs.hostAbi);
     }
@@ -276,7 +282,7 @@ class AOTSnapshotter {
         projectDirectory: _projectDirectory,
       ))
         '--shorebird-structural-patching',
-      if (shorebirdUsesIosFullReplacement(
+      if (shorebirdUsesFullReplacement(
         _fileSystem,
         platform.getName(),
         projectDirectory: _projectDirectory,

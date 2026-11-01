@@ -18,6 +18,13 @@ class BuildMacosCommand extends BuildSubCommand {
     : super(verboseHelp: verboseHelp) {
     addCommonDesktopBuildOptions(verboseHelp: verboseHelp);
     usesFlavorOption();
+    // Shorebird: select architectures explicitly without changing native defaults.
+    argParser.addMultiOption(
+      'target-platform',
+      allowed: <String>['darwin-arm64', 'darwin-x64'],
+      hide: !verboseHelp,
+      help: 'The macOS architectures to build. Full replacement requires darwin-arm64 only.',
+    );
     argParser.addFlag(
       'config-only',
       help:
@@ -71,6 +78,14 @@ class BuildMacosCommand extends BuildSubCommand {
         analytics: analytics,
       ),
       usingCISystem: usingCISystem,
+      darwinArchitectures: argResults!.wasParsed('target-platform')
+          ? stringsArg('target-platform')
+                .map(
+                  (String target) =>
+                      target == 'darwin-arm64' ? DarwinArch.arm64 : DarwinArch.x86_64,
+                )
+                .toList()
+          : null,
     );
     return FlutterCommandResult.success();
   }

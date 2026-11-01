@@ -63,6 +63,34 @@ YamlMap? _readConfiguration(FileSystem fileSystem, Directory? projectDirectory) 
   return yaml is YamlMap ? yaml : null;
 }
 
+/// Normalizes Flutter's desktop platform name to the compiler target OS.
+String? shorebirdTargetOS(String? targetOS) => targetOS == 'darwin' ? 'macos' : targetOS;
+
+/// Selects the supported interpreter compiler profile for the actual target.
+/// macOS currently implements complete replacement only, with no body-only or
+/// additive structural update route.
+bool shorebirdUsesBytecodeInterpreter(
+  FileSystem fileSystem,
+  String? targetOS, {
+  Directory? projectDirectory,
+}) {
+  targetOS = shorebirdTargetOS(targetOS);
+  if (targetOS != 'ios' && targetOS != 'macos') {
+    return false;
+  }
+  final YamlMap? yaml = _readConfiguration(fileSystem, projectDirectory);
+  if (yaml == null) {
+    return false;
+  }
+  shorebirdStructuralUpdatesEnabled(yaml);
+  final bool full = shorebirdFullReplacementEnabled(yaml);
+  final interpreter = yaml['aot_patch_runtime_mode'] == 'dart-bytecode-interpreter';
+  if (targetOS == 'macos' && interpreter && !full) {
+    throw const FormatException('macOS interpreter builds require full replacement');
+  }
+  return interpreter;
+}
+
 /// Selects the public AOT baseline for no-JIT bytecode interpreter updates.
 ///
 /// This route disables type-flow analysis to preserve ordinary patch targets
@@ -73,16 +101,8 @@ bool shorebirdUsesIosBytecodeInterpreter(
   String? targetOS, {
   Directory? projectDirectory,
 }) {
-  if (targetOS != 'ios') {
-    return false;
-  }
-  final YamlMap? yaml = _readConfiguration(fileSystem, projectDirectory);
-  if (yaml == null) {
-    return false;
-  }
-  shorebirdStructuralUpdatesEnabled(yaml);
-  shorebirdFullReplacementEnabled(yaml);
-  return yaml['aot_patch_runtime_mode'] == 'dart-bytecode-interpreter';
+  return targetOS == 'ios' &&
+      shorebirdUsesBytecodeInterpreter(fileSystem, targetOS, projectDirectory: projectDirectory);
 }
 
 /// Enables the structural compiler profile only for opted-in iOS baselines.
@@ -102,8 +122,8 @@ bool shorebirdUsesIosStructuralUpdates(
   return shorebirdStructuralUpdatesEnabled(yaml);
 }
 
-/// Enables complete-domain replacement only for opted-in iOS baselines.
-bool shorebirdUsesIosFullReplacement(
+/// Enables complete-domain replacement for opted-in iOS and macOS baselines.
+bool shorebirdUsesFullReplacement(
   FileSystem fileSystem,
   String? targetOS, {
   Directory? projectDirectory,
@@ -114,10 +134,28 @@ bool shorebirdUsesIosFullReplacement(
   }
   shorebirdStructuralUpdatesEnabled(yaml);
   final bool enabled = shorebirdFullReplacementEnabled(yaml);
-  if (enabled && targetOS != 'ios') {
-    throw const FormatException('aot_patch_full_replacement is supported only on iOS');
+  targetOS = shorebirdTargetOS(targetOS);
+  if (targetOS == 'macos') {
+    shorebirdUsesBytecodeInterpreter(fileSystem, targetOS, projectDirectory: projectDirectory);
+  }
+  if (enabled && targetOS != 'ios' && targetOS != 'macos') {
+    throw const FormatException('aot_patch_full_replacement is supported only on iOS and macOS');
   }
   return enabled;
+}
+
+/// Retains the iOS-only selector for existing callers.
+bool shorebirdUsesIosFullReplacement(
+  FileSystem fileSystem,
+  String? targetOS, {
+  Directory? projectDirectory,
+}) {
+  final bool enabled = shorebirdUsesFullReplacement(
+    fileSystem,
+    targetOS,
+    projectDirectory: projectDirectory,
+  );
+  return targetOS == 'ios' && enabled;
 }
 
 /// Prevents LinkSupplement from collecting stale private native linker tables

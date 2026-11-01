@@ -298,13 +298,14 @@ class KernelCompiler {
     if (!sdkRoot.endsWith('/')) {
       sdkRoot = '$sdkRoot/';
     }
-    final bool fullReplacement = shorebirdUsesIosFullReplacement(
+    final bool fullReplacement = shorebirdUsesFullReplacement(
       _fileSystem,
       targetOS,
       projectDirectory: _projectDirectory,
     );
     final List<String> nativeAssetsDescriptorOptions = shorebirdNativeAssetsFrontendOptions(
       fullReplacement: fullReplacement,
+      targetOS: targetOS ?? '',
       descriptorPath: shorebirdNativeAssetsDescriptor,
       extraFrontEndOptions: extraFrontEndOptions,
     );
@@ -317,9 +318,10 @@ class KernelCompiler {
         _fileSystem,
         _artifacts,
         buildMode: buildMode,
+        targetOS: targetOS!,
         processManager: _processManager,
       ).validate(inputs.hostAbi);
-      sdkRoot = shorebirdReplacementSdkRoot(_artifacts, _fileSystem);
+      sdkRoot = shorebirdReplacementSdkRoot(_artifacts, _fileSystem, targetOS: targetOS);
       if (!sdkRoot.endsWith('/')) {
         sdkRoot = '$sdkRoot/';
       }
@@ -416,7 +418,7 @@ class KernelCompiler {
           if (!linkPlatformKernelIn) '--no-link-platform',
           if (aot) ...<String>[
             '--aot',
-            if (shorebirdUsesIosBytecodeInterpreter(
+            if (shorebirdUsesBytecodeInterpreter(
               _fileSystem,
               targetOS,
               projectDirectory: _projectDirectory,

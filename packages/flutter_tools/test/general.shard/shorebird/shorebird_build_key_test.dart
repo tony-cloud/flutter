@@ -247,6 +247,63 @@ void main() {
       }
     });
 
+    test('macOS full profile tracks base and selected host artifacts across all stages', () {
+      final artifacts = Artifacts.testLocalEngine(
+        localEngine: '/engine/macos_release_arm64',
+        localEngineHost: '/engine/host',
+      );
+      fileSystem.file('/engine/macos_release_arm64/args.gn')
+        ..createSync(recursive: true)
+        ..writeAsStringSync(shorebirdMacOSReplacementArgs);
+      fileSystem
+          .file('shorebird.yaml')
+          .writeAsStringSync(
+            'aot_patch_runtime_mode: dart-bytecode-interpreter\naot_patch_full_replacement: true\n',
+          );
+      Environment macEnvironment({int content = 1, int hostContent = 1}) {
+        final String host = writeShorebirdReplacementHost(
+          fileSystem,
+          artifacts,
+          targetOS: 'macos',
+          content: hostContent,
+        );
+        return Environment.test(
+          fileSystem.currentDirectory,
+          outputDir: fileSystem.directory('output'),
+          artifacts: artifacts,
+          processManager: FakeProcessManager.any(),
+          fileSystem: fileSystem,
+          logger: BufferLogger.test(),
+          platform: FakePlatform(
+            environment: writeShorebirdReplacementBase(fileSystem, hostAbi: host, content: content),
+          ),
+          defines: <String, String>{
+            kBuildMode: 'release',
+            kTargetPlatform: 'darwin',
+            kDarwinArchs: 'arm64',
+          },
+        );
+      }
+
+      for (final target in const <Target>[
+        KernelSnapshot(),
+        CompileMacOSFramework(),
+        ReleaseMacOSBundleFlutterAssets(),
+      ]) {
+        final Environment environment = macEnvironment();
+        final String? before = target.buildKeyFor(environment);
+        final String? changedBase = target.buildKeyFor(macEnvironment(content: 2));
+        expect(changedBase, isNot(before), reason: target.name);
+        expect(
+          target.buildKeyFor(macEnvironment(content: 2, hostContent: 2)),
+          isNot(changedBase),
+          reason: target.name,
+        );
+        environment.defines.remove(kDarwinArchs);
+        expect(() => target.buildKeyFor(environment), throwsFormatException, reason: target.name);
+      }
+    });
+
     test('asset bundling targets track SHOREBIRD_PUBLIC_KEY only', () {
       final assetTargets = <Target>[
         const CopyAssets(),

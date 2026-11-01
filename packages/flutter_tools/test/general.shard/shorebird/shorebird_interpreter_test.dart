@@ -91,4 +91,26 @@ void main() {
     expect(shorebirdUsesIosStructuralUpdates(fileSystem, 'ios'), isFalse);
     expect(() => shorebirdUsesIosFullReplacement(fileSystem, 'android'), throwsFormatException);
   });
+  testWithoutContext('macOS selects only explicit full replacement and retains iOS selectors', () {
+    final fileSystem = MemoryFileSystem.test();
+    final File config = fileSystem.file('shorebird.yaml');
+    for (final targetOS in <String>['macos', 'darwin']) {
+      config.writeAsStringSync('aot_patch_runtime_mode: native-aot\n');
+      expect(shorebirdUsesBytecodeInterpreter(fileSystem, targetOS), isFalse);
+      expect(shorebirdUsesFullReplacement(fileSystem, targetOS), isFalse);
+      for (final profile in <String>['', 'aot_patch_structural_updates: true\n']) {
+        config.writeAsStringSync('aot_patch_runtime_mode: dart-bytecode-interpreter\n$profile');
+        expect(() => shorebirdUsesBytecodeInterpreter(fileSystem, targetOS), throwsFormatException);
+        expect(() => shorebirdUsesFullReplacement(fileSystem, targetOS), throwsFormatException);
+      }
+      config.writeAsStringSync(
+        'aot_patch_runtime_mode: dart-bytecode-interpreter\naot_patch_full_replacement: true\n',
+      );
+      expect(shorebirdUsesBytecodeInterpreter(fileSystem, targetOS), isTrue);
+      expect(shorebirdUsesFullReplacement(fileSystem, targetOS), isTrue);
+      expect(shorebirdUsesIosBytecodeInterpreter(fileSystem, targetOS), isFalse);
+      expect(shorebirdUsesIosFullReplacement(fileSystem, targetOS), isFalse);
+      expect(shorebirdUsesIosStructuralUpdates(fileSystem, targetOS), isFalse);
+    }
+  });
 }

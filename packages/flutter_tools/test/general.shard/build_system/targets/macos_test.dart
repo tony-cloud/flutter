@@ -7,6 +7,7 @@ import 'package:file_testing/file_testing.dart';
 import 'package:flutter_tools/src/artifacts.dart';
 import 'package:flutter_tools/src/base/file_system.dart';
 import 'package:flutter_tools/src/base/logger.dart';
+import 'package:flutter_tools/src/base/platform.dart';
 import 'package:flutter_tools/src/build_info.dart';
 import 'package:flutter_tools/src/build_system/build_system.dart';
 import 'package:flutter_tools/src/build_system/targets/macos.dart';
@@ -20,6 +21,7 @@ import '../../../src/context.dart';
 import '../../../src/fake_process_manager.dart';
 import '../../../src/fakes.dart';
 import '../../../src/package_config.dart';
+import '../../../src/shorebird_replacement.dart';
 
 void main() {
   late Environment environment;
@@ -1037,6 +1039,169 @@ flavors:
       ]);
 
       await const CompileMacOSFramework().build(environment);
+      expect(processManager, hasNoRemainingExpectations);
+    },
+    overrides: <Type, Generator>{
+      FileSystem: () => fileSystem,
+      ProcessManager: () => processManager,
+    },
+  );
+  testUsingContext(
+    'CompileMacOSFramework full profile uses the selected project and skips private supplements',
+    () async {
+      final Directory project = fileSystem.directory('/project')..createSync();
+      project
+          .childFile('shorebird.yaml')
+          .writeAsStringSync(
+            'aot_patch_runtime_mode: dart-bytecode-interpreter\naot_patch_full_replacement: true\n',
+          );
+      artifacts = Artifacts.testLocalEngine(
+        localEngine: '/engine/macos_release_arm64',
+        localEngineHost: '/engine/host',
+      );
+      fileSystem.file('/engine/macos_release_arm64/args.gn')
+        ..createSync(recursive: true)
+        ..writeAsStringSync(shorebirdMacOSReplacementArgs);
+      fileSystem.currentDirectory = fileSystem.directory('/elsewhere')..createSync();
+      final String hostAbi = writeShorebirdReplacementHost(
+        fileSystem,
+        artifacts,
+        targetOS: 'macos',
+      );
+      final Map<String, String> binding = writeShorebirdReplacementBase(
+        fileSystem,
+        hostAbi: hostAbi,
+      );
+      environment = Environment.test(
+        project,
+        buildDir: project.childDirectory('build')..createSync(),
+        fileSystem: fileSystem,
+        logger: logger,
+        artifacts: artifacts,
+        processManager: processManager,
+        platform: FakePlatform(
+          environment: <String, String>{
+            ...binding,
+            'SHOREBIRD_ENABLE_LEGACY_AOT_TOOLS': '1',
+            'SHOREBIRD_DD_MAX_BYTES': '100000',
+          },
+        ),
+        defines: <String, String>{
+          kBuildMode: 'release',
+          kTargetPlatform: 'darwin',
+          kDarwinArchs: 'arm64',
+        },
+      );
+      environment.buildDir.createSync(recursive: true);
+      final File staleSupplement =
+          fileSystem.directory(getMacOSBuildDirectory()).childFile('shorebird/App.ct.link')
+            ..createSync(recursive: true);
+      final File preservedBase = staleSupplement.parent.childFile('shorebird_replacement_base.sbr')
+        ..writeAsStringSync('full profile base');
+      final File staleTable = environment.buildDir.childFile('App.ct.link')
+        ..writeAsStringSync('stale');
+      final String output = environment.buildDir.childDirectory('arm64').path;
+      processManager.addCommands(<FakeCommand>[
+        ...shorebirdReplacementVersionCommands(artifacts, targetOS: 'macos'),
+        FakeCommand(
+          command: <String>[
+            artifacts.getArtifactPath(
+              Artifact.genSnapshotArm64,
+              platform: TargetPlatform.darwin,
+              mode: BuildMode.release,
+            ),
+            '--deterministic',
+            '--shorebird-full-replacement',
+            '--snapshot_kind=app-aot-assembly',
+            '--assembly=$output/snapshot_assembly.S',
+            environment.buildDir.childFile('app.dill').path,
+          ],
+        ),
+        FakeCommand(
+          command: <String>[
+            'xcrun',
+            'cc',
+            '-arch',
+            'arm64',
+            '-c',
+            '$output/snapshot_assembly.S',
+            '-o',
+            '$output/snapshot_assembly.o',
+          ],
+        ),
+        FakeCommand(
+          command: <String>[
+            'xcrun',
+            'clang',
+            '-arch',
+            'arm64',
+            '-dynamiclib',
+            '-Xlinker',
+            '-rpath',
+            '-Xlinker',
+            '@executable_path/Frameworks',
+            '-Xlinker',
+            '-rpath',
+            '-Xlinker',
+            '@loader_path/Frameworks',
+            '-fapplication-extension',
+            '-install_name',
+            '@rpath/App.framework/App',
+            '-o',
+            '$output/App.framework/App',
+            '$output/snapshot_assembly.o',
+          ],
+          onRun: (_) {
+            fileSystem.file('$output/App.framework/App').createSync(recursive: true);
+            fileSystem
+                .file('$output/App.framework.dSYM/Contents/Resources/DWARF/App')
+                .createSync(recursive: true);
+          },
+        ),
+        FakeCommand(
+          command: <String>[
+            'xcrun',
+            'dsymutil',
+            '-o',
+            '$output/App.framework.dSYM',
+            '$output/App.framework/App',
+          ],
+        ),
+        FakeCommand(
+          command: <String>[
+            'xcrun',
+            'strip',
+            '-x',
+            '$output/App.framework/App',
+            '-o',
+            '$output/App.framework/App',
+          ],
+        ),
+        FakeCommand(
+          command: <String>[
+            'lipo',
+            '$output/App.framework/App',
+            '-create',
+            '-output',
+            environment.buildDir.childFile('App.framework/App').path,
+          ],
+        ),
+        FakeCommand(
+          command: <String>[
+            'lipo',
+            '$output/App.framework.dSYM/Contents/Resources/DWARF/App',
+            '-create',
+            '-output',
+            environment.buildDir.childFile('App.framework.dSYM/Contents/Resources/DWARF/App').path,
+          ],
+        ),
+      ]);
+      await const CompileMacOSFramework().build(environment);
+      expect(staleSupplement, isNot(exists));
+      expect(preservedBase.readAsStringSync(), 'full profile base');
+      expect(staleTable, isNot(exists));
+      expect(logger.traceText, isNot(contains('DD 2-pass build')));
+      expect(logger.traceText, isNot(contains('LinkSupplement:')));
       expect(processManager, hasNoRemainingExpectations);
     },
     overrides: <Type, Generator>{

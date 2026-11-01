@@ -327,7 +327,7 @@ class KernelSnapshot extends Target with ShorebirdInterpreterBuildKey {
         expectedPath: dillPath,
         outputPath: output.outputFilename,
       );
-      shorebirdReadNativeAssetsDescriptor(environment.buildDir);
+      shorebirdReadNativeAssetsDescriptor(environment.buildDir, targetOS: targetOS!);
     }
   }
 

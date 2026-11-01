@@ -16,6 +16,8 @@ import '../../globals.dart' as globals show xcode;
 import '../../isolated/native_assets/dart_hook_result.dart';
 import '../../project.dart';
 import '../../shorebird/shorebird_build_key.dart';
+import '../../shorebird/shorebird_interpreter.dart';
+import '../../shorebird/shorebird_replacement_host.dart';
 import '../build_system.dart';
 import '../depfile.dart';
 import '../exceptions.dart';
@@ -259,7 +261,8 @@ static const int Moo = 88;
   List<Source> get outputs => const <Source>[Source.pattern('{BUILD_DIR}/App.framework/App')];
 }
 
-class CompileMacOSFramework extends Target with ShorebirdLegacyNativeLinkerBuildKey {
+class CompileMacOSFramework extends Target
+    with ShorebirdLegacyNativeLinkerBuildKey, ShorebirdInterpreterBuildKey {
   const CompileMacOSFramework();
 
   @override
@@ -289,6 +292,14 @@ class CompileMacOSFramework extends Target with ShorebirdLegacyNativeLinkerBuild
     );
     final targetPlatform = TargetPlatform.fromName(targetPlatformEnvironment);
     final List<DarwinArch> darwinArchs = getDarwinArchsFromEnv(environment.defines);
+    final bool fullReplacement = shorebirdUsesFullReplacement(
+      environment.fileSystem,
+      targetPlatform.getName(),
+      projectDirectory: environment.projectDir,
+    );
+    if (fullReplacement) {
+      shorebirdValidateMacOSReplacementArchitectures(darwinArchs);
+    }
     if (targetPlatform != TargetPlatform.darwin) {
       throw Exception('compile_macos_framework is only supported for darwin TargetPlatform.');
     }
@@ -299,6 +310,8 @@ class CompileMacOSFramework extends Target with ShorebirdLegacyNativeLinkerBuild
       xcode: globals.xcode!,
       artifacts: environment.artifacts,
       processManager: environment.processManager,
+      projectDirectory: environment.projectDir,
+      platform: environment.platform,
     );
 
     final pending = <Future<int>>[];
@@ -355,11 +368,17 @@ class CompileMacOSFramework extends Target with ShorebirdLegacyNativeLinkerBuild
       skipMissingInputs: true,
     );
 
-    await LinkSupplement.create(
-      environment,
-      inputBuildDir: buildOutputPath,
-      outputBuildDir: getMacOSBuildDirectory(),
-    );
+    if (fullReplacement) {
+      shorebirdRemoveNativeLinkOutputs(
+        environment.fileSystem.directory(getMacOSBuildDirectory()).childDirectory('shorebird'),
+      );
+    } else {
+      await LinkSupplement.create(
+        environment,
+        inputBuildDir: buildOutputPath,
+        outputBuildDir: getMacOSBuildDirectory(),
+      );
+    }
   }
 
   @override

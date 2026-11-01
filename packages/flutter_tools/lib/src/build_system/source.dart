@@ -176,7 +176,7 @@ class SourceVisitor implements ResolvedFiles {
   void visitArtifact(Artifact artifact, TargetPlatform? platform, BuildMode? mode) {
     if (artifact == Artifact.platformKernelDill &&
         environment.artifacts.localEngineInfo != null &&
-        shorebirdUsesIosFullReplacement(
+        shorebirdUsesFullReplacement(
           environment.fileSystem,
           environment.defines[kTargetPlatform],
           projectDirectory: environment.projectDir,
@@ -184,7 +184,11 @@ class SourceVisitor implements ResolvedFiles {
       sources.add(
         environment.fileSystem.file(
           environment.fileSystem.path.join(
-            shorebirdReplacementSdkRoot(environment.artifacts, environment.fileSystem),
+            shorebirdReplacementSdkRoot(
+              environment.artifacts,
+              environment.fileSystem,
+              targetOS: environment.defines[kTargetPlatform]!,
+            ),
             'platform_strong.dill',
           ),
         ),

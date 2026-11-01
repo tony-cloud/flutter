@@ -46,7 +46,7 @@ Future<Depfile> copyAssets(
   List<File> additionalInputs = const <File>[],
   String? flavor,
 }) async {
-  final bool fullReplacement = shorebirdUsesIosFullReplacement(
+  final bool fullReplacement = shorebirdUsesFullReplacement(
     environment.fileSystem,
     targetPlatform.getName(),
     projectDirectory: environment.projectDir,
@@ -139,7 +139,12 @@ Future<Depfile> copyAssets(
       transformers: const <AssetTransformerEntry>[],
     );
     assetEntries[kShorebirdNativeAssetsDescriptor] = AssetBundleEntry(
-      DevFSFileContent(shorebirdReadNativeAssetsDescriptor(environment.buildDir)),
+      DevFSFileContent(
+        shorebirdReadNativeAssetsDescriptor(
+          environment.buildDir,
+          targetOS: targetPlatform.getName(),
+        ),
+      ),
       kind: AssetKind.regular,
       transformers: const <AssetTransformerEntry>[],
     );

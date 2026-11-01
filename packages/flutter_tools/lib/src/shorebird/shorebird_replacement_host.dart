@@ -12,11 +12,23 @@ import '../artifacts.dart';
 import '../base/file_system.dart';
 import '../base/io.dart';
 import '../build_info.dart';
+import 'shorebird_interpreter.dart';
 
 /// Resolves the exact PRODUCT platform consumed by the full-profile compiler.
-String shorebirdReplacementSdkRoot(Artifacts artifacts, FileSystem fileSystem) {
+String shorebirdReplacementSdkRoot(
+  Artifacts artifacts,
+  FileSystem fileSystem, {
+  String targetOS = 'ios',
+}) {
+  targetOS = _targetOS(targetOS);
   final LocalEngineInfo? local = artifacts.localEngineInfo;
   if (local == null) {
+    if (targetOS == 'macos') {
+      throw const FormatException(
+        'macOS full replacement requires a verified local interpreter engine; '
+        'hosted engine capability verification is not yet available',
+      );
+    }
     return artifacts.getArtifactPath(
       Artifact.flutterPatchedSdkPath,
       platform: TargetPlatform.ios,
@@ -35,15 +47,18 @@ String shorebirdReplacementSdkRoot(Artifacts artifacts, FileSystem fileSystem) {
       values[match[1]!] = match[2]!;
     }
   }
-  const required = <String, String>{
+  final required = <String, String>{
     'is_debug': 'false',
     'flutter_runtime_mode': '"release"',
     'dart_runtime_mode': '"release"',
-    'target_os': '"ios"',
+    if (targetOS == 'ios') 'target_os': '"ios"',
+    if (targetOS == 'macos') 'target_os': '"mac"',
     'target_cpu': '"arm64"',
     'dart_target_arch': '"arm64"',
-    'use_ios_simulator': 'false',
-    'ios_use_simulator': 'false',
+    if (targetOS == 'ios') 'use_ios_simulator': 'false',
+    if (targetOS == 'ios') 'ios_use_simulator': 'false',
+    if (targetOS == 'macos') 'dart_enable_shorebird_interpreter': 'true',
+    if (targetOS == 'macos') 'shorebird_use_interpreter': 'false',
   };
   for (final MapEntry<String, String> entry in required.entries) {
     if (values[entry.key] != entry.value) {
@@ -55,17 +70,44 @@ String shorebirdReplacementSdkRoot(Artifacts artifacts, FileSystem fileSystem) {
   return fileSystem.path.join(local.targetOutPath, 'flutter_patched_sdk');
 }
 
+String _targetOS(String targetOS) {
+  final String normalized = shorebirdTargetOS(targetOS)!;
+  if (normalized != 'ios' && normalized != 'macos') {
+    throw const FormatException('Unsupported full replacement host target OS');
+  }
+  return normalized;
+}
+
+/// Rejects universal and x64 full builds, including the universal default.
+/// The caller must pass the complete requested architecture set unchanged.
+void shorebirdValidateMacOSReplacementArchitectures(List<DarwinArch> architectures) {
+  if (architectures.length != 1 || architectures.single != DarwinArch.arm64) {
+    throw const FormatException(
+      'macOS full replacement requires --target-platform=darwin-arm64 '
+      '(assemble: DarwinArchs=arm64); x64 and universal builds are not supported',
+    );
+  }
+}
+
 /// Canonical v1 stamp shared with the CLI. Paths never contribute to identity.
+///
+/// SHA-256 of UTF-8 fields, each preceded by its uint32 little-endian byte
+/// length, in this exact order: domain, OS, platform kind, architecture,
+/// product mode, runtime mode, profile, engine hash, gen_snapshot hash,
+/// PRODUCT platform_strong.dill hash. iOS bytes remain unchanged; macOS uses
+/// domain shorebird-macos-full-replacement-host-v1, OS macos, kind desktop.
 String shorebirdReplacementHostAbi({
   required String engineHash,
   required String genSnapshotHash,
   required String platformHash,
+  String targetOS = 'ios',
 }) {
+  targetOS = _targetOS(targetOS);
   final descriptor = BytesBuilder();
   for (final value in <String>[
-    'shorebird-ios-full-replacement-host-v1',
-    'ios',
-    'device',
+    'shorebird-$targetOS-full-replacement-host-v1',
+    targetOS,
+    if (targetOS == 'ios') 'device' else 'desktop',
     'arm64',
     'product',
     'dart-bytecode-interpreter',
@@ -90,24 +132,26 @@ class ShorebirdReplacementHost {
     Artifacts artifacts, {
     required BuildMode buildMode,
     ProcessManager? processManager,
+    String targetOS = 'ios',
   }) {
+    targetOS = _targetOS(targetOS);
     if (buildMode != BuildMode.release) {
       throw const FormatException('Full replacement requires a PRODUCT release build');
     }
-    final String sdkRoot = shorebirdReplacementSdkRoot(artifacts, fileSystem);
+    final String sdkRoot = shorebirdReplacementSdkRoot(artifacts, fileSystem, targetOS: targetOS);
     final String framework = artifacts.getArtifactPath(
-      Artifact.flutterFramework,
-      platform: TargetPlatform.ios,
+      targetOS == 'ios' ? Artifact.flutterFramework : Artifact.flutterMacOSFramework,
+      platform: targetOS == 'ios' ? TargetPlatform.ios : TargetPlatform.darwin,
       mode: BuildMode.release,
       environmentType: EnvironmentType.physical,
     );
     final String genSnapshot = artifacts.getArtifactPath(
       Artifact.genSnapshotArm64,
-      platform: TargetPlatform.ios,
+      platform: targetOS == 'ios' ? TargetPlatform.ios : TargetPlatform.darwin,
       mode: BuildMode.release,
     );
     final paths = <String, String>{
-      'engine': fileSystem.path.join(framework, 'Flutter'),
+      'engine': fileSystem.path.join(framework, targetOS == 'ios' ? 'Flutter' : 'FlutterMacOS'),
       'genSnapshot': genSnapshot,
       'platform': fileSystem.path.join(sdkRoot, 'platform_strong.dill'),
       // These tools do not define the frozen-host ABI, but replacing either
@@ -145,6 +189,7 @@ class ShorebirdReplacementHost {
         engineHash: hashes['engine']!,
         genSnapshotHash: hashes['genSnapshot']!,
         platformHash: hashes['platform']!,
+        targetOS: targetOS,
       ),
       hashes,
     );

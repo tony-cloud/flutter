@@ -1332,6 +1332,116 @@ STDERR STUFF
     },
   );
 
+  for (final fullReplacement in <bool>[false, true]) {
+    testUsingContext(
+      'explicit macOS target-platform reaches Xcode ARCHS (full=$fullReplacement)',
+      () async {
+        createMinimalMockProjectFiles();
+        if (fullReplacement) {
+          fileSystem
+              .file('shorebird.yaml')
+              .writeAsStringSync(
+                'aot_patch_runtime_mode: dart-bytecode-interpreter\naot_patch_full_replacement: true\n',
+              );
+        }
+        final command = BuildCommand(
+          androidSdk: FakeAndroidSdk(),
+          buildSystem: TestBuildSystem.all(BuildResult(success: true)),
+          fileSystem: fileSystem,
+          logger: logger,
+          osUtils: FakeOperatingSystemUtils(),
+          config: FakeConfig(),
+          platform: FakePlatform(),
+          fileSystemUtils: FakeFileSystemUtils(),
+          terminal: FakeTerminal(),
+          plistParser: FakePlistParser(),
+          processUtils: FakeProcessUtils(),
+          processManager: FakeProcessManager.any(),
+          templateRenderer: FakeTemplateRenderer(),
+          xcode: FakeXcode(),
+          artifacts: FakeArtifacts(),
+          cache: FakeCache(),
+          flutterVersion: FakeFlutterVersion(),
+        );
+        await createTestCommandRunner(command).run(const <String>[
+          'build',
+          'macos',
+          '--release',
+          '--no-pub',
+          '--target-platform=darwin-arm64',
+        ]);
+      },
+      overrides: <Type, Generator>{
+        Platform: () => macosPlatform,
+        FileSystem: () => fileSystem,
+        ProcessManager: () => FakeProcessManager.list(<FakeCommand>[
+          setUpFakeXcodeBuildHandler(
+            'Release',
+            additionalCommandArguments: <String>['ARCHS=arm64'],
+          ),
+        ]),
+        Pub: ThrowingPub.new,
+        FeatureFlags: () => TestFeatureFlags(isMacOSEnabled: true),
+        XcodeProjectInterpreter: () => xcodeProjectInterpreter,
+        OperatingSystemUtils: () => FakeOperatingSystemUtils(hostPlatform: HostPlatform.darwin_x64),
+      },
+    );
+  }
+
+  for (final selector in <String?>[null, 'darwin-x64', 'darwin-arm64,darwin-x64']) {
+    testUsingContext(
+      'macOS full replacement rejects missing or unsupported target-platform $selector before Xcode',
+      () async {
+        createMinimalMockProjectFiles();
+        fileSystem
+            .file('shorebird.yaml')
+            .writeAsStringSync(
+              'aot_patch_runtime_mode: dart-bytecode-interpreter\naot_patch_full_replacement: true\n',
+            );
+        final command = BuildCommand(
+          androidSdk: FakeAndroidSdk(),
+          buildSystem: TestBuildSystem.all(BuildResult(success: true)),
+          fileSystem: fileSystem,
+          logger: logger,
+          osUtils: FakeOperatingSystemUtils(),
+          config: FakeConfig(),
+          platform: FakePlatform(),
+          fileSystemUtils: FakeFileSystemUtils(),
+          terminal: FakeTerminal(),
+          plistParser: FakePlistParser(),
+          processUtils: FakeProcessUtils(),
+          processManager: FakeProcessManager.any(),
+          templateRenderer: FakeTemplateRenderer(),
+          xcode: FakeXcode(),
+          artifacts: FakeArtifacts(),
+          cache: FakeCache(),
+          flutterVersion: FakeFlutterVersion(),
+        );
+        await expectLater(
+          createTestCommandRunner(command).run(<String>[
+            'build',
+            'macos',
+            '--release',
+            '--no-pub',
+            if (selector != null) '--target-platform=$selector',
+          ]),
+          throwsFormatException,
+        );
+        expect(fakeProcessManager, hasNoRemainingExpectations);
+      },
+      overrides: <Type, Generator>{
+        Platform: () => macosPlatform,
+        FileSystem: () => fileSystem,
+        ProcessManager: () => fakeProcessManager,
+        Pub: ThrowingPub.new,
+        // The global native default must not turn an omitted selector into consent.
+        FeatureFlags: () => TestFeatureFlags(isMacOSEnabled: true, isMacOSArm64OnlyEnabled: true),
+        XcodeProjectInterpreter: () => xcodeProjectInterpreter,
+        OperatingSystemUtils: () => FakeOperatingSystemUtils(hostPlatform: HostPlatform.darwin_x64),
+      },
+    );
+  }
+
   testUsingContext(
     'Build with arm64 destination on if host arch is arm64 (debug)',
     () async {

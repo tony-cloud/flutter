@@ -15,6 +15,18 @@ import 'package:flutter_tools/src/shorebird/shorebird_yaml.dart';
 
 import 'fake_process_manager.dart';
 
+/// Explicit local engine configuration for macOS full replacement fixtures.
+const shorebirdMacOSReplacementArgs = '''
+is_debug = false
+flutter_runtime_mode = "release"
+dart_runtime_mode = "release"
+target_os = "mac"
+target_cpu = "arm64"
+dart_target_arch = "arm64"
+dart_enable_shorebird_interpreter = true
+shorebird_use_interpreter = false
+''';
+
 /// Writes a version 1 base wrapper fixture with a single mutable root library.
 Map<String, String> writeShorebirdReplacementBase(
   FileSystem fileSystem, {
@@ -69,22 +81,24 @@ String writeShorebirdReplacementHost(
   FileSystem fileSystem,
   Artifacts artifacts, {
   int content = 1,
+  String targetOS = 'ios',
 }) {
+  final macOS = targetOS == 'macos';
   final String framework = artifacts.getArtifactPath(
-    Artifact.flutterFramework,
-    platform: TargetPlatform.ios,
+    macOS ? Artifact.flutterMacOSFramework : Artifact.flutterFramework,
+    platform: macOS ? TargetPlatform.darwin : TargetPlatform.ios,
     mode: BuildMode.release,
     environmentType: EnvironmentType.physical,
   );
   for (final path in <String>[
-    fileSystem.path.join(framework, 'Flutter'),
+    fileSystem.path.join(framework, macOS ? 'FlutterMacOS' : 'Flutter'),
     artifacts.getArtifactPath(
       Artifact.genSnapshotArm64,
-      platform: TargetPlatform.ios,
+      platform: macOS ? TargetPlatform.darwin : TargetPlatform.ios,
       mode: BuildMode.release,
     ),
     fileSystem.path.join(
-      shorebirdReplacementSdkRoot(artifacts, fileSystem),
+      shorebirdReplacementSdkRoot(artifacts, fileSystem, targetOS: targetOS),
       'platform_strong.dill',
     ),
     artifacts.getArtifactPath(Artifact.engineDartAotRuntime),
@@ -94,16 +108,24 @@ String writeShorebirdReplacementHost(
       ..createSync(recursive: true)
       ..writeAsStringSync('$path:$content');
   }
-  return ShorebirdReplacementHost.read(fileSystem, artifacts, buildMode: BuildMode.release).hostAbi;
+  return ShorebirdReplacementHost.read(
+    fileSystem,
+    artifacts,
+    buildMode: BuildMode.release,
+    targetOS: targetOS,
+  ).hostAbi;
 }
 
 /// Matching probes for fake compilation, differing only in reported host.
-List<FakeCommand> shorebirdReplacementVersionCommands(Artifacts artifacts) => <FakeCommand>[
+List<FakeCommand> shorebirdReplacementVersionCommands(
+  Artifacts artifacts, {
+  String targetOS = 'ios',
+}) => <FakeCommand>[
   FakeCommand(
     command: <String>[
       artifacts.getArtifactPath(
         Artifact.genSnapshotArm64,
-        platform: TargetPlatform.ios,
+        platform: targetOS == 'macos' ? TargetPlatform.darwin : TargetPlatform.ios,
         mode: BuildMode.release,
       ),
       '--version',
