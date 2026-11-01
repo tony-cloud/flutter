@@ -123,24 +123,25 @@ def main():
 def _configure_msvc_env(env, rust_target):
   """Force the cc crate to compile transitive C deps with the static CRT.
 
-  The engine's Windows build uses the static CRT (/MT). The updater's
-  .cargo/config.toml sets `-C target-feature=+crt-static` so the rlib is
-  compiled to expect static-CRT linkage. However, cargo populates
-  CARGO_CFG_TARGET_FEATURE from the rustc target spec's default features,
-  not from user rustflags, so +crt-static is invisible to build scripts.
-  The cc crate (used by transitive *-sys deps like zstd-sys to compile
-  their C sources) therefore falls back to /MD, producing .obj files
-  full of __imp_* references that the engine's /MT link cannot resolve
-  (e.g. __imp_clock, __imp__wassert, __imp_qsort_s).
+  The engine's Windows build uses the static CRT. Transitive C/C++ deps
+  such as zstd-sys must match it instead of defaulting to /MD and leaving
+  imports such as __imp_clock that the engine's /MT link cannot resolve.
 
-  Force /MT via the per-target CFLAGS env that the cc crate honors. cc
-  appends these flags at the end of its command line, so cl.exe sees
-  `/MD ... /MT` and emits warning D9025 ("overriding '/MD' with '/MT'")
-  and uses the last one -- /MT wins.
+  On ARM64, ring selects the GNU-style clang driver even when cc initially
+  chooses cl.exe or clang-cl. Pin that driver for all C/C++ dependencies,
+  including zstd, and use its static-CRT flag. Passing /MT to this driver
+  instead treats it as a filename. Other MSVC targets keep /MT, which cc
+  appends after its default /MD so the static runtime takes precedence.
   """
   triple_env = rust_target.replace('-', '_')
-  env[f'CFLAGS_{triple_env}'] = '/MT'
-  env[f'CXXFLAGS_{triple_env}'] = '/MT'
+  if rust_target == 'aarch64-pc-windows-msvc':
+    env.setdefault(f'CC_{triple_env}', 'clang')
+    env.setdefault(f'CXX_{triple_env}', 'clang++')
+    crt_flag = '-fms-runtime-lib=static'
+  else:
+    crt_flag = '/MT'
+  env[f'CFLAGS_{triple_env}'] = crt_flag
+  env[f'CXXFLAGS_{triple_env}'] = crt_flag
 
 
 def _configure_android_env(env, rust_target, ndk_path, api_level):

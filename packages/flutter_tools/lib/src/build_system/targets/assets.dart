@@ -19,7 +19,9 @@ import '../../isolated/native_assets/dart_hook_result.dart';
 import '../../shorebird/shorebird_build_key.dart';
 import '../../shorebird/shorebird_interpreter.dart';
 import '../../shorebird/shorebird_native_assets.dart';
+import '../../shorebird/shorebird_native_selection.dart';
 import '../../shorebird/shorebird_replacement.dart';
+import '../../shorebird/shorebird_replacement_host.dart';
 import '../../shorebird/shorebird_selection.dart';
 import '../../shorebird/shorebird_yaml.dart';
 import '../build_system.dart';
@@ -132,6 +134,12 @@ Future<Depfile> copyAssets(
   // must be the bytes the updater later opens, on every release and patch build.
   final AssetBundleEntry? shorebirdConfiguration = assetEntries['shorebird.yaml'];
   ShorebirdSelectionInputs? selection;
+  final selectionAssets = <String>{};
+  // This namespace belongs to generated release bindings, never user assets.
+  assetEntries.removeWhere(
+    (String name, AssetBundleEntry _) =>
+        name.startsWith('shorebird_release_scope_') && name.endsWith('.json'),
+  );
   if (shorebirdConfiguration?.content case final DevFSFileContent content) {
     final Object? config = loadYaml(await (content.file as File).readAsString());
     if (config is YamlMap && config['selection_protocol'] == 2) {
@@ -140,23 +148,54 @@ Future<Depfile> copyAssets(
           'Protocol 2 requires a release build and untransformed shorebird.yaml',
         );
       }
-      selection = ShorebirdSelectionInputs.read(
-        environment.fileSystem,
-        environment.platform.environment,
+      final Map<String, dynamic> compiled = compileShorebirdYaml(
+        config,
+        flavor: flavor,
+        environment: environment.platform.environment,
+        fileSystem: environment.fileSystem,
       );
-      if (shorebirdTargetOS(targetPlatform.getName()) != selection.scope['platform']) {
-        throw const FormatException('Release scope platform differs from build target');
+      if (compiled['aot_patch_runtime_mode'] != 'dart-bytecode-interpreter') {
+        final native = ShorebirdNativeSelectionInputs.read(
+          environment.fileSystem,
+          environment.platform.environment,
+        )..validateTarget(targetPlatform, environment.defines);
+        inputs.addAll(native.inputs);
+        for (final MapEntry<String, Map<String, dynamic>> entry in native.assets.entries) {
+          selectionAssets.add(entry.key);
+          assetEntries[entry.key] = AssetBundleEntry(
+            DevFSStringContent(jsonEncode(entry.value)),
+            kind: AssetKind.regular,
+            transformers: const <AssetTransformerEntry>[],
+          );
+        }
+      } else {
+        selection = ShorebirdSelectionInputs.read(
+          environment.fileSystem,
+          environment.platform.environment,
+        );
+        if (shorebirdTargetOS(targetPlatform.getName()) != selection.scope['platform'] ||
+            (targetPlatform == TargetPlatform.darwin &&
+                selection.scope['arch'] !=
+                    (shorebirdValidateMacOSReplacementArchitectures(
+                              getDarwinArchsFromEnv(environment.defines),
+                            ) ==
+                            'x64'
+                        ? 'x86_64'
+                        : 'aarch64'))) {
+          throw const FormatException('Release scope platform differs from build target');
+        }
+        selectionAssets.add(selection.assetName);
+        assetEntries[selection.assetName] = AssetBundleEntry(
+          DevFSStringContent(jsonEncode(selection.scope)),
+          kind: AssetKind.regular,
+          transformers: const <AssetTransformerEntry>[],
+        );
+        assetEntries[selection.baselineAsset] = AssetBundleEntry(
+          DevFSFileContent(selection.baseline),
+          kind: AssetKind.regular,
+          transformers: const <AssetTransformerEntry>[],
+        );
       }
-      assetEntries[selection.assetName] = AssetBundleEntry(
-        DevFSStringContent(jsonEncode(selection.scope)),
-        kind: AssetKind.regular,
-        transformers: const <AssetTransformerEntry>[],
-      );
-      assetEntries[selection.baselineAsset] = AssetBundleEntry(
-        DevFSFileContent(selection.baseline),
-        kind: AssetKind.regular,
-        transformers: const <AssetTransformerEntry>[],
-      );
     }
   }
   // Removed scopes must not survive a protocol or target change in cached output.
@@ -165,7 +204,7 @@ Future<Depfile> copyAssets(
     final String name = stale.basename;
     if ((name.startsWith('shorebird_release_scope_') &&
             name.endsWith('.json') &&
-            name != selection?.assetName) ||
+            !selectionAssets.contains(name)) ||
         (name == kShorebirdInterpreterBaseAsset && selection?.baselineAsset != name)) {
       stale.deleteSync();
     }
@@ -190,6 +229,11 @@ Future<Depfile> copyAssets(
         shorebirdReadNativeAssetsDescriptor(
           environment.buildDir,
           targetOS: targetPlatform.getName(),
+          targetArch: targetPlatform == TargetPlatform.darwin
+              ? shorebirdValidateMacOSReplacementArchitectures(
+                  getDarwinArchsFromEnv(environment.defines),
+                )
+              : 'arm64',
         ),
       ),
       kind: AssetKind.regular,

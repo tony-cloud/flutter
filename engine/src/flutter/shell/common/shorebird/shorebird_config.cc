@@ -12,7 +12,11 @@
 #include <sstream>
 #include <vector>
 
+#include "flutter/fml/build_config.h"
 #include "flutter/fml/paths.h"
+#if FML_OS_WIN
+#include "flutter/fml/platform/win/wstring_conversion.h"
+#endif
 #include "flutter/runtime/shorebird/interpreter_patch.h"
 #include "flutter/shell/common/shorebird/updater.h"
 #include "rapidjson/document.h"
@@ -149,8 +153,12 @@ void CloseReleaseBaseline(void* handle) {
 bool ReadOwnedFile(const std::string& path,
                    size_t limit,
                    std::vector<uint8_t>* bytes) {
-  std::unique_ptr<FILE, decltype(&std::fclose)> file(
-      std::fopen(path.c_str(), "rb"), std::fclose);
+#if FML_OS_WIN
+  FILE* opened = _wfopen(fml::Utf8ToWideString(path).c_str(), L"rb");
+#else
+  FILE* opened = std::fopen(path.c_str(), "rb");
+#endif
+  std::unique_ptr<FILE, decltype(&std::fclose)> file(opened, std::fclose);
   if (!file || std::fseek(file.get(), 0, SEEK_END) != 0)
     return false;
   const long length = std::ftell(file.get());
@@ -164,6 +172,82 @@ bool ReadOwnedFile(const std::string& path,
 }
 }  // namespace
 
+bool RequireSelectionV2IfMarked(const std::string& yaml) {
+  std::stringstream lines(yaml);
+  std::string line;
+  size_t count = 0;
+  while (std::getline(lines, line)) {
+    count += line.compare(0, 19, "selection_protocol:") == 0;
+  }
+  if (count == 0 ||
+      (count == 1 && GetValueFromYaml(yaml, "selection_protocol") == "1")) {
+    return false;
+  }
+  shorebird::Updater::Instance().RequireSelectionV2();
+  return true;
+}
+
+std::string ShorebirdHostArch() {
+#if FML_ARCH_CPU_ARM64
+  return "aarch64";
+#elif FML_ARCH_CPU_ARMEL
+  return "arm";
+#elif FML_ARCH_CPU_X86
+  return "x86";
+#elif FML_ARCH_CPU_X86_64
+  return "x86_64";
+#else
+  return "";
+#endif
+}
+std::string ReleaseScopeAssetName(const std::string& platform,
+                                  const std::string& arch) {
+  if ((platform != "android" && platform != "ios" && platform != "macos" &&
+       platform != "linux" && platform != "windows") ||
+      (arch != "arm" && arch != "aarch64" && arch != "x86" &&
+       arch != "x86_64")) {
+    return "";
+  }
+  return "shorebird_release_scope_" + platform + "_" + arch + ".json";
+}
+
+bool LoadCompiledReleaseScopeAsset(
+    const std::string& platform,
+    const std::string& arch,
+    const std::function<std::unique_ptr<fml::Mapping>(const std::string&)>&
+        load,
+    std::string* scope_json) {
+  if (!scope_json)
+    return false;
+  scope_json->clear();
+  const auto name = ReleaseScopeAssetName(platform, arch);
+  if (name.empty() || !load)
+    return false;
+  auto mapping = load(name);
+  if (!mapping)
+    return false;
+  const auto length = mapping->GetSize();
+  if (length == 0 || length > 64 * 1024)
+    return false;
+  const auto* bytes = mapping->GetMapping();
+  if (!bytes)
+    return false;
+  scope_json->assign(reinterpret_cast<const char*>(bytes), length);
+  return true;
+}
+
+bool ValidateAndroidNativeReleaseLibraryPaths(
+    const std::vector<std::string>& paths) {
+  constexpr char suffix[] = "/libapp.so";
+  return paths.size() == 2 && paths[0] == "libapp.so" && !paths[1].empty() &&
+         paths[1][0] == '/' && paths[1].size() > sizeof(suffix) - 1 &&
+         paths[1].compare(paths[1].size() - (sizeof(suffix) - 1),
+                          sizeof(suffix) - 1, suffix) == 0 &&
+         paths[1].find("/../") == std::string::npos &&
+         paths[1].find("/./") == std::string::npos &&
+         paths[1].find('\0') == std::string::npos;
+}
+
 void ResetSelectionV2BaselineForTesting() {
   std::lock_guard<std::mutex> lock(baseline_mutex);
   baseline_identity.clear();
@@ -173,7 +257,8 @@ void ResetSelectionV2BaselineForTesting() {
 bool ConfigureSelectionV2(shorebird::AppConfig& config,
                           const std::string& assets_path,
                           const std::string& platform,
-                          const std::string& arch) {
+                          const std::string& arch,
+                          const std::string* compiled_scope_json) {
   std::stringstream lines(config.yaml_config);
   std::string line;
   size_t count = 0;
@@ -188,13 +273,20 @@ bool ConfigureSelectionV2(shorebird::AppConfig& config,
     return true;
   config.selection_protocol_v2 = true;
   shorebird::Updater::Instance().RequireSelectionV2();
-  if (count != 1 || protocol != "2" || assets_path.empty())
+  const auto asset_name = ReleaseScopeAssetName(platform, arch);
+  if (count != 1 || protocol != "2" || asset_name.empty())
     return false;
   std::vector<uint8_t> bytes;
-  if (!ReadOwnedFile(fml::paths::JoinPaths(
-                         {assets_path, "shorebird_release_scope_" + platform +
-                                           "_" + arch + ".json"}),
-                     64 * 1024, &bytes))
+  if (compiled_scope_json) {
+    if (compiled_scope_json->empty() || compiled_scope_json->size() > 64 * 1024)
+      return false;
+    bytes.assign(compiled_scope_json->begin(), compiled_scope_json->end());
+  } else if (assets_path.empty() ||
+             !ReadOwnedFile(fml::paths::JoinPaths({assets_path, asset_name}),
+                            64 * 1024, &bytes)) {
+    return false;
+  }
+  if (std::find(bytes.begin(), bytes.end(), 0) != bytes.end())
     return false;
   rapidjson::Document scope;
   scope.Parse<rapidjson::kParseValidateEncodingFlag>(
@@ -219,9 +311,17 @@ bool ConfigureSelectionV2(shorebird::AppConfig& config,
                : "";
   };
   const auto profile = text("runtime_profile");
+  if ((platform == "android" || platform == "linux" || platform == "windows") &&
+      profile != "native-aot")
+    return false;
   const bool full = profile == "interpreter-full";
   const bool interpreter = full || profile == "interpreter-body" ||
                            profile == "interpreter-structural";
+  // macOS executes the signed full-replacement host only. Body/structural
+  // routing and 32-bit hosts have no supported signed interpreter entrypoint.
+  if (platform == "macos" && interpreter &&
+      (!full || (arch != "aarch64" && arch != "x86_64")))
+    return false;
   if (text("app_id") != GetValueFromYaml(config.yaml_config, "app_id") ||
       text("release_version") != config.release_version ||
       text("platform") != platform || text("arch") != arch ||
@@ -230,10 +330,16 @@ bool ConfigureSelectionV2(shorebird::AppConfig& config,
                   GetValueFromYaml(config.yaml_config, "aot_patch_host_abi")
             : !scope["host_abi_hash"].IsNull()))
     return false;
-  if (!interpreter &&
-      GetValueFromYaml(config.yaml_config, "aot_patch_runtime_mode") ==
-          "dart-bytecode-interpreter")
-    return false;
+  if (!interpreter) {
+    const auto mode =
+        GetValueFromYaml(config.yaml_config, "aot_patch_runtime_mode");
+    if ((!mode.empty() && mode != "native-aot") ||
+        GetValueFromYaml(config.yaml_config, "aot_patch_full_replacement") ==
+            "true" ||
+        GetValueFromYaml(config.yaml_config, "aot_patch_structural_updates") ==
+            "true")
+      return false;
+  }
   if (interpreter) {
     if (text("base_artifact_hash") !=
             GetValueFromYaml(config.yaml_config,

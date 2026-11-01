@@ -899,7 +899,9 @@ gboolean fl_engine_start(FlEngine* self, GError** error) {
 
   if (self->embedder_api.RunsAOTCompiledDartCode()) {
     std::string patch_path;
-    if (!flutter::SetUpShorebird(args.assets_path, patch_path)) {
+    if (!flutter::SetUpShorebird(
+            args.assets_path,
+            fl_dart_project_get_aot_library_path(self->project), patch_path)) {
       FML_LOG(ERROR) << "Failed to configure Shorebird.";
       patch_path.clear();
     }

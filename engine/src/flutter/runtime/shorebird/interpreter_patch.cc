@@ -147,6 +147,28 @@ bool Decimal(const rapidjson::Value& value,
   }
   return true;
 }
+// These spellings belong to different protocols. Never derive the trusted
+// expectation from an artifact or equate updater wire names with SDK names.
+struct InterpreterTargetIdentity {
+  const char* platform;
+  const char* wire_arch;
+  const char* envelope_arch;
+};
+bool TargetIdentity(InterpreterPatchTarget target,
+                    InterpreterTargetIdentity* identity) {
+  switch (target) {
+    case InterpreterPatchTarget::kIOSArm64:
+      *identity = {"ios", "aarch64", "arm64"};
+      return true;
+    case InterpreterPatchTarget::kMacOSArm64:
+      *identity = {"macos", "aarch64", "arm64"};
+      return true;
+    case InterpreterPatchTarget::kMacOSX64:
+      *identity = {"macos", "x86_64", "x64"};
+      return true;
+  }
+  return false;
+}
 std::string Hex(const uint8_t* bytes, size_t size);
 bool ValidateSelection(const InterpreterPatchConfig& config,
                        const fml::Mapping& artifact,
@@ -210,11 +232,16 @@ bool ValidateSelection(const InterpreterPatchConfig& config,
        (now < 0 || static_cast<uint64_t>(now) < not_before ||
         (expiry != 0 && static_cast<uint64_t>(now) >= expiry))))
     return reject();
-  const std::string platform =
-      config.target == InterpreterPatchTarget::kIOSArm64 ? "ios" : "macos";
+  InterpreterTargetIdentity identity;
+  if (!TargetIdentity(config.target, &identity) ||
+      (config.target != InterpreterPatchTarget::kIOSArm64 &&
+       (!config.full_replacement ||
+        config.runtime_profile != "interpreter-full")))
+    return reject();
   if (!equal(scope, "app_id", config.app_id) ||
       !equal(scope, "release_version", config.release_version) ||
-      !equal(scope, "platform", platform) || !equal(scope, "arch", "aarch64") ||
+      !equal(scope, "platform", identity.platform) ||
+      !equal(scope, "arch", identity.wire_arch) ||
       !equal(scope, "base_artifact_hash", config.base_snapshot_hash) ||
       !equal(scope, "runtime_profile", config.runtime_profile) ||
       !Hash(StringField(scope, "client_id_hash")) ||
@@ -233,8 +260,8 @@ bool ValidateSelection(const InterpreterPatchConfig& config,
   if (!flavor || !*flavor || !license || !*license || !key || !*key ||
       !Hash(hash) || !equal(envelope["metadata"], "flavor_id", flavor) ||
       !equal(envelope["metadata"], "license_type", license) ||
-      !equal(envelope["metadata"], "target_os", platform) ||
-      !equal(envelope["metadata"], "target_arch", "arm64") ||
+      !equal(envelope["metadata"], "target_os", identity.platform) ||
+      !equal(envelope["metadata"], "target_arch", identity.envelope_arch) ||
       !equal(envelope["metadata"], "app_id", config.app_id) ||
       !equal(envelope["metadata"], "app_build_id", config.app_build_id) ||
       !equal(envelope["metadata"], "base_snapshot_hash",
@@ -467,16 +494,15 @@ bool ApplyInterpreterPatch(const InterpreterPatchConfig& config,
     return reject(
         "Interpreter patch mode, payload hash, or key id does not match");
   }
-  const char* target_os;
-  switch (config.target) {
-    case InterpreterPatchTarget::kIOSArm64:
-      target_os = "ios";
-      break;
-    case InterpreterPatchTarget::kMacOSArm64:
-      target_os = "macos";
-      break;
-    default:
-      return reject("Unsupported interpreter patch platform");
+  InterpreterTargetIdentity identity;
+  if (!TargetIdentity(config.target, &identity)) {
+    return reject("Unsupported interpreter patch platform");
+  }
+  const char* target_os = StringField(metadata, "target_os");
+  const char* target_arch = StringField(metadata, "target_arch");
+  if (!target_os || std::strcmp(target_os, identity.platform) != 0 ||
+      !target_arch || std::strcmp(target_arch, identity.envelope_arch) != 0) {
+    return reject("Interpreter patch platform or architecture does not match");
   }
   Dart_AotPatchInstallOptions options{};
   options.app_id = config.app_id.c_str();
@@ -493,8 +519,8 @@ bool ApplyInterpreterPatch(const InterpreterPatchConfig& config,
   options.obfuscation_map_hash = config.obfuscation_map_hash.empty()
                                      ? nullptr
                                      : config.obfuscation_map_hash.c_str();
-  options.target_os = target_os;
-  options.target_arch = "arm64";
+  options.target_os = identity.platform;
+  options.target_arch = identity.envelope_arch;
   options.runtime_mode = "dart-bytecode-interpreter";
 
   // The SDK authenticates the metadata with AES-GCM before this hash is used.

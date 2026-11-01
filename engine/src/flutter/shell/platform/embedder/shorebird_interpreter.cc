@@ -13,7 +13,7 @@ namespace flutter::shorebird {
 
 bool ConfigureSignedInterpreterHost(const ShorebirdConfigArgs& args,
                                     Settings& settings) {
-#if FML_OS_MACOSX && !FML_OS_IOS && FML_ARCH_CPU_ARM64
+#if FML_OS_MACOSX && !FML_OS_IOS && (FML_ARCH_CPU_ARM64 || FML_ARCH_CPU_X86_64)
   // Full replacement can execute only the reviewed, signed host's snapshot.
   // Reject user-supplied snapshot buffers, ELF data and command-line overrides.
   if (!flutter::DartVM::IsRunningPrecompiledCode() ||
@@ -54,8 +54,8 @@ bool ConfigureSignedInterpreterHost(const ShorebirdConfigArgs& args,
   settings.application_library_paths = {args.release_app_library_path};
   return flutter::ConfigureShorebirdInterpreter(args, settings);
 #else
-  // The x64 bytecode callback bridge is not implemented. Never fall through
-  // to native ELF loading, JIT, or an inactive application snapshot.
+  // Never fall through on unsupported hosts to native ELF loading, JIT, or
+  // an inactive application snapshot.
   return false;
 #endif
 }

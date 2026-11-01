@@ -406,6 +406,9 @@ class FlutterWindowsEngine {
   FlutterEngineProcTable embedder_api_ = {};
 
   std::unique_ptr<FlutterProjectBundle> project_;
+  // Keep the release baseline independent of SetAotLibraryPath's selected
+  // source, including Stop/Run on the same engine object.
+  const std::filesystem::path shorebird_original_aot_path_;
 
   // AOT data, if any.
   UniqueAotDataPtr aot_data_;

@@ -30,9 +30,11 @@ class Artifact : public fml::Mapping {
 };
 
 std::string Envelope(const std::string& key = "test-key",
-                     const std::string& target_os = "ios") {
-  return R"({"metadata":{"target_os":")" + target_os +
-         R"(","target_arch":"arm64","flavor_id":"pro","license_type":"pro","runtime_mode":"dart-bytecode-interpreter","patch_snapshot_hash":")" +
+                     const std::string& target_os = "ios",
+                     const std::string& target_arch = "arm64") {
+  return R"({"metadata":{"target_os":")" + target_os + R"(","target_arch":")" +
+         target_arch +
+         R"(","flavor_id":"pro","license_type":"pro","runtime_mode":"dart-bytecode-interpreter","patch_snapshot_hash":")" +
          std::string(64, 'b') +
          R"("},"payload_kind":"full-snapshot","encryption":{"key_id":")" + key +
          R"("}})";
@@ -64,6 +66,7 @@ std::string ReplacementWrapper() {
 class FakeApi : public InterpreterPatchApi {
  public:
   std::string expected_target_os = "ios";
+  std::string expected_target_arch = "arm64";
   bool install_ok = true;
   bool reload_ok = true;
   bool empty_payload = false;
@@ -96,7 +99,7 @@ class FakeApi : public InterpreterPatchApi {
     EXPECT_STREQ(options.license_type, "pro");
     EXPECT_STREQ(options.runtime_mode, "dart-bytecode-interpreter");
     EXPECT_STREQ(options.target_os, expected_target_os.c_str());
-    EXPECT_STREQ(options.target_arch, "arm64");
+    EXPECT_STREQ(options.target_arch, expected_target_arch.c_str());
     EXPECT_EQ(std::string(options.patch_snapshot_hash), std::string(64, 'b'));
     // Model the SDK's authenticated metadata/expected-target comparison.
     const std::string envelope(
@@ -195,8 +198,9 @@ std::string ArtifactDigest(const std::string& bytes) {
   }
   return result;
 }
-std::string V2Envelope() {
-  auto envelope = Envelope();
+std::string V2Envelope(const std::string& target_os = "ios",
+                       const std::string& target_arch = "arm64") {
+  auto envelope = Envelope("test-key", target_os, target_arch);
   envelope.insert(envelope.find("\"metadata\":{") + 12,
                   "\"app_id\":\"app\",\"app_build_id\":\"1.0+1\",\"base_"
                   "snapshot_hash\":\"" +
@@ -334,6 +338,108 @@ TEST_F(InterpreterSelectionV2Test, WireAarch64NeverAcceptsX64EnvelopeMetadata) {
   EXPECT_EQ(begins, 0);
   EXPECT_TRUE(api.calls.empty());
 }
+// Both Mac architectures exercise the same production authority/owned-artifact
+// seam. This does not execute the target VM's FFI bridge on this host.
+class MacInterpreterSelectionV2Test
+    : public InterpreterSelectionV2Test,
+      public ::testing::WithParamInterface<bool> {
+ protected:
+  void SetUp() override {
+    InterpreterSelectionV2Test::SetUp();
+    config.target = GetParam() ? InterpreterPatchTarget::kMacOSX64
+                               : InterpreterPatchTarget::kMacOSArm64;
+    config.full_replacement = true;
+    config.runtime_profile = "interpreter-full";
+    config.host_abi = std::string(64, 'a');
+    api.expected_target_os = "macos";
+    api.expected_target_arch = EnvelopeArch();
+    const auto wrapper = ReplacementWrapper();
+    api.plaintext.assign(wrapper.begin(), wrapper.end());
+    SetMacArtifact(V2Envelope("macos", EnvelopeArch()));
+  }
+  std::string WireArch() const { return GetParam() ? "x86_64" : "aarch64"; }
+  std::string EnvelopeArch() const { return GetParam() ? "x64" : "arm64"; }
+  void ReplaceContext(const std::string& from, const std::string& to) {
+    auto& context = config.verified_selection_json;
+    const auto at = context.find(from);
+    ASSERT_NE(at, std::string::npos);
+    context.replace(at, from.size(), to);
+  }
+  void SetMacArtifact(const std::string& bytes) {
+    SetArtifact(bytes);
+    ReplaceContext("\"platform\":\"ios\"", "\"platform\":\"macos\"");
+    ReplaceContext("\"arch\":\"aarch64\"", "\"arch\":\"" + WireArch() + "\"");
+    ReplaceContext("\"host_abi_hash\":null",
+                   "\"host_abi_hash\":\"" + config.host_abi + "\"");
+    ReplaceContext("interpreter-structural", "interpreter-full");
+  }
+};
+TEST_P(MacInterpreterSelectionV2Test,
+       FullProfileBeginsBeforeMatchingKeyRelease) {
+  RegisterV2();
+  EXPECT_TRUE(ApplyV2()) << error;
+  EXPECT_EQ(begins, 1);
+  EXPECT_EQ(key_calls, 1);
+  EXPECT_EQ(api.calls, (std::vector<std::string>{"callback", "install",
+                                                 "reload", "free"}));
+}
+TEST_P(MacInterpreterSelectionV2Test,
+       WrongScopeOsOrArchNeverBeginsOrReleasesKey) {
+  RegisterV2();
+  const auto original = config.verified_selection_json;
+  for (const auto& field : std::vector<std::pair<std::string, std::string>>{
+           {"\"platform\":\"macos\"", "\"platform\":\"ios\""},
+           {"\"arch\":\"" + WireArch() + "\"",
+            "\"arch\":\"" + std::string(GetParam() ? "aarch64" : "x86_64") +
+                "\""},
+           {"\"arch\":\"" + WireArch() + "\"",
+            "\"arch\":\"" + EnvelopeArch() + "\""}}) {
+    config.verified_selection_json = original;
+    ReplaceContext(field.first, field.second);
+    EXPECT_FALSE(ApplyV2());
+    EXPECT_EQ(begins, 0);
+    EXPECT_EQ(key_calls, 0);
+    EXPECT_TRUE(api.calls.empty());
+  }
+}
+TEST_P(MacInterpreterSelectionV2Test,
+       WrongEnvelopeOsOrArchNeverBeginsOrReleasesKey) {
+  RegisterV2();
+  for (const auto& bytes : {V2Envelope("ios", EnvelopeArch()),
+                            V2Envelope("macos", GetParam() ? "arm64" : "x64"),
+                            V2Envelope("macos", WireArch())}) {
+    // Update the authorized digest too: rejection must be the target mismatch,
+    // rather than an incidental artifact hash failure.
+    SetMacArtifact(bytes);
+    EXPECT_FALSE(ApplyV2());
+    EXPECT_EQ(begins, 0);
+    EXPECT_EQ(key_calls, 0);
+    EXPECT_TRUE(api.calls.empty());
+  }
+}
+TEST_P(MacInterpreterSelectionV2Test,
+       UnsupportedProfilesNeverBeginOrReleaseKey) {
+  RegisterV2();
+  const auto original = config.verified_selection_json;
+  for (const auto* profile : {"interpreter-body", "interpreter-structural"}) {
+    config.verified_selection_json = original;
+    ReplaceContext("interpreter-full", profile);
+    ReplaceContext("\"host_abi_hash\":\"" + config.host_abi + "\"",
+                   "\"host_abi_hash\":null");
+    config.full_replacement = false;
+    config.runtime_profile = profile;
+    EXPECT_FALSE(ApplyV2());
+    EXPECT_EQ(begins, 0);
+    EXPECT_EQ(key_calls, 0);
+    EXPECT_TRUE(api.calls.empty());
+  }
+}
+INSTANTIATE_TEST_SUITE_P(MacArchitectures,
+                         MacInterpreterSelectionV2Test,
+                         ::testing::Values(false, true),
+                         [](const ::testing::TestParamInfo<bool>& info) {
+                           return info.param ? "X64" : "Arm64";
+                         });
 TEST_F(InterpreterSelectionV2Test, BegunAuthorityKeepsLaterEnginesCoherent) {
   RegisterV2();
   // Model an already-begun, process-owned source whose original grant now
@@ -520,8 +626,21 @@ TEST_F(InterpreterPatchTest,
   config.target = InterpreterPatchTarget::kMacOSArm64;
   api.expected_target_os = "macos";
   EXPECT_FALSE(Apply());
-  EXPECT_EQ(error, "authenticated target mismatch");
-  EXPECT_EQ(api.calls, (std::vector<std::string>{"callback", "install"}));
+  EXPECT_EQ(error, "Interpreter patch platform or architecture does not match");
+  EXPECT_TRUE(api.calls.empty());
+}
+TEST_F(InterpreterPatchTest, MacOSX64UsesTrustedArchitectureInSdkOptions) {
+  RegisterKey();
+  config.target = InterpreterPatchTarget::kMacOSX64;
+  api.expected_target_os = "macos";
+  api.expected_target_arch = "x64";
+  EXPECT_TRUE(Apply(Envelope("test-key", "macos", "x64"))) << error;
+}
+TEST_F(InterpreterPatchTest, MacOSX64RejectsArm64EnvelopeBeforeKeyRelease) {
+  RegisterKey();
+  config.target = InterpreterPatchTarget::kMacOSX64;
+  EXPECT_FALSE(Apply(Envelope("test-key", "macos", "arm64")));
+  EXPECT_TRUE(api.calls.empty());
 }
 TEST_F(InterpreterPatchTest, InvalidTrustedTargetNeverCallsSdk) {
   RegisterKey();

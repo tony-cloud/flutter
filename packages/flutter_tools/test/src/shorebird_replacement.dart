@@ -82,6 +82,7 @@ String writeShorebirdReplacementHost(
   Artifacts artifacts, {
   int content = 1,
   String targetOS = 'ios',
+  String targetArch = 'arm64',
 }) {
   final macOS = targetOS == 'macos';
   final String framework = artifacts.getArtifactPath(
@@ -93,12 +94,17 @@ String writeShorebirdReplacementHost(
   for (final path in <String>[
     fileSystem.path.join(framework, macOS ? 'FlutterMacOS' : 'Flutter'),
     artifacts.getArtifactPath(
-      Artifact.genSnapshotArm64,
+      targetArch == 'x64' ? Artifact.genSnapshotX64 : Artifact.genSnapshotArm64,
       platform: macOS ? TargetPlatform.darwin : TargetPlatform.ios,
       mode: BuildMode.release,
     ),
     fileSystem.path.join(
-      shorebirdReplacementSdkRoot(artifacts, fileSystem, targetOS: targetOS),
+      shorebirdReplacementSdkRoot(
+        artifacts,
+        fileSystem,
+        targetOS: targetOS,
+        targetArch: targetArch,
+      ),
       'platform_strong.dill',
     ),
     artifacts.getArtifactPath(Artifact.engineDartAotRuntime),
@@ -113,6 +119,7 @@ String writeShorebirdReplacementHost(
     artifacts,
     buildMode: BuildMode.release,
     targetOS: targetOS,
+    targetArch: targetArch,
   ).hostAbi;
 }
 
@@ -120,11 +127,12 @@ String writeShorebirdReplacementHost(
 List<FakeCommand> shorebirdReplacementVersionCommands(
   Artifacts artifacts, {
   String targetOS = 'ios',
+  String targetArch = 'arm64',
 }) => <FakeCommand>[
   FakeCommand(
     command: <String>[
       artifacts.getArtifactPath(
-        Artifact.genSnapshotArm64,
+        targetArch == 'x64' ? Artifact.genSnapshotX64 : Artifact.genSnapshotArm64,
         platform: targetOS == 'macos' ? TargetPlatform.darwin : TargetPlatform.ios,
         mode: BuildMode.release,
       ),

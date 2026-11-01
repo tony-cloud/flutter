@@ -50,6 +50,19 @@ void main() {
     );
   });
 
+  testWithoutContext('macOS x64 host ABI matches the independent CLI golden', () {
+    expect(
+      shorebirdReplacementHostAbi(
+        targetOS: 'macos',
+        targetArch: 'x64',
+        engineHash: 'a' * 64,
+        genSnapshotHash: 'b' * 64,
+        platformHash: 'c' * 64,
+      ),
+      '8d0aabf6906605e60bc9b44c36b3fdb9176eb245518c1778cd6b891fc040aee5',
+    );
+  });
+
   testWithoutContext('macOS requires verified local release interpreter args', () {
     final fileSystem = MemoryFileSystem.test();
     expect(
@@ -92,11 +105,11 @@ void main() {
     );
   });
 
-  testWithoutContext('macOS rejects default, universal, x64, and empty architecture sets', () {
-    shorebirdValidateMacOSReplacementArchitectures(<DarwinArch>[DarwinArch.arm64]);
+  testWithoutContext('macOS rejects default, universal, duplicate and empty architecture sets', () {
+    expect(shorebirdValidateMacOSReplacementArchitectures(<DarwinArch>[DarwinArch.arm64]), 'arm64');
+    expect(shorebirdValidateMacOSReplacementArchitectures(<DarwinArch>[DarwinArch.x86_64]), 'x64');
     for (final architectures in <List<DarwinArch>>[
       getDarwinArchsFromEnv(<String, String>{}),
-      <DarwinArch>[DarwinArch.x86_64],
       <DarwinArch>[DarwinArch.arm64, DarwinArch.x86_64],
       <DarwinArch>[],
       <DarwinArch>[DarwinArch.arm64, DarwinArch.arm64],
@@ -106,6 +119,59 @@ void main() {
         throwsFormatException,
       );
     }
+  });
+
+  testWithoutContext('macOS x64 binds exact local SDK, compiler and architecture stamp', () {
+    final fileSystem = MemoryFileSystem.test();
+    final artifacts = Artifacts.testLocalEngine(
+      localEngine: '/engine/macos_release_x64',
+      localEngineHost: '/engine/host',
+    );
+    final File args = fileSystem.file('/engine/macos_release_x64/args.gn')
+      ..createSync(recursive: true)
+      ..writeAsStringSync(shorebirdMacOSReplacementArgs.replaceAll('"arm64"', '"x64"'));
+    final String expected = writeShorebirdReplacementHost(
+      fileSystem,
+      artifacts,
+      targetOS: 'macos',
+      targetArch: 'x64',
+    );
+    final host = ShorebirdReplacementHost.read(
+      fileSystem,
+      artifacts,
+      targetOS: 'macos',
+      targetArch: 'x64',
+      buildMode: BuildMode.release,
+      processManager: FakeProcessManager.list(
+        shorebirdReplacementVersionCommands(artifacts, targetOS: 'macos', targetArch: 'x64'),
+      ),
+    );
+    expect(host.hostAbi, expected);
+    expect(
+      host.hostAbi,
+      isNot(
+        shorebirdReplacementHostAbi(
+          engineHash: 'a' * 64,
+          genSnapshotHash: 'b' * 64,
+          platformHash: 'c' * 64,
+          targetOS: 'macos',
+        ),
+      ),
+    );
+    expect(
+      () => shorebirdReplacementSdkRoot(artifacts, fileSystem, targetOS: 'macos'),
+      throwsFormatException,
+    );
+    expect(
+      () => shorebirdReplacementSdkRoot(artifacts, fileSystem, targetArch: 'x64'),
+      throwsFormatException,
+    );
+    args.writeAsStringSync(shorebirdMacOSReplacementArgs);
+    expect(
+      () =>
+          shorebirdReplacementSdkRoot(artifacts, fileSystem, targetOS: 'macos', targetArch: 'x64'),
+      throwsFormatException,
+    );
   });
 
   testWithoutContext('actual artifact changes invalidate an otherwise matching host stamp', () {

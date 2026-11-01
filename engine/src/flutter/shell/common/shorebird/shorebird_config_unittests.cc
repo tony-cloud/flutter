@@ -3,6 +3,8 @@
 // found in the LICENSE file.
 #include "flutter/shell/common/shorebird/shorebird.h"
 
+#include <cstring>
+#include <filesystem>
 #include <fstream>
 #include <utility>
 #include <vector>
@@ -84,6 +86,207 @@ TEST(Shorebird, V2OriginalBytecodeStreamIsIndependentOwnedAndFreshOnEveryOpen) {
   write(scope_name, scope);
   EXPECT_FALSE(ConfigureSelectionV2(config, assets.path(), "ios", "x86_64"));
   ResetSelectionV2BaselineForTesting();
+  shorebird::Updater::ResetLaunchStateForTesting();
+}
+
+TEST(Shorebird, MacFullScopeAcceptsBothWireArchitecturesAndRejectsReplay) {
+  fml::ScopedTemporaryDirectory assets;
+  {
+    std::ofstream file(fml::paths::JoinPaths(
+        {assets.path(), shorebird::kReplacementBaseAsset}));
+    file << "signed-original-full-baseline";
+  }
+  for (const auto* arch : {"aarch64", "x86_64"}) {
+    ResetSelectionV2BaselineForTesting();
+    shorebird::Updater::ResetLaunchStateForTesting();
+    shorebird::AppConfig config;
+    config.release_version = "1.0+1";
+    config.yaml_config =
+        "selection_protocol: 2\napp_id: app\n"
+        "aot_patch_runtime_mode: dart-bytecode-interpreter\n"
+        "aot_patch_full_replacement: true\naot_patch_host_abi: " +
+        std::string(64, 'a') +
+        "\naot_patch_base_snapshot_hash: " + std::string(64, 'b') + "\n";
+    const auto scope =
+        R"({"app_id":"app","release_version":"1.0+1","platform":"macos","arch":")" +
+        std::string(arch) + R"(","base_artifact_hash":")" +
+        std::string(64, 'b') + R"(","host_abi_hash":")" + std::string(64, 'a') +
+        R"(","runtime_profile":"interpreter-full"})";
+    ASSERT_TRUE(
+        ConfigureSelectionV2(config, assets.path(), "macos", arch, &scope));
+    EXPECT_EQ(config.release_scope_json, scope);
+    ASSERT_NE(config.release_baseline_callbacks.open, nullptr);
+    // A swapped scope remains invalid even at the host's expected asset name.
+    EXPECT_FALSE(ConfigureSelectionV2(
+        config, assets.path(), "macos",
+        std::string(arch) == "x86_64" ? "aarch64" : "x86_64", &scope));
+    EXPECT_FALSE(
+        ConfigureSelectionV2(config, assets.path(), "ios", arch, &scope));
+    EXPECT_FALSE(ConfigureSelectionV2(
+        config, assets.path(), "macos",
+        std::string(arch) == "x86_64" ? "x64" : "arm64", &scope));
+    for (const auto* profile : {"interpreter-body", "interpreter-structural"}) {
+      auto unsupported = scope;
+      unsupported.replace(unsupported.find("interpreter-full"),
+                          std::strlen("interpreter-full"), profile);
+      EXPECT_FALSE(ConfigureSelectionV2(config, assets.path(), "macos", arch,
+                                        &unsupported));
+    }
+  }
+  ResetSelectionV2BaselineForTesting();
+  shorebird::Updater::ResetLaunchStateForTesting();
+}
+
+std::string NativeScope(const std::string& platform, const std::string& arch) {
+  return R"({"app_id":"app","release_version":"1.0+1","platform":")" +
+         platform + R"(","arch":")" + arch + R"(","base_artifact_hash":")" +
+         std::string(64, 'a') +
+         R"(","host_abi_hash":null,"runtime_profile":"native-aot"})";
+}
+TEST(Shorebird, NativeV2EarlyMarkerLatchPreventsLegacyMetadataFailureFallback) {
+  for (const auto& yaml :
+       {"selection_protocol: 2\n", "selection_protocol: bad\n",
+        "selection_protocol: 1\nselection_protocol: 2\n"}) {
+    shorebird::Updater::ResetLaunchStateForTesting();
+    ASSERT_TRUE(RequireSelectionV2IfMarked(yaml));
+    shorebird::MockUpdater mock;
+    EXPECT_FALSE(mock.Init(shorebird::AppConfig{}));
+    EXPECT_TRUE(mock.RequiresSelectionV2());
+    EXPECT_TRUE(mock.UsesPreparedBootSource());
+    EXPECT_EQ(mock.init_count(), 0);
+  }
+  shorebird::Updater::ResetLaunchStateForTesting();
+  EXPECT_FALSE(RequireSelectionV2IfMarked("selection_protocol: '1'\n"));
+  EXPECT_FALSE(RequireSelectionV2IfMarked("app_id: app\n"));
+}
+TEST(Shorebird, AndroidV2RejectsLibraryOverridesBeforeSnapshotResolution) {
+  EXPECT_TRUE(ValidateAndroidNativeReleaseLibraryPaths(
+      {"libapp.so", "/data/app/pkg/lib/arm64/libapp.so"}));
+  for (const auto& paths : std::vector<std::vector<std::string>>{
+           {},
+           {"libapp.so"},
+           {"/data/app/pkg/lib/arm64/libapp.so"},
+           {"/data/user/0/pkg/override.so", "libapp.so",
+            "/data/app/pkg/lib/arm64/libapp.so"},
+           {"other.so", "/data/app/pkg/lib/arm64/other.so"},
+           {"libapp.so", "relative/libapp.so"},
+           {"libapp.so", "/data/app/pkg/../other/libapp.so"},
+           {"libapp.so", "/data/app/pkg/./libapp.so"}}) {
+    EXPECT_FALSE(ValidateAndroidNativeReleaseLibraryPaths(paths));
+  }
+}
+TEST(Shorebird, ApkScopeTransportOwnsBoundedFixedArchitectureBytes) {
+  for (const auto& arch : {"arm", "aarch64", "x86", "x86_64"}) {
+    const auto json = NativeScope("android", arch);
+    std::string copied;
+    int loads = 0;
+    ASSERT_TRUE(LoadCompiledReleaseScopeAsset(
+        "android", arch,
+        [&](const std::string& name) {
+          ++loads;
+          EXPECT_EQ(name, "shorebird_release_scope_android_" +
+                              std::string(arch) + ".json");
+          return std::make_unique<fml::DataMapping>(json);
+        },
+        &copied));
+    EXPECT_EQ(copied,
+              json);  // The mapping was destroyed before this comparison.
+    EXPECT_EQ(loads, 1);
+  }
+  std::string copied = "old";
+  bool loaded = false;
+  EXPECT_FALSE(LoadCompiledReleaseScopeAsset(
+      "android", "arm64",
+      [&](const std::string&) {
+        loaded = true;
+        return std::make_unique<fml::DataMapping>("{}");
+      },
+      &copied));
+  EXPECT_FALSE(loaded);
+  EXPECT_TRUE(copied.empty());
+  class OversizedLazyAsset final : public fml::Mapping {
+   public:
+    size_t GetSize() const override { return 65537; }
+    const uint8_t* GetMapping() const override {
+      ADD_FAILURE()
+          << "Oversized APK scope must not allocate/decompress its buffer";
+      return nullptr;
+    }
+    bool IsDontNeedSafe() const override { return false; }
+  };
+  EXPECT_FALSE(LoadCompiledReleaseScopeAsset(
+      "android", "aarch64",
+      [&](const std::string&) {
+        return std::make_unique<OversizedLazyAsset>();
+      },
+      &copied));
+  EXPECT_TRUE(copied.empty());
+  EXPECT_FALSE(LoadCompiledReleaseScopeAsset(
+      "android", "aarch64",
+      [&](const std::string&) {
+        return std::make_unique<fml::DataMapping>("");
+      },
+      &copied));
+  EXPECT_FALSE(
+      LoadCompiledReleaseScopeAsset("android", "aarch64", {}, &copied));
+}
+TEST(Shorebird,
+     NativeScopeJsonRequiresExactNativeProfilePlatformAndWireArchitecture) {
+  for (const auto& platform : {"android", "linux", "windows"}) {
+    shorebird::Updater::ResetLaunchStateForTesting();
+    shorebird::AppConfig config;
+    config.release_version = "1.0+1";
+    config.yaml_config = "app_id: app\nselection_protocol: 2\n";
+    auto json = NativeScope(platform, "aarch64");
+    ASSERT_TRUE(ConfigureSelectionV2(config, "", platform, "aarch64", &json));
+    EXPECT_EQ(config.release_scope_json, json);
+    EXPECT_EQ(config.release_baseline_callbacks.open, nullptr);
+    const auto native_yaml = config.yaml_config;
+    config.yaml_config += "aot_patch_full_replacement: true\n";
+    EXPECT_FALSE(ConfigureSelectionV2(config, "", platform, "aarch64", &json));
+    config.yaml_config = native_yaml;
+    EXPECT_FALSE(ConfigureSelectionV2(config, "", platform, "x86_64", &json));
+    EXPECT_FALSE(ConfigureSelectionV2(config, "", platform, "arm64", &json));
+    EXPECT_FALSE(ConfigureSelectionV2(config, "", "ios", "aarch64", &json));
+    auto altered = json;
+    altered.replace(altered.find("native-aot"), 10, "interpreter-body");
+    EXPECT_FALSE(
+        ConfigureSelectionV2(config, "", platform, "aarch64", &altered));
+    altered = json.substr(0, json.size() - 1) + ",\"extra\":null}";
+    EXPECT_FALSE(
+        ConfigureSelectionV2(config, "", platform, "aarch64", &altered));
+    altered = json + std::string(1, '\0') + "ignored";
+    EXPECT_FALSE(
+        ConfigureSelectionV2(config, "", platform, "aarch64", &altered));
+    altered = std::string(65537, ' ');
+    EXPECT_FALSE(
+        ConfigureSelectionV2(config, "", platform, "aarch64", &altered));
+    altered.clear();
+    EXPECT_FALSE(
+        ConfigureSelectionV2(config, "", platform, "aarch64", &altered));
+  }
+  shorebird::Updater::ResetLaunchStateForTesting();
+}
+TEST(Shorebird, NativeScopeFileReaderSupportsUnicodeWindowsAssetsPath) {
+  shorebird::Updater::ResetLaunchStateForTesting();
+  fml::ScopedTemporaryDirectory temporary;
+  const auto assets = std::filesystem::u8path(temporary.path()) /
+                      std::filesystem::u8path("发布-данные");
+  ASSERT_TRUE(std::filesystem::create_directory(assets));
+  const auto json = NativeScope("windows", "aarch64");
+  {
+    std::ofstream file(assets / "shorebird_release_scope_windows_aarch64.json",
+                       std::ios::binary);
+    file << json;
+  }
+  shorebird::AppConfig config;
+  config.release_version = "1.0+1";
+  config.yaml_config = "app_id: app\nselection_protocol: 2\n";
+  const auto utf8 = assets.u8string();
+  ASSERT_TRUE(ConfigureSelectionV2(
+      config, std::string(utf8.begin(), utf8.end()), "windows", "aarch64"));
+  EXPECT_EQ(config.release_scope_json, json);
+  std::filesystem::remove_all(assets);
   shorebird::Updater::ResetLaunchStateForTesting();
 }
 

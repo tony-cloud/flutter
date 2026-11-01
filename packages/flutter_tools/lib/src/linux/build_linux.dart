@@ -21,6 +21,7 @@ import '../flutter_plugins.dart';
 import '../globals.dart' as globals;
 import '../migrations/cmake_custom_command_migration.dart';
 import '../migrations/cmake_native_assets_migration.dart';
+import '../shorebird/shorebird_native_selection.dart';
 
 // Matches the following error and warning patterns:
 // - <file path>:<line>:<column>: (fatal) error: <error...>
@@ -65,6 +66,9 @@ Future<void> buildLinux(
   // step.
   final Map<String, String> environmentConfig = buildInfo.toEnvironmentConfig();
   environmentConfig['FLUTTER_TARGET'] = target;
+  environmentConfig.addAll(
+    shorebirdNativeSelectionBuildEnvironment(globals.fs, globals.platform.environment),
+  );
   final LocalEngineInfo? localEngineInfo = globals.artifacts?.localEngineInfo;
   if (localEngineInfo != null) {
     final String targetOutPath = localEngineInfo.targetOutPath;

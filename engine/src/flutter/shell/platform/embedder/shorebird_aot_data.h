@@ -27,8 +27,9 @@ FlutterEngineResult InitializeWithShorebirdInterpreter(
     FLUTTER_API_SYMBOL(FlutterEngine) * engine_out,
     const ShorebirdConfigArgs* shorebird_args);
 
-// Pin the signed macOS ARM64 host's symbols and configure immutable bytecode
-// settings. Rejects external AOT sources; no executable patch mapping occurs.
+// Pin the signed macOS ARM64 or x64 host's symbols and configure immutable
+// bytecode settings. Rejects external AOT sources; no executable patch mapping
+// occurs.
 bool ConfigureSignedInterpreterHost(const ShorebirdConfigArgs& args,
                                     Settings& settings);
 

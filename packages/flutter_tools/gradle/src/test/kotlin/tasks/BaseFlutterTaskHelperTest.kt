@@ -419,4 +419,38 @@ class BaseFlutterTaskHelperTest {
         assertTrue(getter.isAnnotationPresent(Input::class.java))
         assertTrue(getter.isAnnotationPresent(Optional::class.java))
     }
+
+    @Test
+    fun `native selection input digest tracks phase manifest contents and baseline bytes`() {
+        val directory = kotlin.io.path.createTempDirectory("shorebird-native-inputs").toFile()
+        try {
+            val manifest = File(directory, "manifest.json")
+            val baseline = File(directory, "base.so")
+            baseline.writeText("original AOT")
+            val baselinePath = baseline.absolutePath.replace("\\", "\\\\")
+            val environment = mapOf("SHOREBIRD_NATIVE_SELECTION_MANIFEST" to manifest.absolutePath)
+            manifest.writeText("""{"mode":"measure","entries":[]}""")
+            val measured = BaseFlutterTaskHelper.getShorebirdNativeSelectionDigest(environment)
+            manifest.writeText("""{"mode":"sealed","entries":[{"original_baseline_path":"$baselinePath"}]}""")
+            val sealed = BaseFlutterTaskHelper.getShorebirdNativeSelectionDigest(environment)
+            assertNotEquals(measured, sealed)
+            baseline.writeText("changed AOT")
+            val changed = BaseFlutterTaskHelper.getShorebirdNativeSelectionDigest(environment)
+            assertNotEquals(sealed, changed)
+            manifest.appendText("\n")
+            assertNotEquals(changed, BaseFlutterTaskHelper.getShorebirdNativeSelectionDigest(environment))
+            baseline.delete()
+            assertFailsWith<GradleException> { BaseFlutterTaskHelper.getShorebirdNativeSelectionDigest(environment) }
+        } finally {
+            directory.deleteRecursively()
+        }
+        assertNull(BaseFlutterTaskHelper.getShorebirdNativeSelectionDigest(emptyMap()))
+    }
+
+    @Test
+    fun `shorebirdNativeSelectionDigest is an optional task input`() {
+        val getter = BaseFlutterTask::class.java.getMethod("getShorebirdNativeSelectionDigest")
+        assertTrue(getter.isAnnotationPresent(Input::class.java))
+        assertTrue(getter.isAnnotationPresent(Optional::class.java))
+    }
 }

@@ -5,6 +5,8 @@
 #include "flutter/shell/platform/windows/flutter_windows_engine.h"
 
 #include <deque>
+#include <filesystem>
+#include <fstream>
 #include <memory>
 #include <utility>
 #include <vector>
@@ -95,10 +97,13 @@ class ShorebirdFlutterWindowsEngineTest : public WindowsTest {
         {GetFixturesDirectory(), "app_elf_snapshot.so"});
   }
 
-  std::unique_ptr<FlutterWindowsEngine> BuildEngine() {
+  std::unique_ptr<FlutterWindowsEngine> BuildEngine(
+      const std::wstring& assets_path = L"") {
     const auto aot_path = fml::Utf8ToWideString(AotPath());
     FlutterDesktopEngineProperties properties = {};
-    properties.assets_path = GetContext().GetAssetsPath().c_str();
+    properties.assets_path = assets_path.empty()
+                                 ? GetContext().GetAssetsPath().c_str()
+                                 : assets_path.c_str();
     properties.icu_data_path = GetContext().GetIcuDataPath().c_str();
     properties.aot_library_path = aot_path.c_str();
     properties.dart_entrypoint = "verifyNativeFunction";
@@ -219,6 +224,29 @@ TEST_F(ShorebirdFlutterWindowsEngineTest,
   EXPECT_TRUE(updater_->aborted.empty());
   EXPECT_TRUE(path_loads_.empty());
   EXPECT_FALSE(dart_entered_.IsSignaledForTest());
+}
+
+TEST_F(ShorebirdFlutterWindowsEngineTest,
+       CompiledV2MetadataOrScopeFailureCannotLoadUnpreparedBase) {
+  fml::ScopedTemporaryDirectory temporary;
+  const auto assets = std::filesystem::u8path(temporary.path()) /
+                      std::filesystem::path(L"发布-данные");
+  ASSERT_TRUE(std::filesystem::create_directory(assets));
+  {
+    std::ofstream yaml(assets / "shorebird.yaml");
+    yaml << "selection_protocol: 2\napp_id: app\n";
+  }
+  // No compiled scope is present. Whether executable version metadata exists
+  // or not, the observed v2 marker must preclude the legacy BASE loader.
+  shorebird::Updater::ResetLaunchStateForTesting();
+  auto engine = BuildEngine(assets.native());
+  EXPECT_FALSE(engine->Run());
+  EXPECT_TRUE(updater_->RequiresSelectionV2());
+  EXPECT_EQ(updater_->prepare_count, 0);
+  EXPECT_TRUE(path_loads_.empty());
+  EXPECT_FALSE(dart_entered_.IsSignaledForTest());
+  engine.reset();
+  std::filesystem::remove_all(assets);
 }
 
 TEST_F(ShorebirdFlutterWindowsEngineTest,

@@ -19,6 +19,7 @@ import '../../isolated/native_assets/dart_hook_result.dart';
 import '../../project.dart';
 import '../../shorebird/shorebird_build_key.dart';
 import '../../shorebird/shorebird_native_assets.dart';
+import '../../shorebird/shorebird_replacement_host.dart';
 import '../build_system.dart';
 import '../depfile.dart';
 import '../exceptions.dart';
@@ -317,6 +318,11 @@ class KernelSnapshot extends Target with ShorebirdInterpreterBuildKey {
       targetOS: targetOS,
       checkDartPluginRegistry: environment.generateDartPluginRegistry,
       shorebirdNativeAssetsDescriptor: nativeAssetsDescriptor,
+      targetArch: targetOS == 'macos' && nativeAssetsDescriptor != null
+          ? shorebirdValidateMacOSReplacementArchitectures(
+              getDarwinArchsFromEnv(environment.defines),
+            )
+          : 'arm64',
     );
     if (output == null || output.errorCount != 0) {
       throw Exception();
@@ -327,7 +333,15 @@ class KernelSnapshot extends Target with ShorebirdInterpreterBuildKey {
         expectedPath: dillPath,
         outputPath: output.outputFilename,
       );
-      shorebirdReadNativeAssetsDescriptor(environment.buildDir, targetOS: targetOS!);
+      shorebirdReadNativeAssetsDescriptor(
+        environment.buildDir,
+        targetOS: targetOS!,
+        targetArch: targetOS == 'macos'
+            ? shorebirdValidateMacOSReplacementArchitectures(
+                getDarwinArchsFromEnv(environment.defines),
+              )
+            : 'arm64',
+      );
     }
   }
 

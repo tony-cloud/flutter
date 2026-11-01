@@ -44,6 +44,36 @@ void main() {
       throwsFormatException,
     );
   });
+  testWithoutContext('macOS x64 scope is full-only and cannot authorize iOS x64', () {
+    final fs = MemoryFileSystem.test();
+    final File base = fs.file('/original.sbr')..writeAsStringSync('original baseline');
+    final scope = <String, Object?>{
+      'app_id': '11111111-1111-4111-8111-111111111111',
+      'release_version': '1.0.0+1',
+      'platform': 'macos',
+      'arch': 'x86_64',
+      'base_artifact_hash': sha256.convert(base.readAsBytesSync()).toString(),
+      'host_abi_hash': 'a' * 64,
+      'runtime_profile': 'interpreter-full',
+    };
+    ShorebirdSelectionInputs read(Map<String, Object?> value) =>
+        ShorebirdSelectionInputs.read(fs, <String, String>{
+          kShorebirdReleaseScopeEnvVar: jsonEncode(value),
+          kShorebirdInterpreterBaseEnvVar: base.path,
+        });
+    expect(read(scope).assetName, 'shorebird_release_scope_macos_x86_64.json');
+    expect(read(scope).baselineAsset, 'shorebird_replacement_base.sbr');
+    expect(() => read(<String, Object?>{...scope, 'platform': 'ios'}), throwsFormatException);
+    expect(
+      () => read(<String, Object?>{
+        ...scope,
+        'runtime_profile': 'interpreter-body',
+        'host_abi_hash': null,
+      }),
+      throwsFormatException,
+    );
+    expect(() => read(<String, Object?>{...scope, 'arch': 'arm'}), throwsFormatException);
+  });
   testWithoutContext('v2 YAML rejects missing binding; omission retains v1', () {
     final yaml =
         loadYaml('''

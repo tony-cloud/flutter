@@ -39,9 +39,11 @@ class APKAssetProviderImpl : public APKAssetProviderInternal {
  public:
   explicit APKAssetProviderImpl(JNIEnv* env,
                                 jobject jassetManager,
-                                std::string directory)
+                                std::string directory,
+                                size_t max_asset_bytes)
       : java_asset_manager_(env, jassetManager),
-        directory_(std::move(directory)) {
+        directory_(std::move(directory)),
+        max_asset_bytes_(max_asset_bytes) {
     asset_manager_ = AAssetManager_fromJava(env, jassetManager);
   }
 
@@ -51,12 +53,23 @@ class APKAssetProviderImpl : public APKAssetProviderInternal {
       const std::string& asset_name) const override {
     std::stringstream ss;
     ss << directory_.c_str() << "/" << asset_name;
-    AAsset* asset = AAssetManager_open(asset_manager_, ss.str().c_str(),
-                                       AASSET_MODE_BUFFER);
+    if (max_asset_bytes_ && !asset_manager_)
+      return nullptr;
+    AAsset* asset = AAssetManager_open(
+        asset_manager_, ss.str().c_str(),
+        max_asset_bytes_ ? AASSET_MODE_STREAMING : AASSET_MODE_BUFFER);
     if (!asset) {
       return nullptr;
     }
-
+    // Check the full length before getBuffer can decompress/allocate a scope.
+    // Ordinary providers preserve their existing uncapped behavior.
+    if (max_asset_bytes_) {
+      const auto length = AAsset_getLength64(asset);
+      if (length < 0 || static_cast<uint64_t>(length) > max_asset_bytes_) {
+        AAsset_close(asset);
+        return nullptr;
+      }
+    }
     return std::make_unique<APKAssetMapping>(asset);
   };
 
@@ -64,16 +77,19 @@ class APKAssetProviderImpl : public APKAssetProviderInternal {
   fml::jni::ScopedJavaGlobalRef<jobject> java_asset_manager_;
   AAssetManager* asset_manager_;
   const std::string directory_;
+  const size_t max_asset_bytes_;
 
   FML_DISALLOW_COPY_AND_ASSIGN(APKAssetProviderImpl);
 };
 
 APKAssetProvider::APKAssetProvider(JNIEnv* env,
                                    jobject assetManager,
-                                   std::string directory)
+                                   std::string directory,
+                                   size_t max_asset_bytes)
     : impl_(std::make_shared<APKAssetProviderImpl>(env,
                                                    assetManager,
-                                                   std::move(directory))) {}
+                                                   std::move(directory),
+                                                   max_asset_bytes)) {}
 
 APKAssetProvider::APKAssetProvider(
     std::shared_ptr<APKAssetProviderInternal> impl)

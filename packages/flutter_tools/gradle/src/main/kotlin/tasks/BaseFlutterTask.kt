@@ -128,6 +128,13 @@ open class BaseFlutterTask : DefaultTask() {
     val shorebirdPublicKeyDigest: String?
         get() = BaseFlutterTaskHelper.getShorebirdPublicKeyDigest(System.getenv())
 
+    // Includes manifest contents, measurement/sealed phase, and original AOT
+    // bytes. Paths and public scopes never enter Gradle's persisted inputs.
+    @get:Optional
+    @get:Input
+    val shorebirdNativeSelectionDigest: String?
+        get() = BaseFlutterTaskHelper.getShorebirdNativeSelectionDigest(System.getenv())
+
     @Optional
     @Input
     var deferredComponents: Boolean? = null

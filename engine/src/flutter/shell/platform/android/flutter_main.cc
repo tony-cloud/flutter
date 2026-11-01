@@ -26,6 +26,7 @@
 #include "flutter/shell/platform/android/android_rendering_selector.h"
 #include "flutter/shell/platform/android/context/android_context.h"
 #include "flutter/shell/platform/android/flutter_main.h"
+#include "flutter/shell/platform/android/shorebird_release_scope.h"
 #include "impeller/base/validation.h"
 #include "impeller/toolkit/android/proc_table.h"
 #include "txt/platform.h"
@@ -164,8 +165,15 @@ void FlutterMain::Init(JNIEnv* env,
   std::string version_string = fml::jni::JavaStringToString(env, version);
   std::string version_code_string =
       fml::jni::JavaStringToString(env, versionCode);
+  const bool requires_v2 = RequireSelectionV2IfMarked(shorebird_yaml);
+  std::string compiled_scope_json;
+  if (requires_v2 &&
+      !LoadShorebirdReleaseScopeFromAPK(env, context, &compiled_scope_json)) {
+    FML_LOG(ERROR) << "Failed to load the compiled v2 release scope from APK";
+  }
   ConfigureShorebird(code_cache_path, app_storage_path, settings,
-                     shorebird_yaml, version_string, version_code_string);
+                     shorebird_yaml, version_string, version_code_string, 0,
+                     requires_v2 ? &compiled_scope_json : nullptr);
 #endif
 
   flutter::DartCallbackCache::LoadCacheFromDisk();

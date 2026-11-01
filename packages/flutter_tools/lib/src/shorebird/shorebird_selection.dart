@@ -44,7 +44,10 @@ class ShorebirdSelectionInputs {
         ).hasMatch(scope['app_id'] as String? ?? '') ||
         (scope['release_version'] as String? ?? '').isEmpty ||
         !const <String>{'ios', 'macos'}.contains(scope['platform']) ||
-        scope['arch'] != 'aarch64' ||
+        !(scope['platform'] == 'ios'
+            ? scope['arch'] == 'aarch64'
+            : const <String>{'aarch64', 'x86_64'}.contains(scope['arch']) &&
+                  profile == 'interpreter-full') ||
         hash is! String ||
         !RegExp(r'^[0-9a-f]{64}$').hasMatch(hash) ||
         !const <String>{

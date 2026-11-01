@@ -188,6 +188,11 @@ class SourceVisitor implements ResolvedFiles {
               environment.artifacts,
               environment.fileSystem,
               targetOS: environment.defines[kTargetPlatform]!,
+              targetArch: shorebirdTargetOS(environment.defines[kTargetPlatform]) == 'macos'
+                  ? shorebirdValidateMacOSReplacementArchitectures(
+                      getDarwinArchsFromEnv(environment.defines),
+                    )
+                  : 'arm64',
             ),
             'platform_strong.dill',
           ),

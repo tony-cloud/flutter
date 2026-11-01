@@ -59,6 +59,7 @@ executable("flutter_shell_native_unittests") {
   deps = [
     ":flutter_shell_native_src",
     "//flutter/fml",
+    "//flutter/shell/common/shorebird",
     "//flutter/shell/platform/android/jni:jni_mock",
     "//flutter/shell/platform/android/jni:mock_jni_env",
     "//flutter/third_party/googletest:gmock",
@@ -110,6 +111,8 @@ source_set("flutter_shell_native_src") {
     "apk_asset_provider.h",
     "flutter_main.cc",
     "flutter_main.h",
+    "shorebird_release_scope.cc",
+    "shorebird_release_scope.h",
     "image_external_texture.cc",
     "image_external_texture.h",
     "image_external_texture_gl.cc",

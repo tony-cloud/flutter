@@ -161,6 +161,7 @@ FlutterWindowsEngine::FlutterWindowsEngine(
     const FlutterProjectBundle& project,
     std::shared_ptr<WindowsProcTable> windows_proc_table)
     : project_(std::make_unique<FlutterProjectBundle>(project)),
+      shorebird_original_aot_path_(project_->aot_library_path()),
       windows_proc_table_(std::move(windows_proc_table)),
       aot_data_(nullptr, nullptr),
       lifecycle_manager_(std::make_unique<WindowsLifecycleManager>(this)) {
@@ -377,7 +378,9 @@ bool GetLocalAppDataPath(std::string& outPath) {
   return true;
 }
 
-bool SetUpShorebird(std::string assets_path_string, std::string& patch_path) {
+bool SetUpShorebird(const std::string& assets_path_string,
+                    const std::string& original_aot_path,
+                    std::string& patch_path) {
   auto shorebird_yaml_path =
       fml::paths::JoinPaths({assets_path_string, "shorebird.yaml"});
   // fml opens the UTF-8 path as wide; tonic's ReadFileToString would decode
@@ -391,15 +394,15 @@ bool SetUpShorebird(std::string assets_path_string, std::string& patch_path) {
       reinterpret_cast<const char*>(shorebird_yaml->GetMapping()),
       shorebird_yaml->GetSize());
 
+  RequireSelectionV2IfMarked(shorebird_yaml_contents);
+  if (original_aot_path.empty())
+    return false;
   std::string code_cache_path;
   if (!GetLocalAppDataPath(code_cache_path)) {
     FML_LOG(ERROR) << "Failed to retrieve the local AppData directory.";
     return false;
   }
 
-  auto executable_location = fml::paths::GetExecutableDirectoryPath().second;
-  auto app_path =
-      fml::paths::JoinPaths({executable_location, "data", "app.so"});
   ReleaseVersion release_version;
   auto release_version_result =
       GetReleaseVersionAndBuildNumber(&release_version);
@@ -409,8 +412,10 @@ bool SetUpShorebird(std::string assets_path_string, std::string& patch_path) {
     return false;
   }
 
-  ShorebirdConfigArgs shorebird_args(code_cache_path, code_cache_path, app_path,
-                                     shorebird_yaml_contents, release_version);
+  ShorebirdConfigArgs shorebird_args(code_cache_path, code_cache_path,
+                                     original_aot_path, shorebird_yaml_contents,
+                                     release_version);
+  shorebird_args.assets_path = assets_path_string;
   return ConfigureShorebird(shorebird_args, patch_path);
 }
 
@@ -423,7 +428,9 @@ bool FlutterWindowsEngine::Run(std::string_view entrypoint) {
   std::string icu_path_string = fml::PathToUtf8(project_->icu_path());
 
   std::string patch_path;
-  if (!SetUpShorebird(assets_path_string, patch_path)) {
+  if (!SetUpShorebird(assets_path_string,
+                      fml::PathToUtf8(shorebird_original_aot_path_),
+                      patch_path)) {
     FML_LOG(ERROR) << "Failed to configure Shorebird.";
     patch_path.clear();
   }
@@ -431,7 +438,7 @@ bool FlutterWindowsEngine::Run(std::string_view entrypoint) {
   // This loads AOT data from the project_'s aot_library_path_. A patch that
   // fails to load is reported and replaced by the release's own library.
   if (embedder_api_.RunsAOTCompiledDartCode()) {
-    const std::filesystem::path base_path = project_->aot_library_path();
+    const std::filesystem::path base_path = shorebird_original_aot_path_;
     const auto base_path_utf8 = fml::PathToUtf8(base_path);
     auto load_path = [&](const std::string& path) {
       // The patch path is UTF-8, which a narrow std::filesystem::path

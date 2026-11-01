@@ -194,6 +194,47 @@ void main() {
     );
   });
 
+  testWithoutContext('macOS x64 descriptor target is explicit and cannot cross architecture', () {
+    final File descriptor = environment.buildDir.childFile(kShorebirdNativeAssetsDescriptor);
+    final String intel = _absent.replaceFirst('ios_arm64', 'macos_x64');
+    descriptor.writeAsStringSync(intel);
+    expect(
+      shorebirdReadNativeAssetsDescriptor(
+        environment.buildDir,
+        targetOS: 'macos',
+        targetArch: 'x64',
+      ).readAsStringSync(),
+      intel,
+    );
+    expect(
+      () => shorebirdReadNativeAssetsDescriptor(environment.buildDir, targetOS: 'macos'),
+      throwsFormatException,
+    );
+    expect(
+      () => shorebirdReadNativeAssetsDescriptor(environment.buildDir, targetArch: 'x64'),
+      throwsFormatException,
+    );
+    expect(
+      shorebirdNativeAssetsFrontendOptions(
+        fullReplacement: true,
+        descriptorPath: descriptor.path,
+        targetOS: 'macos',
+        targetArch: 'x64',
+        extraFrontEndOptions: null,
+      ),
+      contains('--shorebird-native-assets-target=macos_x64'),
+    );
+    descriptor.writeAsStringSync(_absent.replaceFirst('ios_arm64', 'macos_arm64'));
+    expect(
+      () => shorebirdReadNativeAssetsDescriptor(
+        environment.buildDir,
+        targetOS: 'macos',
+        targetArch: 'x64',
+      ),
+      throwsFormatException,
+    );
+  });
+
   testWithoutContext('kernel output comparison normalizes absolute and relative paths', () {
     shorebirdValidateNativeAssetsKernelOutput(
       fileSystem,
@@ -284,7 +325,11 @@ void main() {
     overrides: <Type, Generator>{FeatureFlags: () => TestFeatureFlags()},
   );
 
-  for (final targetOS in <String>['ios', 'macos']) {
+  for (final (targetOS, targetArch) in <(String, String)>[
+    ('ios', 'arm64'),
+    ('macos', 'arm64'),
+    ('macos', 'x64'),
+  ]) {
     for (final (bool success, bool redirected) in <(bool, bool)>[
       (true, false),
       (false, false),
@@ -292,25 +337,35 @@ void main() {
     ]) {
       testUsingContext(
         'kernel requests compiler descriptor and clears stale output '
-        '(target=$targetOS, success=$success, redirected=$redirected)',
+        '(target=$targetOS/$targetArch, success=$success, redirected=$redirected)',
         () async {
           enableFullReplacement();
           final Artifacts artifacts;
           if (targetOS == 'macos') {
             artifacts = Artifacts.testLocalEngine(
-              localEngine: '/engine/macos_release_arm64',
+              localEngine: '/engine/macos_release_$targetArch',
               localEngineHost: '/engine/host',
             );
-            fileSystem.file('/engine/macos_release_arm64/args.gn')
+            fileSystem.file('/engine/macos_release_$targetArch/args.gn')
               ..createSync(recursive: true)
-              ..writeAsStringSync(shorebirdMacOSReplacementArgs);
+              ..writeAsStringSync(
+                shorebirdMacOSReplacementArgs.replaceAll('"arm64"', '"$targetArch"'),
+              );
           } else {
             artifacts = Artifacts.test();
           }
-          final String expectedDescriptor = _absent.replaceFirst('ios_arm64', '${targetOS}_arm64');
+          final String expectedDescriptor = _absent.replaceFirst(
+            'ios_arm64',
+            '${targetOS}_$targetArch',
+          );
           final Map<String, String> binding = writeShorebirdReplacementBase(
             fileSystem,
-            hostAbi: writeShorebirdReplacementHost(fileSystem, artifacts, targetOS: targetOS),
+            hostAbi: writeShorebirdReplacementHost(
+              fileSystem,
+              artifacts,
+              targetOS: targetOS,
+              targetArch: targetArch,
+            ),
           );
           final processManager = FakeProcessManager.empty();
           environment = Environment.test(
@@ -323,7 +378,7 @@ void main() {
             defines: <String, String>{
               kBuildMode: 'release',
               kTargetPlatform: targetOS == 'macos' ? 'darwin' : 'ios',
-              if (targetOS == 'macos') kDarwinArchs: 'arm64',
+              if (targetOS == 'macos') kDarwinArchs: targetArch == 'x64' ? 'x86_64' : 'arm64',
               kExtraFrontEndOptions: '--native-assets=/native_assets.yaml',
             },
           );
@@ -338,7 +393,11 @@ void main() {
             ..writeAsStringSync('stale expected kernel');
           final String reportedKernel = redirected ? '$build/other.dill' : expectedKernel.path;
           processManager.addCommands(<FakeCommand>[
-            ...shorebirdReplacementVersionCommands(artifacts, targetOS: targetOS),
+            ...shorebirdReplacementVersionCommands(
+              artifacts,
+              targetOS: targetOS,
+              targetArch: targetArch,
+            ),
             FakeCommand(
               command: <String>[
                 artifacts.getArtifactPath(Artifact.engineDartAotRuntime),
@@ -347,7 +406,7 @@ void main() {
                 if (targetOS == 'ios')
                   'Artifact.flutterPatchedSdkPath.TargetPlatform.ios.release/'
                 else
-                  '/engine/macos_release_arm64/flutter_patched_sdk/',
+                  '/engine/macos_release_$targetArch/flutter_patched_sdk/',
                 '--target=flutter',
                 '--no-print-incremental-dependencies',
                 ...buildModeOptions(BuildMode.release, <String>[]),
@@ -369,7 +428,7 @@ void main() {
                 '--filesystem-scheme',
                 'org-dartlang-root',
                 '--shorebird-native-assets-descriptor=${descriptor.path}',
-                '--shorebird-native-assets-target=${targetOS}_arm64',
+                '--shorebird-native-assets-target=${targetOS}_$targetArch',
                 '--verbosity=error',
                 '--native-assets=/native_assets.yaml',
                 'org-dartlang-root:///lib/main.dart',

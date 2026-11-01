@@ -19,8 +19,10 @@ String shorebirdReplacementSdkRoot(
   Artifacts artifacts,
   FileSystem fileSystem, {
   String targetOS = 'ios',
+  String targetArch = 'arm64',
 }) {
   targetOS = _targetOS(targetOS);
+  _validateArchitecture(targetOS, targetArch);
   final LocalEngineInfo? local = artifacts.localEngineInfo;
   if (local == null) {
     if (targetOS == 'macos') {
@@ -53,8 +55,8 @@ String shorebirdReplacementSdkRoot(
     'dart_runtime_mode': '"release"',
     if (targetOS == 'ios') 'target_os': '"ios"',
     if (targetOS == 'macos') 'target_os': '"mac"',
-    'target_cpu': '"arm64"',
-    'dart_target_arch': '"arm64"',
+    'target_cpu': '"$targetArch"',
+    'dart_target_arch': '"$targetArch"',
     if (targetOS == 'ios') 'use_ios_simulator': 'false',
     if (targetOS == 'ios') 'ios_use_simulator': 'false',
     if (targetOS == 'macos') 'dart_enable_shorebird_interpreter': 'true',
@@ -78,15 +80,25 @@ String _targetOS(String targetOS) {
   return normalized;
 }
 
-/// Rejects universal and x64 full builds, including the universal default.
+/// Rejects universal full builds, including the universal default.
 /// The caller must pass the complete requested architecture set unchanged.
-void shorebirdValidateMacOSReplacementArchitectures(List<DarwinArch> architectures) {
-  if (architectures.length != 1 || architectures.single != DarwinArch.arm64) {
+String shorebirdValidateMacOSReplacementArchitectures(List<DarwinArch> architectures) {
+  if (architectures.length != 1 ||
+      !const <DarwinArch>{DarwinArch.arm64, DarwinArch.x86_64}.contains(architectures.single)) {
     throw const FormatException(
-      'macOS full replacement requires --target-platform=darwin-arm64 '
-      '(assemble: DarwinArchs=arm64); x64 and universal builds are not supported',
+      'macOS full replacement requires explicit darwin-arm64 or darwin-x64; '
+      'universal and implicit architecture selection are not supported',
     );
   }
+  return architectures.single == DarwinArch.x86_64 ? 'x64' : 'arm64';
+}
+
+void _validateArchitecture(String targetOS, String targetArch) {
+  if ((targetOS == 'ios' && targetArch == 'arm64') ||
+      (targetOS == 'macos' && const <String>{'arm64', 'x64'}.contains(targetArch))) {
+    return;
+  }
+  throw const FormatException('Unsupported Apple full replacement architecture');
 }
 
 /// Canonical v1 stamp shared with the CLI. Paths never contribute to identity.
@@ -101,14 +113,16 @@ String shorebirdReplacementHostAbi({
   required String genSnapshotHash,
   required String platformHash,
   String targetOS = 'ios',
+  String targetArch = 'arm64',
 }) {
   targetOS = _targetOS(targetOS);
+  _validateArchitecture(targetOS, targetArch);
   final descriptor = BytesBuilder();
   for (final value in <String>[
     'shorebird-$targetOS-full-replacement-host-v1',
     targetOS,
     if (targetOS == 'ios') 'device' else 'desktop',
-    'arm64',
+    targetArch,
     'product',
     'dart-bytecode-interpreter',
     'full-replacement-v1',
@@ -133,12 +147,19 @@ class ShorebirdReplacementHost {
     required BuildMode buildMode,
     ProcessManager? processManager,
     String targetOS = 'ios',
+    String targetArch = 'arm64',
   }) {
     targetOS = _targetOS(targetOS);
+    _validateArchitecture(targetOS, targetArch);
     if (buildMode != BuildMode.release) {
       throw const FormatException('Full replacement requires a PRODUCT release build');
     }
-    final String sdkRoot = shorebirdReplacementSdkRoot(artifacts, fileSystem, targetOS: targetOS);
+    final String sdkRoot = shorebirdReplacementSdkRoot(
+      artifacts,
+      fileSystem,
+      targetOS: targetOS,
+      targetArch: targetArch,
+    );
     final String framework = artifacts.getArtifactPath(
       targetOS == 'ios' ? Artifact.flutterFramework : Artifact.flutterMacOSFramework,
       platform: targetOS == 'ios' ? TargetPlatform.ios : TargetPlatform.darwin,
@@ -146,7 +167,7 @@ class ShorebirdReplacementHost {
       environmentType: EnvironmentType.physical,
     );
     final String genSnapshot = artifacts.getArtifactPath(
-      Artifact.genSnapshotArm64,
+      targetArch == 'x64' ? Artifact.genSnapshotX64 : Artifact.genSnapshotArm64,
       platform: targetOS == 'ios' ? TargetPlatform.ios : TargetPlatform.darwin,
       mode: BuildMode.release,
     );
@@ -190,6 +211,7 @@ class ShorebirdReplacementHost {
         genSnapshotHash: hashes['genSnapshot']!,
         platformHash: hashes['platform']!,
         targetOS: targetOS,
+        targetArch: targetArch,
       ),
       hashes,
     );

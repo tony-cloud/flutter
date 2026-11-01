@@ -240,8 +240,9 @@ class AOTSnapshotter {
           if (darwinArch != null) darwinArch,
         ]);
       }
-      if (darwinArch != DarwinArch.arm64 ||
-          (sdkRoot?.toLowerCase().contains('iphonesimulator') ?? false)) {
+      if (platform == TargetPlatform.ios &&
+          (darwinArch != DarwinArch.arm64 ||
+              (sdkRoot?.toLowerCase().contains('iphonesimulator') ?? false))) {
         throw const FormatException('Full replacement requires an arm64 iOS device build');
       }
       if (dartObfuscation) {
@@ -253,6 +254,7 @@ class AOTSnapshotter {
         _artifacts,
         buildMode: buildMode,
         targetOS: platform.getName(),
+        targetArch: darwinArch == DarwinArch.x86_64 ? 'x64' : 'arm64',
         processManager: _processManager,
       ).validate(inputs.hostAbi);
     }

@@ -5,6 +5,7 @@
 #include <functional>
 #include <memory>
 #include <string>
+#include <vector>
 
 #include "flutter/common/settings.h"
 #include "flutter/fml/memory/ref_ptr.h"
@@ -79,13 +80,32 @@ CreateInterpreterPatchConfig(
     const shorebird::InterpreterReplacementBaseConfig* base,
     shorebird::InterpreterPatchTarget target);
 
+// Detect and latch the protocol before any platform metadata/path operation can
+// fail. Invalid or duplicate markers require v2 too and cannot downgrade.
+bool RequireSelectionV2IfMarked(const std::string& compiled_yaml);
+std::string ShorebirdHostArch();
+std::string ReleaseScopeAssetName(const std::string& platform,
+                                  const std::string& arch);
+// Copies a bounded platform asset into owned bytes (used by APK transport).
+bool LoadCompiledReleaseScopeAsset(
+    const std::string& platform,
+    const std::string& arch,
+    const std::function<std::unique_ptr<fml::Mapping>(const std::string&)>&
+        load,
+    std::string* scope_json);
+// V2 currently supports only the packaged Android libapp.so baseline. The
+// loader's optional prepended overrides must not disagree with APK measurement.
+bool ValidateAndroidNativeReleaseLibraryPaths(
+    const std::vector<std::string>& paths);
+
 void ResetSelectionV2BaselineForTesting();
 // Returns false for a malformed protocol marker or invalid v2 compiled scope.
 // A present v2 marker requires checked tokens even if configuration fails.
 bool ConfigureSelectionV2(shorebird::AppConfig& config,
                           const std::string& assets_path,
                           const std::string& platform,
-                          const std::string& arch);
+                          const std::string& arch,
+                          const std::string* compiled_scope_json = nullptr);
 
 /// Loads the AOT code for this boot with |load|, which returns whether it
 /// loaded the library at the path it is given. Tries |patch_path| first,
@@ -105,7 +125,8 @@ void ConfigureShorebird(std::string code_cache_path,
                         const std::string& shorebird_yaml,
                         const std::string& version,
                         const std::string& version_code,
-                        uint64_t max_native_image_bytes = 0);
+                        uint64_t max_native_image_bytes = 0,
+                        const std::string* compiled_scope_json = nullptr);
 
 // Parse the signed compiled profile before updater initialization. Retain an
 // invalid full-profile config so runtime startup fails closed. Absent/false is

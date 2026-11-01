@@ -8,6 +8,7 @@ import 'package:yaml_edit/yaml_edit.dart';
 import '../base/file_system.dart';
 import '../globals.dart' as globals;
 import 'shorebird_interpreter.dart';
+import 'shorebird_native_selection.dart';
 import 'shorebird_replacement.dart';
 import 'shorebird_selection.dart';
 
@@ -179,6 +180,37 @@ Map<String, dynamic> compileShorebirdYaml(
     }
     compiled['selection_protocol'] = protocol;
     if (protocol == 2) {
+      if (environment.containsKey(kShorebirdNativeSelectionManifest) ||
+          compiled['aot_patch_runtime_mode'] != 'dart-bytecode-interpreter') {
+        // Native license/expiry are publisher metadata. They do not restrict
+        // the bundled free host or establish an interpreter artifact policy.
+        compiled.remove('aot_patch_license_type');
+        compiled.putIfAbsent('patch_verification', () => 'strict');
+        final inputs = ShorebirdNativeSelectionInputs.read(fileSystem ?? globals.fs, environment);
+        if (compiled['patch_verification'] != 'strict' ||
+            compiled['patch_response_verification'] != 'required' ||
+            compiled['patch_public_key'] is! String ||
+            (compiled['patch_public_key'] as String).trim().isEmpty ||
+            inputs.appId != appId ||
+            (compiled['aot_patch_app_build_id'] != null &&
+                compiled['aot_patch_app_build_id'] != inputs.releaseVersion) ||
+            (compiled['aot_patch_runtime_mode'] != null &&
+                compiled['aot_patch_runtime_mode'] != 'native-aot') ||
+            structuralUpdates ||
+            fullReplacement ||
+            interpreterFields
+                .where(
+                  (String key) =>
+                      key != 'aot_patch_runtime_mode' && key != 'aot_patch_app_build_id',
+                )
+                .any(compiled.containsKey)) {
+          throw const FormatException(
+            'Compiled native policy differs from immutable release scope',
+          );
+        }
+        compiled['aot_patch_app_build_id'] = inputs.releaseVersion;
+        return compiled;
+      }
       final inputs = ShorebirdSelectionInputs.read(fileSystem ?? globals.fs, environment);
       final profile = fullReplacement
           ? 'interpreter-full'

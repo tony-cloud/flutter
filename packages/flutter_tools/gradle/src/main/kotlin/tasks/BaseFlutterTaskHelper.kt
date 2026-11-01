@@ -5,6 +5,7 @@
 package com.flutter.gradle.tasks
 
 import androidx.annotation.VisibleForTesting
+import groovy.json.JsonSlurper
 import org.gradle.api.Action
 import org.gradle.api.GradleException
 import org.gradle.api.file.FileCollection
@@ -13,6 +14,7 @@ import org.gradle.api.tasks.OutputFiles
 import org.gradle.kotlin.dsl.support.serviceOf
 import org.gradle.process.ExecOperations
 import org.gradle.process.ExecSpec
+import java.io.File
 import java.security.MessageDigest
 
 /**
@@ -168,6 +170,30 @@ object BaseFlutterTaskHelper {
                 .digest(key.toByteArray(Charsets.UTF_8))
                 .joinToString("") { "%02x".format(it) }
         }
+
+    /** Only content digests reach Gradle's history; validation also runs in assemble. */
+    @VisibleForTesting
+    internal fun getShorebirdNativeSelectionDigest(environment: Map<String, String>): String? {
+        val path = environment["SHOREBIRD_NATIVE_SELECTION_MANIFEST"] ?: return null
+        try {
+            val manifest = File(path)
+            require(manifest.isAbsolute && manifest.isFile)
+            val bytes = manifest.readBytes()
+            val configuration = JsonSlurper().parse(bytes) as Map<*, *>
+            val entries = configuration["entries"] as List<*>
+            val digest = MessageDigest.getInstance("SHA-256")
+            // Fixed-size component digests keep concatenation unambiguous.
+            digest.update(MessageDigest.getInstance("SHA-256").digest(bytes))
+            entries.forEach { entry ->
+                val baseline = File((entry as Map<*, *>)["original_baseline_path"] as String)
+                require(baseline.isAbsolute && baseline.isFile)
+                digest.update(MessageDigest.getInstance("SHA-256").digest(baseline.readBytes()))
+            }
+            return digest.digest().joinToString("") { "%02x".format(it) }
+        } catch (exception: Exception) {
+            throw GradleException("Invalid Shorebird native selection inputs", exception)
+        }
+    }
 
     fun buildBundle(baseFlutterTask: BaseFlutterTask) {
         checkPreConditions(baseFlutterTask)

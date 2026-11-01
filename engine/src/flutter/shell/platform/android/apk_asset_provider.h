@@ -27,7 +27,8 @@ class APKAssetProvider final : public AssetResolver {
  public:
   explicit APKAssetProvider(JNIEnv* env,
                             jobject assetManager,
-                            std::string directory);
+                            std::string directory,
+                            size_t max_asset_bytes = 0);
 
   explicit APKAssetProvider(std::shared_ptr<APKAssetProviderInternal> impl);
 

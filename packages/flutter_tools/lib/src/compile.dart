@@ -282,6 +282,7 @@ class KernelCompiler {
     String? platformDill,
     Directory? buildDir,
     String? targetOS,
+    String targetArch = 'arm64',
     bool checkDartPluginRegistry = false,
     required String? packagesPath,
     required BuildMode buildMode,
@@ -306,6 +307,7 @@ class KernelCompiler {
     final List<String> nativeAssetsDescriptorOptions = shorebirdNativeAssetsFrontendOptions(
       fullReplacement: fullReplacement,
       targetOS: targetOS ?? '',
+      targetArch: targetArch,
       descriptorPath: shorebirdNativeAssetsDescriptor,
       extraFrontEndOptions: extraFrontEndOptions,
     );
@@ -319,9 +321,15 @@ class KernelCompiler {
         _artifacts,
         buildMode: buildMode,
         targetOS: targetOS!,
+        targetArch: targetArch,
         processManager: _processManager,
       ).validate(inputs.hostAbi);
-      sdkRoot = shorebirdReplacementSdkRoot(_artifacts, _fileSystem, targetOS: targetOS);
+      sdkRoot = shorebirdReplacementSdkRoot(
+        _artifacts,
+        _fileSystem,
+        targetOS: targetOS,
+        targetArch: targetArch,
+      );
       if (!sdkRoot.endsWith('/')) {
         sdkRoot = '$sdkRoot/';
       }

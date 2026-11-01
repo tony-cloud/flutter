@@ -112,15 +112,13 @@ std::string HostPlatform() {
   return "linux";
 #endif
 }
-std::string HostArch() {
+std::optional<shorebird::InterpreterPatchTarget> MacInterpreterTarget() {
 #if FML_ARCH_CPU_ARM64
-  return "aarch64";
-#elif FML_ARCH_CPU_ARMEL
-  return "arm";
-#elif FML_ARCH_CPU_X86
-  return "x86";
+  return shorebird::InterpreterPatchTarget::kMacOSArm64;
+#elif FML_ARCH_CPU_X86_64
+  return shorebird::InterpreterPatchTarget::kMacOSX64;
 #else
-  return "x86_64";
+  return std::nullopt;
 #endif
 }
 void SelectPreparedInterpreterPatch(const std::string& yaml,
@@ -173,6 +171,7 @@ void SelectPreparedInterpreterPatch(const std::string& yaml,
 bool ConfigureShorebird(const ShorebirdConfigArgs& args,
                         std::string& patch_path) {
   patch_path.clear();
+  RequireSelectionV2IfMarked(args.shorebird_yaml);
   auto shorebird_updater_dir_name = "shorebird_updater";
 
   // Parse app id from shorebird.yaml
@@ -207,7 +206,7 @@ bool ConfigureShorebird(const ShorebirdConfigArgs& args,
   config.yaml_config = args.shorebird_yaml;
   config.max_native_image_bytes = args.max_native_image_bytes;
   if (!ConfigureSelectionV2(config, args.assets_path, HostPlatform(),
-                            HostArch())) {
+                            ShorebirdHostArch())) {
     return false;
   }
 #if FML_OS_LINUX || FML_OS_WIN
@@ -258,6 +257,11 @@ bool ConfigureShorebird(const ShorebirdConfigArgs& args,
 bool ConfigureShorebirdInterpreter(const ShorebirdConfigArgs& args,
                                    Settings& settings) {
   shorebird::SealInterpreterKeyProvider();
+  const auto target = MacInterpreterTarget();
+  if (!target) {
+    FML_LOG(ERROR) << "Unsupported signed interpreter host architecture";
+    return false;
+  }
   settings.shorebird_interpreter_replacement_base =
       LoadInterpreterReplacementBaseConfig(args.shorebird_yaml,
                                            settings.assets_path);
@@ -285,9 +289,8 @@ bool ConfigureShorebirdInterpreter(const ShorebirdConfigArgs& args,
   }
   if (GetValueFromYaml(args.shorebird_yaml, "selection_protocol") == "2") {
     if (initialized) {
-      SelectPreparedInterpreterPatch(
-          args.shorebird_yaml, version, settings,
-          shorebird::InterpreterPatchTarget::kMacOSArm64);
+      SelectPreparedInterpreterPatch(args.shorebird_yaml, version, settings,
+                                     *target);
     } else {
       settings.shorebird_interpreter_patch =
           shorebird::SelectInterpreterPatchForProcess(nullptr);
@@ -296,8 +299,7 @@ bool ConfigureShorebirdInterpreter(const ShorebirdConfigArgs& args,
   }
   settings.shorebird_interpreter_patch =
       shorebird::SelectInterpreterPatchForProcess(CreateInterpreterPatchConfig(
-          args.shorebird_yaml, version, active_path, base.get(),
-          shorebird::InterpreterPatchTarget::kMacOSArm64));
+          args.shorebird_yaml, version, active_path, base.get(), *target));
   return true;
 }
 
@@ -330,13 +332,24 @@ void ConfigureShorebird(std::string code_cache_path,
                         const std::string& shorebird_yaml,
                         const std::string& version,
                         const std::string& version_code,
-                        uint64_t max_native_image_bytes) {
+                        uint64_t max_native_image_bytes,
+                        const std::string* compiled_scope_json) {
+  const bool requires_v2 = RequireSelectionV2IfMarked(shorebird_yaml);
+#if FML_OS_ANDROID
+  if (requires_v2 && !ValidateAndroidNativeReleaseLibraryPaths(
+                         settings.application_library_paths)) {
+    FML_LOG(ERROR) << "V2 requires the unambiguous packaged original libapp.so";
+    return;
+  }
+#endif
   // If you are crashing here, you probably are running Shorebird in a Debug
   // config, where the AOT snapshot won't be linked into the process, and thus
   // lookups will fail.  Change your Scheme to Release to fix:
   // https://github.com/flutter/flutter/wiki/Debugging-the-engine#debugging-ios-builds-with-xcode
-  FML_CHECK(DartSnapshot::VMSnapshotFromSettings(settings))
-      << "XCode Scheme must be set to Release to use Shorebird";
+  if (!requires_v2) {
+    FML_CHECK(DartSnapshot::VMSnapshotFromSettings(settings))
+        << "XCode Scheme must be set to Release to use Shorebird";
+  }
 
   auto shorebird_updater_dir_name = "shorebird_updater";
 
@@ -371,7 +384,7 @@ void ConfigureShorebird(std::string code_cache_path,
         << "Invalid compiled v2 scope or checked updater initialization failed";
   };
   if (!ConfigureSelectionV2(config, settings.assets_path, HostPlatform(),
-                            HostArch())) {
+                            ShorebirdHostArch(), compiled_scope_json)) {
     reject_v2_configuration();
     return;
   }
@@ -393,6 +406,10 @@ void ConfigureShorebird(std::string code_cache_path,
       LoadInterpreterReplacementBaseConfig(shorebird_yaml,
                                            settings.assets_path);
 #endif
+  if (requires_v2) {
+    FML_CHECK(DartSnapshot::VMSnapshotFromSettings(settings))
+        << "XCode Scheme must be set to Release to use Shorebird";
+  }
   if (!shorebird::Updater::Instance().Init(config)) {
     FML_LOG(ERROR) << "Shorebird updater initialization failed";
     if (shorebird::Updater::Instance().RequiresSelectionV2()) {

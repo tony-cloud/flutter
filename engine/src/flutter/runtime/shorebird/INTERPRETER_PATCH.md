@@ -103,3 +103,20 @@ Entrypoints and the plugin registrant are reacquired after replacement commits.
 Focused native tests exercise configuration, one-artifact selection, opaque
 wrapper forwarding, validation and payload release. They do not establish a
 full-profile Flutter application launch or physical iOS device validation.
+
+## macOS signed host architectures
+
+The signed full-interpreter host supports ARM64 and x64 engine routing. Its
+trusted target comes from the engine CPU, independent of the selected artifact:
+ARM64 uses the updater scope `macos/aarch64` and SDK envelope `macos/arm64`;
+x64 uses scope `macos/x86_64` and envelope `macos/x64`. Scope assets use the wire
+name (`shorebird_release_scope_macos_<arch>.json`). Cross-OS and cross-architecture
+scope/envelope replay is rejected before beginning a v2 token or releasing a key.
+The SDK still authenticates all envelope metadata before installing bytecode.
+
+macOS body and structural profiles remain unsupported and fail startup. Both
+architectures retain the full profile's bundled original SBR baseline, reviewed
+signed host image, checked prepared source, and process-wide source commitment.
+Architecture-independent engine unit tests and cross-target syntax checks do
+not establish Intel Mac VM/FFI execution; native Intel CI and app integration
+remain required runtime evidence.

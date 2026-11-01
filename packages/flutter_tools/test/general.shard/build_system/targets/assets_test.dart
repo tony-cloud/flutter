@@ -3,6 +3,7 @@
 // found in the LICENSE file.
 
 import 'dart:async';
+import 'dart:convert';
 
 import 'package:args/args.dart';
 import 'package:collection/collection.dart' show IterableExtension;
@@ -20,6 +21,8 @@ import 'package:flutter_tools/src/build_system/targets/assets.dart';
 import 'package:flutter_tools/src/cache.dart';
 import 'package:flutter_tools/src/globals.dart' as globals;
 import 'package:flutter_tools/src/shorebird/shorebird_native_assets.dart';
+import 'package:flutter_tools/src/shorebird/shorebird_selection.dart';
+import 'package:flutter_tools/src/shorebird/shorebird_yaml.dart';
 import 'package:yaml/yaml.dart';
 
 import '../../../src/common.dart';
@@ -308,14 +311,34 @@ flutter:
     );
   });
 
-  for (final targetPlatform in <TargetPlatform>[TargetPlatform.ios, TargetPlatform.darwin]) {
+  for (final (targetPlatform, targetArch, protocol) in <(TargetPlatform, String, int)>[
+    (TargetPlatform.ios, 'arm64', 1),
+    (TargetPlatform.ios, 'arm64', 2),
+    (TargetPlatform.darwin, 'arm64', 1),
+    (TargetPlatform.darwin, 'arm64', 2),
+    (TargetPlatform.darwin, 'x64', 1),
+    (TargetPlatform.darwin, 'x64', 2),
+  ]) {
     testUsingContext(
-      'full replacement $targetPlatform copies exact base and compiler descriptor bytes',
+      'full replacement $targetPlatform/$targetArch/v$protocol copies exact base and compiler descriptor bytes',
       () async {
         final processEnvironment = <String, String>{
           ...writeShorebirdReplacementBase(fileSystem),
           'SHOREBIRD_PUBLIC_KEY': 'publisher',
         };
+        if (protocol == 2) {
+          processEnvironment[kShorebirdReleaseScopeEnvVar] = jsonEncode(<String, Object?>{
+            'app_id': '11111111-1111-4111-8111-111111111111',
+            'release_version': '1.0.0+1',
+            'platform': targetPlatform == TargetPlatform.ios ? 'ios' : 'macos',
+            'arch': targetArch == 'x64' ? 'x86_64' : 'aarch64',
+            'base_artifact_hash': processEnvironment[kShorebirdAotBaseSnapshotHashEnvVar],
+            'host_abi_hash': processEnvironment['SHOREBIRD_AOT_HOST_ABI'],
+            'runtime_profile': 'interpreter-full',
+          });
+          processEnvironment[kShorebirdInterpreterBaseEnvVar] =
+              processEnvironment['SHOREBIRD_AOT_REPLACEMENT_BASE']!;
+        }
         environment = Environment.test(
           fileSystem.currentDirectory,
           processManager: FakeProcessManager.any(),
@@ -326,6 +349,8 @@ flutter:
           defines: <String, String>{
             kBuildMode: 'release',
             kTargetPlatform: targetPlatform == TargetPlatform.ios ? 'ios' : 'darwin',
+            if (targetPlatform == TargetPlatform.darwin)
+              kDarwinArchs: targetArch == 'x64' ? 'x86_64' : 'arm64',
           },
         );
         fileSystem
@@ -334,14 +359,15 @@ flutter:
         fileSystem
             .file('shorebird.yaml')
             .writeAsStringSync(
-              'app_id: app\naot_patch_runtime_mode: dart-bytecode-interpreter\n'
-              'aot_patch_full_replacement: true\n',
+              'app_id: 11111111-1111-4111-8111-111111111111\naot_patch_runtime_mode: dart-bytecode-interpreter\n'
+              'aot_patch_full_replacement: true\n'
+              '${protocol == 2 ? 'selection_protocol: 2\naot_patch_app_build_id: 1.0.0+1\n' : ''}',
             );
         writePackageConfigFiles(directory: globals.fs.currentDirectory, mainLibName: 'example');
         final File descriptor = environment.buildDir.childFile(kShorebirdNativeAssetsDescriptor)
           ..createSync(recursive: true)
           ..writeAsStringSync(
-            '{"schema":1,"target":"${targetPlatform == TargetPlatform.ios ? 'ios' : 'macos'}_arm64","carrier_present":true,'
+            '{"schema":1,"target":"${targetPlatform == TargetPlatform.ios ? 'ios' : 'macos'}_$targetArch","carrier_present":true,'
             '"mapping_sha256":"${'a' * 64}"}\n',
           );
         // Bundling consumes the compiler result, never the YAML that produced it.
@@ -353,6 +379,21 @@ flutter:
           assets.childFile('shorebird_replacement_base.sbr').readAsBytesSync(),
           base.readAsBytesSync(),
         );
+        if (protocol == 2) {
+          final wireArch = targetArch == 'x64' ? 'x86_64' : 'aarch64';
+          final os = targetPlatform == TargetPlatform.ios ? 'ios' : 'macos';
+          final File scope = assets.childFile('shorebird_release_scope_${os}_$wireArch.json');
+          expect(
+            jsonDecode(scope.readAsStringSync()),
+            jsonDecode(processEnvironment[kShorebirdReleaseScopeEnvVar]!),
+          );
+          expect(
+            assets.listSync().whereType<File>().where(
+              (File file) => file.basename.startsWith('shorebird_release_scope_'),
+            ),
+            hasLength(1),
+          );
+        }
         final compiled = loadYaml(assets.childFile('shorebird.yaml').readAsStringSync()) as YamlMap;
         expect(compiled['aot_patch_replacement_base'], 'shorebird_replacement_base.sbr');
         final Depfile dependencies = environment.depFileService.parse(

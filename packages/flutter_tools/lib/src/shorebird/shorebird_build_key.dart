@@ -10,6 +10,7 @@ import '../build_info.dart';
 import '../build_system/build_system.dart';
 import 'shorebird_dd.dart';
 import 'shorebird_interpreter.dart';
+import 'shorebird_native_selection.dart';
 import 'shorebird_replacement.dart';
 import 'shorebird_replacement_host.dart';
 import 'shorebird_selection.dart';
@@ -44,6 +45,11 @@ mixin ShorebirdPublicKeyBuildKey on Target {
         'shorebirdInterpreterBaseSha256': sha256
             .convert(environment.fileSystem.file(path).readAsBytesSync())
             .toString(),
+      if (environment.platform.environment.containsKey(kShorebirdNativeSelectionManifest))
+        ...ShorebirdNativeSelectionInputs.read(
+          environment.fileSystem,
+          environment.platform.environment,
+        ).buildKey,
       ..._replacementBuildKey(environment),
       for (final String key in const <String>[
         'SHOREBIRD_AOT_BASE_SNAPSHOT_HASH',
@@ -135,9 +141,16 @@ Map<String, String> _replacementBuildKey(Environment environment) {
     environment.artifacts,
     buildMode: buildMode,
     targetOS: targetOS,
+    targetArch: targetOS == 'macos'
+        ? shorebirdValidateMacOSReplacementArchitectures(getDarwinArchsFromEnv(environment.defines))
+        : 'arm64',
   )..validate(inputs.hostAbi);
   return <String, String>{
     'shorebirdReplacementTargetOS': targetOS,
+    if (targetOS == 'macos')
+      'shorebirdReplacementTargetArch': shorebirdValidateMacOSReplacementArchitectures(
+        getDarwinArchsFromEnv(environment.defines),
+      ),
     'shorebirdReplacementProfile': 'full-replacement-v1',
     ...inputs.buildKey,
     ...host.artifactHashes,

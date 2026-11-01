@@ -17,10 +17,10 @@ const kShorebirdNativeAssetsDescriptor = 'shorebird_native_assets.json';
 const kShorebirdNativeAssetsTarget = 'ios_arm64';
 
 /// Derives the descriptor target from trusted build settings, never its JSON.
-String shorebirdNativeAssetsTarget(String targetOS) {
+String shorebirdNativeAssetsTarget(String targetOS, {String targetArch = 'arm64'}) {
   return switch (shorebirdTargetOS(targetOS)) {
-    'ios' => kShorebirdNativeAssetsTarget,
-    'macos' => 'macos_arm64',
+    'ios' when targetArch == 'arm64' => kShorebirdNativeAssetsTarget,
+    'macos' when const <String>{'arm64', 'x64'}.contains(targetArch) => 'macos_$targetArch',
     _ => throw const FormatException('Unsupported full replacement native-assets target OS'),
   };
 }
@@ -69,6 +69,7 @@ String? shorebirdPrepareNativeAssetsDescriptor(Environment environment) {
 List<String> shorebirdNativeAssetsFrontendOptions({
   required bool fullReplacement,
   String targetOS = 'ios',
+  String targetArch = 'arm64',
   required String? descriptorPath,
   required List<String>? extraFrontEndOptions,
 }) {
@@ -96,7 +97,7 @@ List<String> shorebirdNativeAssetsFrontendOptions({
   }
   return <String>[
     '--shorebird-native-assets-descriptor=$descriptorPath',
-    '--shorebird-native-assets-target=${shorebirdNativeAssetsTarget(targetOS)}',
+    '--shorebird-native-assets-target=${shorebirdNativeAssetsTarget(targetOS, targetArch: targetArch)}',
   ];
 }
 
@@ -117,8 +118,12 @@ void shorebirdValidateNativeAssetsKernelOutput(
 
 /// Validates the compiler descriptor without reinterpreting native-assets YAML
 /// or replacing its exact bytes with a tool-generated serialization.
-File shorebirdReadNativeAssetsDescriptor(Directory buildDirectory, {String targetOS = 'ios'}) {
-  final String target = shorebirdNativeAssetsTarget(targetOS);
+File shorebirdReadNativeAssetsDescriptor(
+  Directory buildDirectory, {
+  String targetOS = 'ios',
+  String targetArch = 'arm64',
+}) {
+  final String target = shorebirdNativeAssetsTarget(targetOS, targetArch: targetArch);
   final File descriptor = buildDirectory.childFile(kShorebirdNativeAssetsDescriptor);
   if (!descriptor.existsSync()) {
     throw const FormatException('Missing compiler-produced shorebird_native_assets.json');
