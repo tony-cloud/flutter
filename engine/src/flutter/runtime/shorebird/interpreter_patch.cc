@@ -261,6 +261,17 @@ bool ApplyInterpreterPatch(const InterpreterPatchConfig& config,
     }
   }
 
+  const char* target_os;
+  switch (config.target) {
+    case InterpreterPatchTarget::kIOSArm64:
+      target_os = "ios";
+      break;
+    case InterpreterPatchTarget::kMacOSArm64:
+      target_os = "macos";
+      break;
+    default:
+      return reject("Unsupported interpreter patch platform");
+  }
   Dart_AotPatchInstallOptions options{};
   options.app_id = config.app_id.c_str();
   options.app_build_id = config.app_build_id.c_str();
@@ -276,7 +287,7 @@ bool ApplyInterpreterPatch(const InterpreterPatchConfig& config,
   options.obfuscation_map_hash = config.obfuscation_map_hash.empty()
                                      ? nullptr
                                      : config.obfuscation_map_hash.c_str();
-  options.target_os = "ios";
+  options.target_os = target_os;
   options.target_arch = "arm64";
   options.runtime_mode = "dart-bytecode-interpreter";
 

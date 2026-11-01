@@ -17,6 +17,7 @@
 #include "flutter/shell/platform/common/app_lifecycle_state.h"
 #include "flutter/shell/platform/common/engine_switches.h"
 #include "flutter/shell/platform/embedder/embedder.h"
+#include "flutter/shell/platform/embedder/shorebird_aot_data.h"
 
 #import "flutter/shell/platform/darwin/common/InternalFlutterSwiftCommon/InternalFlutterSwiftCommon.h"
 #import "flutter/shell/platform/darwin/common/framework/Source/FlutterBinaryMessengerRelay.h"
@@ -659,6 +660,20 @@ static void SetThreadPriority(FlutterThreadPriority priority) {
   }
 }
 
+// Kept private and overrideable so routing tests never initialize a VM or load
+// executable patch data. This is deliberately outside the public proc table.
+- (FlutterEngineResult)initializeShorebirdInterpreter:(const flutter::ShorebirdConfigArgs*)args
+                                       rendererConfig:(const FlutterRendererConfig*)rendererConfig
+                                          projectArgs:(const FlutterProjectArgs*)projectArgs {
+  return flutter::shorebird::InitializeWithShorebirdInterpreter(
+      FLUTTER_ENGINE_VERSION, rendererConfig, projectArgs, (__bridge void*)self, &_engine, args);
+}
+
+- (NSString*)shorebirdYamlContents {
+  NSString* path = [_project.assetsPath stringByAppendingPathComponent:@"shorebird.yaml"];
+  return [NSString stringWithContentsOfFile:path encoding:NSUTF8StringEncoding error:nil] ?: @"";
+}
+
 - (BOOL)configureShorebird:(NSString**)patchPath {
   NSLog(@"[shorebird] setting up non-linker shorebird");
   NSString* bundlePath =
@@ -818,28 +833,32 @@ static void SetThreadPriority(FlutterThreadPriority priority) {
   };
   flutterArguments.custom_task_runners = &custom_task_runners;
 
-  NSString* patchPath = nil;
-  if (![self configureShorebird:&patchPath]) {
-    // No patch exists, or we failed to configure shorebird.
-    patchPath = nil;
-  }
-  // Without a patch, upstream's -(void)loadAOTData: path. This is the location
-  // where the test fixture places the snapshot file. For applications built by
-  // Flutter tool there is no file here, and the snapshot is resolved from the
-  // linked App.framework instead.
-  NSString* baseElfPath =
-      [NSString pathWithComponents:@[ _project.assetsPath, @"app_elf_snapshot.so" ]];
-  // A patch that fails to load is reported, and the release's own code boots.
-  if (_embedderAPI.RunsAOTCompiledDartCode()) {
-    flutter::LoadPatchOrBase(patchPath ? patchPath.UTF8String : "", baseElfPath.UTF8String,
-                             [self](const std::string& path) {
-                               [self loadAOTData:@(path.c_str())];
-                               return self->_aotData != nullptr;
-                             });
-  }
-
-  if (_aotData) {
-    flutterArguments.aot_data = _aotData;
+  NSString* interpreterYaml = [self shorebirdYamlContents];
+  // An invalid full-profile declaration is still a full profile. It must reach
+  // the private initializer and fail closed without touching the native path.
+  const bool fullInterpreter =
+      flutter::LoadInterpreterReplacementBaseConfig(
+          interpreterYaml.UTF8String, _project.assetsPath.UTF8String ?: "") != nullptr;
+  if (!fullInterpreter) {
+    NSString* patchPath = nil;
+    if (![self configureShorebird:&patchPath]) {
+      // No patch exists, or we failed to configure shorebird.
+      patchPath = nil;
+    }
+    // Test fixtures may use ELF; normal native applications resolve their
+    // snapshot from the linked App.framework when this asset is absent.
+    NSString* baseElfPath =
+        [NSString pathWithComponents:@[ _project.assetsPath, @"app_elf_snapshot.so" ]];
+    if (_embedderAPI.RunsAOTCompiledDartCode()) {
+      flutter::LoadPatchOrBase(patchPath ? patchPath.UTF8String : "", baseElfPath.UTF8String,
+                               [self](const std::string& path) {
+                                 [self loadAOTData:@(path.c_str())];
+                                 return self->_aotData != nullptr;
+                               });
+    }
+    if (_aotData) {
+      flutterArguments.aot_data = _aotData;
+    }
   }
 
   flutterArguments.compositor = [self createFlutterCompositor];
@@ -862,8 +881,23 @@ static void SetThreadPriority(FlutterThreadPriority priority) {
 
   FlutterRendererConfig rendererConfig = [_renderer createRendererConfig];
 
-  FlutterEngineResult result = _embedderAPI.Initialize(
-      FLUTTER_ENGINE_VERSION, &rendererConfig, &flutterArguments, (__bridge void*)(self), &_engine);
+  FlutterEngineResult result;
+  if (fullInterpreter) {
+    NSString* version =
+        [NSBundle.mainBundle objectForInfoDictionaryKey:@"CFBundleShortVersionString"] ?: @"";
+    NSString* build = [NSBundle.mainBundle objectForInfoDictionaryKey:@"CFBundleVersion"] ?: @"";
+    const std::string cachePath = fml::paths::JoinPaths(
+        {NSHomeDirectory().UTF8String, "Library", "Application Support", "shorebird"});
+    flutter::ShorebirdConfigArgs args(
+        cachePath, cachePath, _project.shorebirdDartExecutablePath.UTF8String ?: "",
+        interpreterYaml.UTF8String, {version.UTF8String, build.UTF8String});
+    result = [self initializeShorebirdInterpreter:&args
+                                   rendererConfig:&rendererConfig
+                                      projectArgs:&flutterArguments];
+  } else {
+    result = _embedderAPI.Initialize(FLUTTER_ENGINE_VERSION, &rendererConfig, &flutterArguments,
+                                     (__bridge void*)(self), &_engine);
+  }
   if (result != kSuccess) {
     NSLog(@"Failed to initialize Flutter engine: error %d", result);
     return NO;

@@ -147,4 +147,47 @@ LoadInterpreterReplacementBaseConfig(const std::string& yaml,
   return base;
 }
 
+std::shared_ptr<const shorebird::InterpreterPatchConfig>
+CreateInterpreterPatchConfig(
+    const std::string& yaml,
+    const std::string& release_version,
+    const std::string& active_path,
+    const shorebird::InterpreterReplacementBaseConfig* base,
+    shorebird::InterpreterPatchTarget target) {
+  if (active_path.empty()) {
+    return nullptr;
+  }
+  auto patch = std::make_shared<shorebird::InterpreterPatchConfig>();
+  patch->path = active_path;
+  patch->target = target;
+  patch->full_replacement = base != nullptr;
+  if (base) {
+    patch->host_abi = base->host_abi;
+  }
+  patch->app_id = GetValueFromYaml(yaml, "app_id");
+  patch->app_build_id = GetValueFromYaml(yaml, "aot_patch_app_build_id");
+  if (patch->app_build_id.empty()) {
+    patch->app_build_id = release_version;
+  }
+  patch->base_flavor_id = GetValueFromYaml(yaml, "aot_patch_base_flavor_id");
+  patch->base_license_type =
+      GetValueFromYaml(yaml, "aot_patch_base_license_type");
+  patch->flavor_id = GetValueFromYaml(yaml, "aot_patch_flavor_id");
+  patch->license_type = GetValueFromYaml(yaml, "aot_patch_license_type");
+  patch->sdk_hash = GetValueFromYaml(yaml, "aot_patch_sdk_hash");
+  patch->base_snapshot_hash =
+      GetValueFromYaml(yaml, "aot_patch_base_snapshot_hash");
+  patch->obfuscation_map_hash =
+      GetValueFromYaml(yaml, "aot_patch_obfuscation_map_hash");
+  patch->key_id = GetValueFromYaml(yaml, "aot_patch_key_id");
+  patch->strict_verification =
+      GetValueFromYaml(yaml, "aot_patch_runtime_mode") ==
+          "dart-bytecode-interpreter" &&
+      GetValueFromYaml(yaml, "patch_response_verification") == "required" &&
+      GetValueFromYaml(yaml, "patch_verification") == "strict" &&
+      !GetValueFromYaml(yaml, "patch_public_key").empty() &&
+      GetValueFromYaml(yaml, "aot_patch_key_hex").empty();
+  return patch;
+}
+
 }  // namespace flutter

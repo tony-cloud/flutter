@@ -13,10 +13,14 @@
 
 namespace flutter::shorebird {
 
+// Trusted platform expectation, never taken from an update envelope.
+enum class InterpreterPatchTarget { kIOSArm64, kMacOSArm64 };
+
 // Immutable expectations from the signed application bundle. The future patch
 // hash comes from the authenticated envelope, never from baseline settings.
 struct InterpreterPatchConfig {
   std::string path;
+  InterpreterPatchTarget target = InterpreterPatchTarget::kIOSArm64;
   std::string app_id;
   std::string app_build_id;
   std::string base_flavor_id;

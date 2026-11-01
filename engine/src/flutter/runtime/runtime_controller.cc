@@ -555,7 +555,7 @@ bool RuntimeController::LaunchRootIsolate(
     return false;
   }
 
-#if FML_OS_IOS
+#if FML_OS_MACOSX
   // Capture the actual boot choice before a failed update clears the process
   // latch. A stale per-engine candidate must not retry a broken selected base.
   const bool attempting_interpreter_patch =
@@ -582,7 +582,7 @@ bool RuntimeController::LaunchRootIsolate(
           native_assets_manager)  //
           .lock();
 
-#if FML_OS_IOS
+#if FML_OS_MACOSX
   if (!strong_root_isolate && attempting_interpreter_patch &&
       shorebird::RejectInterpreterPatchForProcess()) {
     // The rejected transient group has shut down before this call. Recreate

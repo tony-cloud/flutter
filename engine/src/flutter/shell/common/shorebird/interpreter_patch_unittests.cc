@@ -25,8 +25,10 @@ class Artifact : public fml::Mapping {
   const std::string json_;
 };
 
-std::string Envelope(const std::string& key = "test-key") {
-  return R"({"metadata":{"flavor_id":"pro","license_type":"pro","runtime_mode":"dart-bytecode-interpreter","patch_snapshot_hash":")" +
+std::string Envelope(const std::string& key = "test-key",
+                     const std::string& target_os = "ios") {
+  return R"({"metadata":{"target_os":")" + target_os +
+         R"(","target_arch":"arm64","flavor_id":"pro","license_type":"pro","runtime_mode":"dart-bytecode-interpreter","patch_snapshot_hash":")" +
          std::string(64, 'b') +
          R"("},"payload_kind":"full-snapshot","encryption":{"key_id":")" + key +
          R"("}})";
@@ -57,6 +59,7 @@ std::string ReplacementWrapper() {
 
 class FakeApi : public InterpreterPatchApi {
  public:
+  std::string expected_target_os = "ios";
   bool install_ok = true;
   bool reload_ok = true;
   bool empty_payload = false;
@@ -71,7 +74,7 @@ class FakeApi : public InterpreterPatchApi {
     calls.emplace_back("callback");
     callback = value;
   }
-  bool Install(const fml::Mapping&,
+  bool Install(const fml::Mapping& artifact,
                const Dart_AotPatchInstallOptions& options,
                uint8_t** payload,
                intptr_t* length,
@@ -84,9 +87,18 @@ class FakeApi : public InterpreterPatchApi {
     EXPECT_STREQ(options.flavor_id, "pro");
     EXPECT_STREQ(options.license_type, "pro");
     EXPECT_STREQ(options.runtime_mode, "dart-bytecode-interpreter");
-    EXPECT_STREQ(options.target_os, "ios");
+    EXPECT_STREQ(options.target_os, expected_target_os.c_str());
     EXPECT_STREQ(options.target_arch, "arm64");
     EXPECT_EQ(std::string(options.patch_snapshot_hash), std::string(64, 'b'));
+    // Model the SDK's authenticated metadata/expected-target comparison.
+    const std::string envelope(
+        reinterpret_cast<const char*>(artifact.GetMapping()),
+        artifact.GetSize());
+    if (envelope.find("\"target_os\":\"" + std::string(options.target_os) +
+                      "\"") == std::string::npos) {
+      *error = "authenticated target mismatch";
+      return false;
+    }
     std::array<uint8_t, 32> key;
     intptr_t key_length = 0;
     EXPECT_FALSE(callback("wrong-key", key.data(), key.size(), &key_length));
@@ -166,6 +178,27 @@ TEST_F(InterpreterPatchTest, InstallsThenReloadsAndFreesPlaintext) {
   intptr_t size;
   // The SDK's process-global callback cannot retrieve keys outside install.
   EXPECT_FALSE(api.callback("test-key", key.data(), key.size(), &size));
+}
+TEST_F(InterpreterPatchTest, MacOSUsesTrustedPlatformInSdkOptions) {
+  RegisterKey();
+  config.target = InterpreterPatchTarget::kMacOSArm64;
+  api.expected_target_os = "macos";
+  EXPECT_TRUE(Apply(Envelope("test-key", "macos")));
+}
+TEST_F(InterpreterPatchTest,
+       MacOSRejectsAuthenticatedIosArtifactWithoutReload) {
+  RegisterKey();
+  config.target = InterpreterPatchTarget::kMacOSArm64;
+  api.expected_target_os = "macos";
+  EXPECT_FALSE(Apply());
+  EXPECT_EQ(error, "authenticated target mismatch");
+  EXPECT_EQ(api.calls, (std::vector<std::string>{"callback", "install"}));
+}
+TEST_F(InterpreterPatchTest, InvalidTrustedTargetNeverCallsSdk) {
+  RegisterKey();
+  config.target = static_cast<InterpreterPatchTarget>(99);
+  EXPECT_FALSE(Apply());
+  EXPECT_TRUE(api.calls.empty());
 }
 TEST_F(InterpreterPatchTest, MissingProviderDoesNotDecryptOrExecute) {
   EXPECT_FALSE(Apply());

@@ -182,6 +182,33 @@ bool ConfigureShorebird(const ShorebirdConfigArgs& args,
   return init_result;
 }
 
+bool ConfigureShorebirdInterpreter(const ShorebirdConfigArgs& args,
+                                   Settings& settings) {
+  shorebird::SealInterpreterKeyProvider();
+  settings.shorebird_interpreter_replacement_base =
+      LoadInterpreterReplacementBaseConfig(args.shorebird_yaml,
+                                           settings.assets_path);
+  const auto& base = settings.shorebird_interpreter_replacement_base;
+  if (!base || !base->validation_error.empty()) {
+    // Retain an invalid profile in Settings as well as rejecting this startup.
+    // An inactive native app must never be used as an implicit fallback.
+    return false;
+  }
+  std::string active_path;
+  if (!ConfigureShorebird(args, active_path)) {
+    active_path.clear();
+  }
+  auto version = args.release_version.version;
+  if (!args.release_version.build_number.empty()) {
+    version += "+" + args.release_version.build_number;
+  }
+  settings.shorebird_interpreter_patch =
+      shorebird::SelectInterpreterPatchForProcess(CreateInterpreterPatchConfig(
+          args.shorebird_yaml, version, active_path, base.get(),
+          shorebird::InterpreterPatchTarget::kMacOSArm64));
+  return true;
+}
+
 bool LoadPatchOrBase(const std::string& patch_path,
                      const std::string& base_path,
                      const std::function<bool(const std::string&)>& load) {
@@ -286,43 +313,12 @@ void ConfigureShorebird(std::string code_cache_path,
 #if FML_OS_IOS
     // An encrypted artifact is JSON/bytecode data, never a native image. Keep
     // the reviewed base snapshot linked and install only before its main runs.
-    auto patch = std::make_shared<shorebird::InterpreterPatchConfig>();
-    patch->path = active_path;
-    patch->full_replacement =
-        settings.shorebird_interpreter_replacement_base != nullptr;
-    if (patch->full_replacement) {
-      patch->host_abi =
-          settings.shorebird_interpreter_replacement_base->host_abi;
-    }
-    patch->app_id = GetValueFromYaml(shorebird_yaml, "app_id");
-    patch->app_build_id =
-        GetValueFromYaml(shorebird_yaml, "aot_patch_app_build_id");
-    if (patch->app_build_id.empty()) {
-      patch->app_build_id = config.release_version;
-    }
-    patch->base_flavor_id =
-        GetValueFromYaml(shorebird_yaml, "aot_patch_base_flavor_id");
-    patch->base_license_type =
-        GetValueFromYaml(shorebird_yaml, "aot_patch_base_license_type");
-    patch->flavor_id = GetValueFromYaml(shorebird_yaml, "aot_patch_flavor_id");
-    patch->license_type =
-        GetValueFromYaml(shorebird_yaml, "aot_patch_license_type");
-    patch->sdk_hash = GetValueFromYaml(shorebird_yaml, "aot_patch_sdk_hash");
-    patch->base_snapshot_hash =
-        GetValueFromYaml(shorebird_yaml, "aot_patch_base_snapshot_hash");
-    patch->obfuscation_map_hash =
-        GetValueFromYaml(shorebird_yaml, "aot_patch_obfuscation_map_hash");
-    patch->key_id = GetValueFromYaml(shorebird_yaml, "aot_patch_key_id");
-    patch->strict_verification =
-        GetValueFromYaml(shorebird_yaml, "aot_patch_runtime_mode") ==
-            "dart-bytecode-interpreter" &&
-        GetValueFromYaml(shorebird_yaml, "patch_response_verification") ==
-            "required" &&
-        GetValueFromYaml(shorebird_yaml, "patch_verification") == "strict" &&
-        !GetValueFromYaml(shorebird_yaml, "patch_public_key").empty() &&
-        GetValueFromYaml(shorebird_yaml, "aot_patch_key_hex").empty();
     settings.shorebird_interpreter_patch =
-        shorebird::SelectInterpreterPatchForProcess(std::move(patch));
+        shorebird::SelectInterpreterPatchForProcess(
+            CreateInterpreterPatchConfig(
+                shorebird_yaml, config.release_version, active_path,
+                settings.shorebird_interpreter_replacement_base.get(),
+                shorebird::InterpreterPatchTarget::kIOSArm64));
 #elif SHOREBIRD_USE_INTERPRETER
     // Front-insert rather than clear. A linked patch carries only the code it
     // rewrote, and everything it linked against still executes out of the base

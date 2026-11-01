@@ -8,6 +8,7 @@
 
 #include "flutter/common/settings.h"
 #include "flutter/fml/memory/ref_ptr.h"
+#include "flutter/runtime/shorebird/interpreter_patch.h"
 #include "shell/platform/embedder/embedder.h"
 
 namespace flutter {
@@ -58,6 +59,21 @@ struct ShorebirdConfigArgs {
 /// Load it with LoadPatchOrBase.
 bool ConfigureShorebird(const ShorebirdConfigArgs& args,
                         std::string& patch_path);
+
+// Private macOS full-profile settings route. Preserves the desktop updater's
+// app-id cache scope and whole-framework input. Updater/key availability never
+// prevents installing the signed bundled replacement base.
+bool ConfigureShorebirdInterpreter(const ShorebirdConfigArgs& args,
+                                   Settings& settings);
+
+// Shared signed release expectations; callers supply their trusted platform.
+std::shared_ptr<const shorebird::InterpreterPatchConfig>
+CreateInterpreterPatchConfig(
+    const std::string& yaml,
+    const std::string& release_version,
+    const std::string& active_path,
+    const shorebird::InterpreterReplacementBaseConfig* base,
+    shorebird::InterpreterPatchTarget target);
 
 /// Loads the AOT code for this boot with |load|, which returns whether it
 /// loaded the library at the path it is given. Tries |patch_path| first,

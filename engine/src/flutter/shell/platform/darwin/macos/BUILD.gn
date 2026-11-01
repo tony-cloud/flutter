@@ -145,6 +145,7 @@ source_set("flutter_framework_source") {
     ":macos_gpu_configuration",
     "//flutter/flow",
     "//flutter/fml",
+    "//flutter/runtime/shorebird:interpreter_patch",
     "//flutter/shell/common/shorebird",
     "//flutter/shell/platform/common:common_cpp_accessibility",
     "//flutter/shell/platform/common:common_cpp_core",
@@ -157,6 +158,7 @@ source_set("flutter_framework_source") {
     "//flutter/shell/platform/darwin/common:framework_common",
     "//flutter/shell/platform/darwin/graphics",
     "//flutter/shell/platform/embedder:embedder_as_internal_library",
+    "//flutter/shell/platform/embedder:shorebird_aot_data_headers",
     "//flutter/skia",
   ]
   public_deps = [ ":InternalFlutterSwift" ]
@@ -252,6 +254,8 @@ executable("flutter_desktop_darwin_unittests") {
     ":flutter_desktop_darwin_fixtures",
     ":flutter_framework_source",
     "//flutter/fml",
+    "//flutter/runtime/shorebird:interpreter_patch",
+    "//flutter/shell/common/shorebird",
     "//flutter/shell/platform/common:common_cpp_accessibility",
     "//flutter/shell/platform/common:common_cpp_core",
     "//flutter/shell/platform/common:common_cpp_enums",

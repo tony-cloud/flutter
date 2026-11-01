@@ -14,6 +14,8 @@
 
 #include "flutter/fml/synchronization/waitable_event.h"
 #include "flutter/lib/ui/window/platform_message.h"
+#include "flutter/runtime/shorebird/interpreter_patch.h"
+#include "flutter/shell/common/shorebird/shorebird.h"
 #include "flutter/shell/platform/common/accessibility_bridge.h"
 #import "flutter/shell/platform/darwin/common/framework/Headers/FlutterChannels.h"
 #import "flutter/shell/platform/darwin/common/framework/Source/FlutterBinaryMessengerRelay.h"
@@ -37,6 +39,13 @@
 // NOLINTBEGIN(clang-analyzer-core.StackAddressEscape)
 
 @interface FlutterEngine (Test)
+- (NSString*)shorebirdYamlContents;
+- (BOOL)configureShorebird:(NSString**)patchPath;
+- (void)loadAOTData:(NSString*)elfPath;
+- (FlutterEngineResult)initializeShorebirdInterpreter:(const flutter::ShorebirdConfigArgs*)args
+                                       rendererConfig:(const FlutterRendererConfig*)rendererConfig
+                                          projectArgs:(const FlutterProjectArgs*)projectArgs;
+
 /**
  * The FlutterCompositor object currently in use by the FlutterEngine.
  *
@@ -44,6 +53,48 @@
  */
 @property(nonatomic, readonly, nullable) flutter::FlutterCompositor* macOSCompositor;
 
+@end
+
+@interface ShorebirdCustomProject : FlutterDartProject
+@end
+@implementation ShorebirdCustomProject
+- (NSString*)shorebirdDartExecutablePath {
+  return @"/signed/Custom.framework/Versions/A/Custom";
+}
+@end
+
+@interface ShorebirdRoutingEngine : FlutterEngine
+@property(nonatomic, copy) NSString* profile;
+@property(nonatomic) BOOL usedPrivateInitializer;
+@property(nonatomic) BOOL usedNativeConfiguration;
+@property(nonatomic) BOOL usedElfLoader;
+@property(nonatomic, copy) NSString* selectedHost;
+@end
+@implementation ShorebirdRoutingEngine
+- (NSString*)shorebirdYamlContents {
+  return self.profile;
+}
+- (BOOL)configureShorebird:(NSString**)patchPath {
+  self.usedNativeConfiguration = YES;
+  return NO;
+}
+- (void)loadAOTData:(NSString*)elfPath {
+  self.usedElfLoader = YES;
+}
+- (FlutterEngineResult)initializeShorebirdInterpreter:(const flutter::ShorebirdConfigArgs*)args
+                                       rendererConfig:(const FlutterRendererConfig*)rendererConfig
+                                          projectArgs:(const FlutterProjectArgs*)projectArgs {
+  self.usedPrivateInitializer = YES;
+  self.selectedHost = @(args->release_app_library_path.c_str());
+  EXPECT_EQ(projectArgs->aot_data, nullptr);
+  EXPECT_EQ(projectArgs->vm_snapshot_data, nullptr);
+  EXPECT_EQ(projectArgs->vm_snapshot_instructions, nullptr);
+  EXPECT_EQ(projectArgs->isolate_snapshot_data, nullptr);
+  EXPECT_EQ(projectArgs->isolate_snapshot_instructions, nullptr);
+  EXPECT_EQ(args->code_cache_path, args->app_storage_path);
+  // Stop before VM creation; this test exercises the real Cocoa routing path.
+  return kInvalidArguments;
+}
 @end
 
 @interface TestPlatformViewFactory : NSObject <FlutterPlatformViewFactory>
@@ -144,6 +195,102 @@ TEST_F(FlutterEngineTest, CanLaunch) {
   FlutterEngine* engine = GetFlutterEngine();
   EXPECT_TRUE([engine runWithEntrypoint:@"main"]);
   ASSERT_TRUE(engine.running);
+}
+
+TEST_F(FlutterEngineTest, FullInterpreterNeverUsesNativeOrElfRoute) {
+  for (NSString* profile in
+       @[ @"aot_patch_full_replacement: true\n", @"aot_patch_full_replacement: invalid\n" ]) {
+    ShorebirdCustomProject* project =
+        [[ShorebirdCustomProject alloc] initWithAssetsPath:@"/signed/custom/flutter_assets"
+                                               ICUDataPath:@"/signed/icudtl.dat"];
+    ShorebirdRoutingEngine* engine =
+        [[ShorebirdRoutingEngine alloc] initWithName:@"full-interpreter-test"
+                                             project:project
+                              allowHeadlessExecution:YES];
+    engine.profile = profile;
+    bool usedPublicInitializer = false;
+    bool createdAotData = false;
+    engine.embedderAPI.Initialize =
+        MOCK_ENGINE_PROC(Initialize, ([&usedPublicInitializer](auto, auto, auto, auto, auto) {
+                           usedPublicInitializer = true;
+                           return kInvalidArguments;
+                         }));
+    engine.embedderAPI.CreateAOTData =
+        MOCK_ENGINE_PROC(CreateAOTData, ([&createdAotData](auto, auto) {
+                           createdAotData = true;
+                           return kInvalidArguments;
+                         }));
+    EXPECT_FALSE([engine runWithEntrypoint:@"main"]);
+    EXPECT_TRUE(engine.usedPrivateInitializer);
+    EXPECT_TRUE(
+        [engine.selectedHost isEqualToString:@"/signed/Custom.framework/Versions/A/Custom"]);
+    EXPECT_FALSE(engine.usedNativeConfiguration);
+    EXPECT_FALSE(engine.usedElfLoader);
+    EXPECT_FALSE(usedPublicInitializer);
+    EXPECT_FALSE(createdAotData);
+  }
+}
+
+TEST_F(FlutterEngineTest, LegacyProfileKeepsPublicInitializerAndElfRoute) {
+  ShorebirdRoutingEngine* engine =
+      [[ShorebirdRoutingEngine alloc] initWithName:@"native-test"
+                                           project:GetFlutterEngine().project
+                            allowHeadlessExecution:YES];
+  engine.profile = @"aot_patch_full_replacement: false\n";
+  bool usedPublicInitializer = false;
+  engine.embedderAPI.RunsAOTCompiledDartCode =
+      MOCK_ENGINE_PROC(RunsAOTCompiledDartCode, ([] { return true; }));
+  engine.embedderAPI.Initialize =
+      MOCK_ENGINE_PROC(Initialize, ([&usedPublicInitializer](auto, auto, auto, auto, auto) {
+                         usedPublicInitializer = true;
+                         return kInvalidArguments;
+                       }));
+  EXPECT_FALSE([engine runWithEntrypoint:@"main"]);
+  EXPECT_TRUE(usedPublicInitializer);
+  EXPECT_TRUE(engine.usedNativeConfiguration);
+  EXPECT_TRUE(engine.usedElfLoader);
+  EXPECT_FALSE(engine.usedPrivateInitializer);
+}
+
+TEST(FlutterDartProjectShorebirdTest, ActualLoadedCustomBundleProvidesHostPath) {
+  flutter::shorebird::ResetInterpreterKeyProviderForTesting();
+  id bundle = OCMClassMock([NSBundle class]);
+  OCMStub([bundle isLoaded]).andReturn(YES);
+  OCMStub([bundle executablePath]).andReturn(@"/signed/Custom.framework/Versions/A/Custom");
+  FlutterDartProject* project = [[FlutterDartProject alloc] initWithPrecompiledDartBundle:bundle];
+  EXPECT_TRUE([project.shorebirdDartExecutablePath
+      isEqualToString:@"/signed/Custom.framework/Versions/A/Custom"]);
+  EXPECT_FALSE([FlutterDartProject setShorebirdAotPatchKeyProvider:^NSData*(NSString* keyId) {
+    return nil;
+  }]);
+  [bundle stopMocking];
+  flutter::shorebird::ResetInterpreterKeyProviderForTesting();
+}
+
+TEST(FlutterDartProjectShorebirdTest, ProviderIsRetainedAndCustomAssetsSealRegistration) {
+  flutter::shorebird::ResetInterpreterKeyProviderForTesting();
+  __weak NSObject* capturedObject;
+  @autoreleasepool {
+    NSObject* token = [[NSObject alloc] init];
+    capturedObject = token;
+    EXPECT_TRUE([FlutterDartProject setShorebirdAotPatchKeyProvider:^NSData*(NSString* keyId) {
+      [token description];
+      return [NSMutableData dataWithLength:32];
+    }]);
+  }
+  EXPECT_NE(capturedObject, nil);
+  EXPECT_FALSE([FlutterDartProject setShorebirdAotPatchKeyProvider:^NSData*(NSString* keyId) {
+    return nil;
+  }]);
+  flutter::shorebird::ResetInterpreterKeyProviderForTesting();
+  EXPECT_EQ(capturedObject, nil);
+  FlutterDartProject* project = [[FlutterDartProject alloc] initWithAssetsPath:@"/custom/assets"
+                                                                   ICUDataPath:@"/custom/icu"];
+  EXPECT_EQ(project.shorebirdDartExecutablePath, nil);
+  EXPECT_FALSE([FlutterDartProject setShorebirdAotPatchKeyProvider:^NSData*(NSString* keyId) {
+    return nil;
+  }]);
+  flutter::shorebird::ResetInterpreterKeyProviderForTesting();
 }
 
 TEST_F(FlutterEngineTest, HasNonNullExecutableName) {

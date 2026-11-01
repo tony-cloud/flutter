@@ -2143,12 +2143,15 @@ FlutterEngineResult FlutterEngineRun(size_t version,
   return FlutterEngineRunInitialized(*engine_out);
 }
 
-FlutterEngineResult FlutterEngineInitialize(size_t version,
-                                            const FlutterRendererConfig* config,
-                                            const FlutterProjectArgs* args,
-                                            void* user_data,
-                                            FLUTTER_API_SYMBOL(FlutterEngine) *
-                                                engine_out) {
+namespace {
+
+FlutterEngineResult InitializeEngine(
+    size_t version,
+    const FlutterRendererConfig* config,
+    const FlutterProjectArgs* args,
+    void* user_data,
+    FLUTTER_API_SYMBOL(FlutterEngine) * engine_out,
+    const flutter::ShorebirdConfigArgs* shorebird_args) {
   // Step 0: Figure out arguments for shell creation.
   if (version != FLUTTER_ENGINE_VERSION) {
     return LOG_EMBEDDER_ERROR(
@@ -2235,6 +2238,11 @@ FlutterEngineResult FlutterEngineInitialize(size_t version,
 
   settings.icu_data_path = icu_data_path;
   settings.assets_path = args->assets_path;
+  if (shorebird_args && !flutter::shorebird::ConfigureSignedInterpreterHost(
+                            *shorebird_args, settings)) {
+    return LOG_EMBEDDER_ERROR(
+        kInvalidArguments, "Invalid or unsupported signed interpreter host.");
+  }
   settings.leak_vm = !SAFE_ACCESS(args, shutdown_dart_vm_when_done, false);
   settings.old_gen_heap_size = SAFE_ACCESS(args, dart_old_gen_heap_size, -1);
   settings.enable_wide_gamut = SAFE_ACCESS(args, enable_wide_gamut, false);
@@ -2620,6 +2628,33 @@ FlutterEngineResult FlutterEngineInitialize(size_t version,
   *engine_out = reinterpret_cast<FLUTTER_API_SYMBOL(FlutterEngine)>(
       embedder_engine.release());
   return kSuccess;
+}
+
+}  // namespace
+
+FlutterEngineResult FlutterEngineInitialize(size_t version,
+                                            const FlutterRendererConfig* config,
+                                            const FlutterProjectArgs* args,
+                                            void* user_data,
+                                            FLUTTER_API_SYMBOL(FlutterEngine) *
+                                                engine_out) {
+  return InitializeEngine(version, config, args, user_data, engine_out,
+                          nullptr);
+}
+
+FlutterEngineResult flutter::shorebird::InitializeWithShorebirdInterpreter(
+    size_t version,
+    const FlutterRendererConfig* renderer_config,
+    const FlutterProjectArgs* project_args,
+    void* user_data,
+    FLUTTER_API_SYMBOL(FlutterEngine) * engine_out,
+    const ShorebirdConfigArgs* shorebird_args) {
+  if (!shorebird_args) {
+    return LOG_EMBEDDER_ERROR(kInvalidArguments,
+                              "Signed interpreter configuration was missing.");
+  }
+  return InitializeEngine(version, renderer_config, project_args, user_data,
+                          engine_out, shorebird_args);
 }
 
 FlutterEngineResult FlutterEngineRunInitialized(

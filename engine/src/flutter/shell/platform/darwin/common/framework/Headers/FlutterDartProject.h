@@ -9,7 +9,6 @@
 
 #import "FlutterMacros.h"
 
-
 // Open Shorebird encrypted-delivery key lookup. Register before any Flutter
 // engine initializes the updater. The callback runs on updater workers and must
 // remain valid for the process lifetime. Return a provisioned 32-byte per-patch
@@ -22,9 +21,11 @@
 #ifdef __cplusplus
 extern "C" {
 #endif
-typedef bool (*FlutterShorebirdPatchDecryptionKeyProvider)(
-    const char* _Nonnull key_id, const char* _Nonnull aad, uint8_t* _Nonnull key_out,
-    size_t capacity, size_t* _Nonnull written);
+typedef bool (*FlutterShorebirdPatchDecryptionKeyProvider)(const char* _Nonnull key_id,
+                                                           const char* _Nonnull aad,
+                                                           uint8_t* _Nonnull key_out,
+                                                           size_t capacity,
+                                                           size_t* _Nonnull written);
 // Non-null enables required encrypted delivery; null disables it before init.
 // Returns false after initialization. Requires strict signed-response policies.
 bool shorebird_set_patch_decryption_key_provider(
@@ -79,7 +80,7 @@ FLUTTER_DARWIN_EXPORT
  * be placed in shorebird.yaml, assets, Dart defines, or application logs.
  */
 + (BOOL)setShorebirdAotPatchKeyProvider:(FlutterShorebirdAotPatchKeyProvider)provider
-    NS_SWIFT_NAME(setShorebirdAotPatchKeyProvider(_:)) API_UNAVAILABLE(macos);
+    NS_SWIFT_NAME(setShorebirdAotPatchKeyProvider(_:));
 
 /**
  * An NSArray of NSStrings to be passed as command line arguments to the Dart entrypoint.

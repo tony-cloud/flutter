@@ -165,7 +165,7 @@ std::weak_ptr<DartIsolate> DartIsolate::CreateRunningRootIsolate(
     return {};
   }
 
-#if FML_OS_IOS
+#if FML_OS_MACOSX
   // A shared group already owns its bytecode installation. Never rewrite an
   // existing group's functions while another isolate can execute them.
   const auto selected_patch = settings.shorebird_interpreter_patch

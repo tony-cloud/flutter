@@ -9,6 +9,7 @@
 
 #import <Metal/Metal.h>
 
+#include "flutter/runtime/shorebird/interpreter_patch.h"
 #include "flutter/shell/platform/common/engine_switches.h"
 
 static NSString* const kICUBundlePath = @"icudtl.dat";
@@ -42,6 +43,26 @@ static NSString* const kAppBundleIdentifier = @"io.flutter.flutter.app";
   NSString* _ICUDataPath;
 }
 
++ (BOOL)setShorebirdAotPatchKeyProvider:(FlutterShorebirdAotPatchKeyProvider)provider {
+  if (!provider) {
+    return NO;
+  }
+  FlutterShorebirdAotPatchKeyProvider retainedProvider = [provider copy];
+  return flutter::shorebird::RegisterInterpreterKeyProvider(
+      [retainedProvider](const char* keyId, uint8_t* buffer, intptr_t capacity, intptr_t* length) {
+        @autoreleasepool {
+          NSString* identifier = [NSString stringWithUTF8String:keyId];
+          NSData* key = identifier ? retainedProvider(identifier) : nil;
+          if (!key || key.length != 32 || capacity < 32) {
+            return false;
+          }
+          [key getBytes:buffer length:32];
+          *length = 32;
+          return true;
+        }
+      });
+}
+
 - (instancetype)init {
   return [self initWithPrecompiledDartBundle:nil];
 }
@@ -49,6 +70,7 @@ static NSString* const kAppBundleIdentifier = @"io.flutter.flutter.app";
 - (instancetype)initWithPrecompiledDartBundle:(NSBundle*)bundle {
   self = [super init];
   NSAssert(self, @"Super init cannot be nil");
+  flutter::shorebird::SealInterpreterKeyProvider();
 
   _dartBundle = bundle ?: FLTFrameworkBundleWithIdentifier(kAppBundleIdentifier);
   if (_dartBundle == nil) {
@@ -69,6 +91,7 @@ static NSString* const kAppBundleIdentifier = @"io.flutter.flutter.app";
 - (instancetype)initWithAssetsPath:(NSString*)assets ICUDataPath:(NSString*)icuPath {
   self = [super init];
   NSAssert(self, @"Super init cannot be nil");
+  flutter::shorebird::SealInterpreterKeyProvider();
   _assetsPath = assets;
   _ICUDataPath = icuPath;
   return self;
@@ -98,6 +121,10 @@ static NSString* const kAppBundleIdentifier = @"io.flutter.flutter.app";
 
 - (BOOL)enableSDFs {
   return YES;
+}
+
+- (NSString*)shorebirdDartExecutablePath {
+  return _dartBundle.isLoaded ? _dartBundle.executablePath : nil;
 }
 
 - (NSString*)assetsPath {

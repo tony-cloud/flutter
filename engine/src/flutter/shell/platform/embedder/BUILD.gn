@@ -93,6 +93,7 @@ template("embedder_source_set") {
       "pixel_formats.h",
       "platform_view_embedder.cc",
       "platform_view_embedder.h",
+      "shorebird_interpreter.cc",
       "vsync_waiter_embedder.cc",
       "vsync_waiter_embedder.h",
     ]
@@ -109,8 +110,10 @@ template("embedder_source_set") {
       "//flutter/flow",
       "//flutter/fml",
       "//flutter/lib/ui",
+      "//flutter/runtime",
       "//flutter/runtime:libdart",
       "//flutter/shell/common",
+      "//flutter/shell/common/shorebird",
       "//flutter/skia",
       "//flutter/third_party/tonic",
     ]
@@ -392,9 +395,14 @@ if (enable_unittests) {
     sources = [
       "tests/embedder_frozen_unittests.cc",
       "tests/embedder_unittests.cc",
+      "tests/shorebird_interpreter_unittests.cc",
     ]
 
-    deps = [ ":embedder_unittests_library" ]
+    deps = [
+      ":embedder_unittests_library",
+      ":shorebird_aot_data_headers",
+      "//flutter/shell/common/shorebird",
+    ]
 
     if (test_enable_gl) {
       sources += [ "tests/embedder_gl_unittests.cc" ]

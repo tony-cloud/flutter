@@ -21,6 +21,9 @@
  */
 @property(nonatomic, readonly, nullable) NSString* assetsPath;
 
+// Actual loaded Dart bundle executable, including custom framework bundles.
+@property(nonatomic, readonly, nullable) NSString* shorebirdDartExecutablePath;
+
 /**
  * The path to the ICU data file.
  */
