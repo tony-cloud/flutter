@@ -18,6 +18,8 @@ class BuildMacosCommand extends BuildSubCommand {
     : super(verboseHelp: verboseHelp) {
     addCommonDesktopBuildOptions(verboseHelp: verboseHelp);
     usesFlavorOption();
+    // Shorebird: allow building an unsigned archive for a later signing step.
+    argParser.addFlag('codesign', defaultsTo: true, help: 'Codesign the application bundle.');
     // Shorebird: select architectures explicitly without changing native defaults.
     argParser.addMultiOption(
       'target-platform',
@@ -71,6 +73,7 @@ class BuildMacosCommand extends BuildSubCommand {
       targetOverride: targetFile,
       verboseLogging: globals.logger.isVerbose,
       configOnly: configOnly,
+      codesign: boolArg('codesign'),
       sizeAnalyzer: SizeAnalyzer(
         fileSystem: globals.fs,
         logger: globals.logger,
