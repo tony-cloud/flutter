@@ -17,7 +17,7 @@ vars = {
   'llvm_git': 'https://llvm.googlesource.com',
   'dart_ai_rev': '9c96bfe5f091c9451eff5b59c9bffeb2e806b875',
   'skia_revision': '8df24be66531469e576a806749a0202ae26b8d08',
-  "dart_sdk_revision": "ec6287baef0def9b34f66af7fa48931fff7b152f",
+  "dart_sdk_revision": "928a00195899056e8283df710a4028e2c20e291d",
   "dart_sdk_git": "https://github.com/tony-cloud/dart-sdk.git",
   "updater_git": "https://github.com/tony-cloud/shorebird-updater.git",
   "updater_rev": "bb4224303d18baaacd1c2316e24336813517142d",
