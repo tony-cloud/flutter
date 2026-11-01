@@ -6,6 +6,7 @@
 #include <utility>
 #include <vector>
 
+#include "flutter/fml/paths.h"
 #include "flutter/runtime/shorebird/interpreter_patch.h"
 #include "gtest/gtest.h"
 
@@ -85,7 +86,8 @@ TEST(Shorebird, FullReplacementBaseUsesSignedAssetsWithoutAesOrUpdaterConfig) {
   ASSERT_NE(base, nullptr);
   EXPECT_TRUE(base->validation_error.empty());
   EXPECT_EQ(base->path,
-            "/signed/flutter_assets/shorebird_replacement_base.sbr");
+            fml::paths::JoinPaths(
+                {"/signed/flutter_assets", "shorebird_replacement_base.sbr"}));
   EXPECT_EQ(base->host_abi, std::string(64, 'a'));
   EXPECT_EQ(base->snapshot_hash, std::string(64, 'b'));
 }
