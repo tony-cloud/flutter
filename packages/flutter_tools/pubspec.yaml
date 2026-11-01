@@ -65,7 +65,7 @@ dependencies:
   shorebird_build_trace:
     git:
       url: https://github.com/tony-cloud/shorebird.git
-      ref: cff436f66534e14618cddcaf93f0d0e9862c937a
+      ref: 3b53aa62701b06750e025c2afd5b29c79ed6356a
       path: packages/shorebird_build_trace
   hooks_runner: 1.5.0
   hooks: 2.0.2
@@ -137,4 +137,4 @@ dartdoc:
   # Exclude this package from the hosted API docs.
   nodoc: true
 
-# PUBSPEC CHECKSUM: 8d140k
+# PUBSPEC CHECKSUM: 67klf3
