@@ -282,9 +282,11 @@ TEST_F(DesktopInterpreterConfigTest, PreservesDesktopScopeAndWholeFramework) {
   const auto args = Args();
   ASSERT_TRUE(ConfigureShorebirdInterpreter(args, settings_));
   EXPECT_EQ(updater_->last_config.code_cache_dir,
-            "/root/cache/shorebird_updater/app");
+            fml::paths::JoinPaths(
+                {args.code_cache_path, "shorebird_updater", "app"}));
   EXPECT_EQ(updater_->last_config.app_storage_dir,
-            "/root/storage/shorebird_updater/app");
+            fml::paths::JoinPaths(
+                {args.app_storage_path, "shorebird_updater", "app"}));
   EXPECT_EQ(updater_->last_config.original_libapp_paths,
             std::vector<std::string>{"/signed/Custom.framework/Custom"});
   EXPECT_EQ(updater_->last_config.release_version, "1.0+2");
