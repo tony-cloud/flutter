@@ -8,6 +8,7 @@
 #include <filesystem>
 #include <fstream>
 #include <memory>
+#include <string>
 #include <utility>
 #include <vector>
 
@@ -229,8 +230,9 @@ TEST_F(ShorebirdFlutterWindowsEngineTest,
 TEST_F(ShorebirdFlutterWindowsEngineTest,
        CompiledV2MetadataOrScopeFailureCannotLoadUnpreparedBase) {
   fml::ScopedTemporaryDirectory temporary;
-  const auto assets = std::filesystem::u8path(temporary.path()) /
-                      std::filesystem::path(L"发布-данные");
+  const auto assets = std::filesystem::path(std::u8string(
+                          temporary.path().begin(), temporary.path().end())) /
+                      u8"发布-данные";
   ASSERT_TRUE(std::filesystem::create_directory(assets));
   {
     std::ofstream yaml(assets / "shorebird.yaml");
