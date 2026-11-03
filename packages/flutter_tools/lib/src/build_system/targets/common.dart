@@ -17,6 +17,7 @@ import '../../features.dart';
 import '../../globals.dart' as globals show xcode;
 import '../../isolated/native_assets/dart_hook_result.dart';
 import '../../project.dart';
+import '../../shorebird/shorebird_aot_link.dart';
 import '../../shorebird/shorebird_build_key.dart';
 import '../../shorebird/shorebird_native_assets.dart';
 import '../../shorebird/shorebird_replacement_host.dart';
@@ -603,5 +604,8 @@ abstract final class LinkSupplement {
     maybeCopy('App.dd_slots.link');
     // Per-slot DD resolution outcome diagnostic (TSV).
     maybeCopy('App.dd_resolution.tsv');
+    // Linked AOT profile (ios-aot-link): the sidecars and, for patches, the
+    // ELF the linker reads. They live here, never in App.framework.
+    kShorebirdAotLinkSupplementFiles.forEach(maybeCopy);
   }
 }

@@ -8,6 +8,7 @@ import '../artifacts.dart';
 import '../build_info.dart';
 import '../darwin/darwin.dart';
 import '../macos/xcode.dart';
+import '../shorebird/shorebird_aot_link.dart';
 import '../shorebird/shorebird_dd.dart';
 import '../shorebird/shorebird_interpreter.dart';
 import '../shorebird/shorebird_replacement.dart';
@@ -258,12 +259,34 @@ class AOTSnapshotter {
         processManager: _processManager,
       ).validate(inputs.hostAbi);
     }
+    // Linked AOT profile (ios-aot-link): ordinary TFA AOT plus link sidecars.
+    final bool usesAotLink =
+        !usesInterpreter &&
+        shorebirdUsesAotLink(_fileSystem, platform.getName(), projectDirectory: _projectDirectory);
+    ShorebirdAotLink? aotLink;
+    if (usesAotLink) {
+      if (buildMode != BuildMode.release) {
+        throw const FormatException('ios-aot-link requires a PRODUCT release build');
+      }
+      if (darwinArch != DarwinArch.arm64 ||
+          (sdkRoot?.toLowerCase().contains('iphonesimulator') ?? false)) {
+        throw const FormatException('ios-aot-link requires an arm64 iOS device build');
+      }
+      if (dartObfuscation) {
+        throw const FormatException(
+          'ios-aot-link does not support Dart obfuscation (link keys are recorded before '
+          'obfuscation)',
+        );
+      }
+      aotLink = ShorebirdAotLink.read(_fileSystem, _platform.environment, outputDir.parent.path);
+    }
     final bool usesLinker =
         !usesInterpreter &&
+        !usesAotLink &&
         shorebirdLegacyAotToolsEnabled(_platform.environment) &&
         (platform == TargetPlatform.ios || platform == TargetPlatform.darwin);
     if (!usesLinker && (platform == TargetPlatform.ios || platform == TargetPlatform.darwin)) {
-      shorebirdRemoveNativeLinkOutputs(outputDir.parent);
+      shorebirdRemoveNativeLinkOutputs(outputDir.parent, keepAotLink: usesAotLink);
     }
     final dumpLinkInfoArgs = <String>[
       // Shorebird dumps the class table information during snapshot compilation which is later used during linking.
@@ -422,6 +445,19 @@ class AOTSnapshotter {
       _deleteDdOutputs(outputDir);
     }
 
+    if (aotLink != null) {
+      final int aotLinkExit = await _prepareAotLink(
+        aotLink,
+        snapshotType: snapshotType,
+        darwinArch: darwinArch,
+        genSnapshotArgs: genSnapshotArgs,
+        mainPath: mainPath,
+      );
+      if (aotLinkExit != 0) {
+        return aotLinkExit;
+      }
+    }
+
     final int genSnapshotExitCode = await _genSnapshot.run(
       snapshotType: snapshotType,
       additionalArgs: genSnapshotArgs,
@@ -451,6 +487,172 @@ class AOTSnapshotter {
     } else {
       return 0;
     }
+  }
+
+  /// Runs the extra passes of the linked AOT profile and adds its flags to
+  /// [genSnapshotArgs], which then drives the ordinary assembly build.
+  ///
+  /// Release: an optional DD selection pass, then the final build writes the
+  /// sidecar (`--print_link_info_to`, which does not change the output bytes).
+  ///
+  /// Patch: pass 1 compiles against the release sidecar and writes its own
+  /// sidecar, `ios_linker pool-hints` turns the two into constraints, and pass
+  /// 2 compiles against those constraints. Pass 2 is an ELF because the linker
+  /// reads the patch as gen_snapshot's ELF; the assembly build that follows
+  /// uses the same constraints so the App.framework matches it. The ELF and
+  /// its sidecar stay next to the output directory, not in App.framework.
+  ///
+  /// Returns a non-zero exit code on failure.
+  Future<int> _prepareAotLink(
+    ShorebirdAotLink aotLink, {
+    required SnapshotType snapshotType,
+    required DarwinArch? darwinArch,
+    required List<String> genSnapshotArgs,
+    required String mainPath,
+  }) async {
+    String side(String name) => _fileSystem.path.join(aotLink.sidecarDirectory, name);
+    // Everything except the snapshot kind/output and the kernel is shared.
+    final List<String> common = genSnapshotArgs
+        .where(
+          (String a) =>
+              a != mainPath && !a.startsWith('--snapshot_kind=') && !a.startsWith('--assembly='),
+        )
+        .toList();
+    List<String> elfArgs(String elf, List<String> extra) => <String>[
+      ...common,
+      '--snapshot_kind=app-aot-elf',
+      '--elf=$elf',
+      if (!common.contains('--strip')) '--strip',
+      ...extra,
+      mainPath,
+    ];
+    void insertBeforeMain(List<String> extra) {
+      genSnapshotArgs.insertAll(genSnapshotArgs.indexOf(mainPath), extra);
+    }
+
+    Future<int> runTool(List<String> arguments, String what) async {
+      final String? tool = aotLink.toolPath;
+      if (tool == null) {
+        _logger.printError('$what needs the ios_linker tool: set $kShorebirdAotLinkToolEnvVar.');
+        return 1;
+      }
+      final bool dart = tool.endsWith('.dart') || tool.endsWith('.dill') || tool.endsWith('.snapshot');
+      final RunResult result = await _processUtils.run(<String>[
+        if (dart) _artifacts.getArtifactPath(Artifact.engineDartBinary),
+        tool,
+        ...arguments,
+      ]);
+      if (result.exitCode != 0) {
+        _logger.printError('$what failed with exit code ${result.exitCode}:\n${result.stderr}${result.stdout}');
+      }
+      return result.exitCode;
+    }
+
+    // A release and a patch build share this directory; never mix their files.
+    for (final name in aotLink.isPatch
+        ? const <String>[kShorebirdAotLinkReleaseSidecar, kShorebirdAotLinkDdTargets]
+        : const <String>[
+            kShorebirdAotLinkConstraints,
+            kShorebirdAotLinkPatchElf,
+            kShorebirdAotLinkPatchSidecar,
+          ]) {
+      final File stale = _fileSystem.file(side(name));
+      if (stale.existsSync()) {
+        stale.deleteSync();
+      }
+    }
+
+    if (!aotLink.isPatch) {
+      // Release.
+      String? ddTargets;
+      if (aotLink.ddMaxBytes > 0) {
+        final String elf = side(kShorebirdAotLinkDdAnalysisElf);
+        final String sidecar = side(kShorebirdAotLinkDdAnalysisSidecar);
+        ddTargets = side(kShorebirdAotLinkDdTargets);
+        _logger.printTrace('ios-aot-link DD selection: max bytes ${aotLink.ddMaxBytes}');
+        final int analysisExit = await _genSnapshot.run(
+          snapshotType: snapshotType,
+          additionalArgs: elfArgs(elf, <String>['--print_link_info_to=$sidecar']),
+          darwinArch: darwinArch,
+        );
+        if (analysisExit != 0) {
+          _logger.printError('DD analysis build failed with exit code $analysisExit');
+          return analysisExit;
+        }
+        final int selectExit = await runTool(<String>[
+          'dd-select',
+          '--base',
+          elf,
+          '--link',
+          sidecar,
+          '--max-bytes',
+          '${aotLink.ddMaxBytes}',
+          if (aotLink.ddPackages.isNotEmpty) ...<String>['--only-packages', aotLink.ddPackages.join(',')],
+          '--out',
+          ddTargets,
+        ], 'DD selection');
+        _fileSystem.file(elf).deleteSync();
+        if (selectExit != 0) {
+          return selectExit;
+        }
+      } else if (_fileSystem.file(side(kShorebirdAotLinkDdTargets)).existsSync()) {
+        _fileSystem.file(side(kShorebirdAotLinkDdTargets)).deleteSync();
+      }
+      insertBeforeMain(<String>[
+        '--print_link_info_to=${side(kShorebirdAotLinkReleaseSidecar)}',
+        if (ddTargets != null) '--link_dd_targets=$ddTargets',
+      ]);
+      return 0;
+    }
+
+    // Patch.
+    final String base = aotLink.baseLink!;
+    final String? dd = aotLink.ddTargets;
+    final ddArgs = <String>[if (dd != null) '--link_dd_targets=$dd'];
+    final String pass1Elf = side(kShorebirdAotLinkPass1Elf);
+    final String pass1Sidecar = side(kShorebirdAotLinkPass1Sidecar);
+    final String constraints = side(kShorebirdAotLinkConstraints);
+    final int pass1Exit = await _genSnapshot.run(
+      snapshotType: snapshotType,
+      additionalArgs: elfArgs(pass1Elf, <String>[
+        '--link_base=$base',
+        '--print_link_info_to=$pass1Sidecar',
+        ...ddArgs,
+      ]),
+      darwinArch: darwinArch,
+    );
+    if (pass1Exit != 0) {
+      _logger.printError('Linked AOT patch pass 1 failed with exit code $pass1Exit');
+      return pass1Exit;
+    }
+    final int hintsExit = await runTool(<String>[
+      'pool-hints',
+      '--base-link',
+      base,
+      '--patch-link',
+      pass1Sidecar,
+      '--out',
+      constraints,
+    ], 'Pool hints');
+    _fileSystem.file(pass1Elf).deleteSync();
+    if (hintsExit != 0) {
+      return hintsExit;
+    }
+    final int pass2Exit = await _genSnapshot.run(
+      snapshotType: snapshotType,
+      additionalArgs: elfArgs(side(kShorebirdAotLinkPatchElf), <String>[
+        '--link_base=$constraints',
+        '--print_link_info_to=${side(kShorebirdAotLinkPatchSidecar)}',
+        ...ddArgs,
+      ]),
+      darwinArch: darwinArch,
+    );
+    if (pass2Exit != 0) {
+      _logger.printError('Linked AOT patch pass 2 failed with exit code $pass2Exit');
+      return pass2Exit;
+    }
+    insertBeforeMain(<String>['--link_base=$constraints', ...ddArgs]);
+    return 0;
   }
 
   /// Reads the SHOREBIRD_DD_MAX_BYTES env var. See [shorebirdDdMaxBytes].

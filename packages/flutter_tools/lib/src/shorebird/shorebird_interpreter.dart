@@ -5,6 +5,7 @@
 import 'package:yaml/yaml.dart';
 
 import '../base/file_system.dart';
+import 'shorebird_aot_link.dart';
 
 /// Source YAML opt-in for baselines that support structural bytecode updates.
 const kShorebirdStructuralUpdatesKey = 'aot_patch_structural_updates';
@@ -144,6 +145,26 @@ bool shorebirdUsesFullReplacement(
   return enabled;
 }
 
+/// Selects the iOS linked AOT profile (`aot-link`): native AOT whose patches
+/// are linked against the release (`aot_patch_runtime_mode: ios-aot-link`).
+bool shorebirdUsesAotLink(FileSystem fileSystem, String? targetOS, {Directory? projectDirectory}) {
+  final YamlMap? yaml = _readConfiguration(fileSystem, projectDirectory);
+  if (yaml == null) {
+    return false;
+  }
+  final bool enabled = shorebirdUsesAotLinkMode(
+    yaml['aot_patch_runtime_mode'] as String?,
+    shorebirdTargetOS(targetOS),
+  );
+  if (enabled) {
+    // These profiles require the interpreter runtime mode; reject the mix with
+    // the same message as everywhere else.
+    shorebirdStructuralUpdatesEnabled(yaml);
+    shorebirdFullReplacementEnabled(yaml);
+  }
+  return enabled;
+}
+
 /// Retains the iOS-only selector for existing callers.
 bool shorebirdUsesIosFullReplacement(
   FileSystem fileSystem,
@@ -160,8 +181,8 @@ bool shorebirdUsesIosFullReplacement(
 
 /// Prevents LinkSupplement from collecting stale private native linker tables
 /// when a previous build used the legacy native linker.
-void shorebirdRemoveNativeLinkOutputs(Directory buildDirectory) {
-  for (final name in const <String>[
+void shorebirdRemoveNativeLinkOutputs(Directory buildDirectory, {bool keepAotLink = false}) {
+  for (final name in <String>[
     'App.class_table.json',
     'App.ct.link',
     'App.field_table.json',
@@ -173,6 +194,9 @@ void shorebirdRemoveNativeLinkOutputs(Directory buildDirectory) {
     'App.dd_callers.link',
     'App.dd_slots.link',
     'App.dd_resolution.tsv',
+    // The linked AOT profile's sidecars. A release/patch of another profile
+    // must not ship them.
+    if (!keepAotLink) ...kShorebirdAotLinkSupplementFiles,
   ]) {
     final File file = buildDirectory.childFile(name);
     if (file.existsSync()) {

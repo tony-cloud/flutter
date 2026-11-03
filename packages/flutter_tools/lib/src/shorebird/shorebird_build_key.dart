@@ -8,6 +8,7 @@ import 'package:crypto/crypto.dart';
 
 import '../build_info.dart';
 import '../build_system/build_system.dart';
+import 'shorebird_aot_link.dart';
 import 'shorebird_dd.dart';
 import 'shorebird_interpreter.dart';
 import 'shorebird_native_selection.dart';
@@ -90,6 +91,17 @@ mixin ShorebirdLegacyNativeLinkerBuildKey on Target {
       _withShorebirdDigest(super.buildKeyFor(environment), <String, String>{
         if (shorebirdLegacyAotToolsEnabled(environment.platform.environment))
           kShorebirdLegacyAotToolsEnvVar: 'true',
+        // The linked AOT profile (ios-aot-link) compiles against the release
+        // sidecar and DD targets and writes extra files; a changed input or a
+        // release/patch switch must rerun the snapshot.
+        for (final String key in const <String>[
+          kShorebirdAotLinkBaseEnvVar,
+          kShorebirdAotLinkDdTargetsEnvVar,
+          kShorebirdAotLinkDdMaxBytesEnvVar,
+          kShorebirdAotLinkDdPackagesEnvVar,
+        ])
+          if (environment.platform.environment[key] case final String value when value.isNotEmpty)
+            key: value,
       });
 }
 
