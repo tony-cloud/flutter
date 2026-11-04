@@ -1143,6 +1143,78 @@ void main() {
     overrides: <Type, Generator>{ProcessManager: () => processManager, Cache: () => cache},
   );
 
+  testUsingContext(
+    'engineCommitDate lenient git fallback does not print MSBuild-style errors',
+    () async {
+      final fs = MemoryFileSystem.test();
+      final Directory flutterRoot = fs.directory(fs.path.join('path', 'to', 'flutter'));
+      flutterRoot.childDirectory('bin').childDirectory('cache').createSync(recursive: true);
+
+      const logPrefix = <String>['git', '-c', 'log.showSignature=false', 'log'];
+      processManager.addCommands(<FakeCommand>[
+        const FakeCommand(
+          command: <String>[...logPrefix, '-n', '1', '--pretty=format:%H'],
+          stdout: '1234abcd',
+        ),
+        const FakeCommand(command: <String>['git', 'tag', '--points-at', '1234abcd']),
+        ...mockGitTagHistory(
+          latestTag: '0.1.2-3',
+          headRef: '1234abcd',
+          ancestorRef: 'abcd1234',
+          commitsBetweenRefs: 170,
+        ),
+        const FakeCommand(
+          command: <String>[
+            ...logPrefix,
+            'abcdefg',
+            '-n',
+            '1',
+            '--pretty=format:%ad',
+            '--date=iso',
+          ],
+          exitCode: 128,
+          stderr: 'fatal: bad object abcdefg',
+        ),
+      ]);
+
+      final flutterVersion = FlutterVersion(
+        clock: _testClock,
+        fs: fs,
+        flutterRoot: flutterRoot.path,
+        git: git,
+      );
+      final String? date = flutterVersion.engineCommitDate;
+
+      expect(date, DateTime.fromMillisecondsSinceEpoch(0).toString());
+      expect(
+        testLogger.errorText,
+        contains(
+          'Could not determine the git commit date for abcdefg; using '
+          '${DateTime.fromMillisecondsSinceEpoch(0)}.',
+        ),
+      );
+
+      // MSBuild's canonical error/warning format (ported from its CanonicalError parser).
+      final msbuildDiagnostic = RegExp(
+        r'^\s*(((\d+>)?[a-zA-Z]?:[^:]*)|([^:]*)):?\s*([^:]*? )?(error|warning)( \s*[^: ]*)?\s*:',
+        caseSensitive: false,
+      );
+      for (final String line in testLogger.errorText.split('\n')) {
+        expect(line, isNot(matches(msbuildDiagnostic)), reason: 'line: $line');
+        expect(line.trimLeft(), isNot(startsWith('Standard error:')));
+      }
+      expect(testLogger.errorText, isNot(contains('fatal: bad object')));
+
+      expect(testLogger.traceText, contains('fatal: bad object abcdefg'));
+      expect(processManager, hasNoRemainingExpectations);
+    },
+    overrides: <Type, Generator>{
+      ProcessManager: () => processManager,
+      Cache: () => cache,
+      Logger: () => testLogger,
+    },
+  );
+
   testUsingContext('FlutterVersion() falls back to git if .version.json is malformed', () async {
     final fs = MemoryFileSystem.test();
     final Directory flutterRoot = fs.directory(fs.path.join('path', 'to', 'flutter'));

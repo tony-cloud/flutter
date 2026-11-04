@@ -506,10 +506,13 @@ String _gitCommitDate({
   );
   if (lenient) {
     final dummyDate = DateTime.fromMillisecondsSinceEpoch(0);
-    globals.printError(
-      'Failed to find the latest git commit date: $error\n'
-      'Returning $dummyDate instead.',
-    );
+    // Keep this to one line that does not look like an MSBuild diagnostic.
+    // When run under MSBuild (e.g. tool_backend.bat in a CustomBuild step), a
+    // line such as "Standard error: ..." matches MSBuild's canonical error
+    // format and fails the build with MSB8066 even if the exit code is 0.
+    // See https://github.com/flutter/flutter/issues/194906.
+    globals.printError('Could not determine the git commit date for $gitRef; using $dummyDate.');
+    globals.printTrace('Failed to find the latest git commit date: $error');
     // Return something that DateTime.parse() can parse.
     return dummyDate.toString();
   }
