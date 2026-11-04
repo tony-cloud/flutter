@@ -29,6 +29,17 @@ declare_args() {
   # See [go/slimpeller-dashboard](https://github.com/orgs/flutter/projects/21)
   # for details.
   slimpeller = false
+
+  # iOS: run linked AOT patches (vmcode) in mixed mode: linked code from the
+  # signed release, the rest in the Dart VM's ARM64 simulator. Requires the
+  # Dart runtime built with dart_mixed_mode = true (target toolchain only;
+  # gen_snapshot is unchanged). See docs/ios-linker/RUNTIME.md.
+  shorebird_mixed_mode = false
+
+  # Testing only: also load a mixed-mode patch from
+  # <app home>/Library/Application Support/shorebird/mixed_dev_patch.vmcode
+  # without the updater. Never enable in a shipping engine.
+  shorebird_mixed_dev_patch = false
 }
 
 # feature_defines_list ---------------------------------------------------------
@@ -73,6 +84,12 @@ if (is_android || is_ios || is_linux || is_mac || is_win) {
 
 if (is_ios) {
   feature_defines_list += [ "SHOREBIRD_USE_INTERPRETER=1" ]
+  if (shorebird_mixed_mode) {
+    feature_defines_list += [ "SHOREBIRD_MIXED_MODE=1" ]
+    if (shorebird_mixed_dev_patch) {
+      feature_defines_list += [ "SHOREBIRD_MIXED_DEV_PATCH=1" ]
+    }
+  }
 }
 
 if (is_ios || is_mac) {

@@ -91,6 +91,13 @@ source_set("runtime") {
     "skia_concurrent_executor.h",
   ]
 
+  if (is_ios && shorebird_mixed_mode) {
+    sources += [
+      "shorebird/mixed_patch.cc",
+      "shorebird/mixed_patch.h",
+    ]
+  }
+
   if (is_ios && flutter_runtime_mode == "debug") {
     # These contain references to private APIs and this TU must only be compiled
     # in debug runtime modes.
@@ -123,6 +130,12 @@ source_set("runtime") {
     "//flutter/third_party/tonic",
     "//flutter/txt",
   ]
+  if (is_ios && shorebird_mixed_mode) {
+    deps += [
+      "$dart_src/runtime/bin:shared_object_loaders",
+      "//flutter/third_party/boringssl",
+    ]
+  }
 }
 
 if (enable_unittests) {

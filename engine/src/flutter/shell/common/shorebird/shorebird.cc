@@ -446,6 +446,22 @@ void ConfigureShorebird(std::string code_cache_path,
   if (!active_path.empty()) {
     FML_LOG(INFO) << "Shorebird updater: active path: " << active_path;
 
+#if FML_OS_IOS && SHOREBIRD_MIXED_MODE
+    // A linked AOT patch (vmcode v1). The updater has verified its signed hash
+    // over the whole file and its header against this release; the engine
+    // checks the release text hash again against the mapped release and runs
+    // the release if the patch does not load or link (runtime/shorebird/
+    // mixed_patch.h).
+    const std::string kVmcodeSuffix = ".vmcode";
+    if (active_path.size() > kVmcodeSuffix.size() &&
+        active_path.compare(active_path.size() - kVmcodeSuffix.size(),
+                            kVmcodeSuffix.size(), kVmcodeSuffix) == 0) {
+      settings.shorebird_mixed_patch_path = active_path;
+      settings.shorebird_interpreter_patch =
+          shorebird::SelectInterpreterPatchForProcess(nullptr);
+      return;
+    }
+#endif
 #if FML_OS_IOS
     // An encrypted artifact is JSON/bytecode data, never a native image. Keep
     // the reviewed base snapshot linked and install only before its main runs.

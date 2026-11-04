@@ -148,6 +148,11 @@ struct Settings {
   // V2 bundled code requires a checked BASE token before the fresh group runs.
   std::function<bool()> shorebird_interpreter_begin_base;
 
+  // iOS mixed mode (SHOREBIRD_MIXED_MODE): a linked AOT patch (vmcode v1)
+  // whose isolate snapshot replaces the release's, executing linked code from
+  // the release and the rest in the simulator. Empty: run the release.
+  std::string shorebird_mixed_patch_path;
+
   // Supplied by the shell; runtime startup stays independent of updater APIs.
   fml::closure shorebird_launch_success_callback;
   fml::closure shorebird_launch_failure_callback;

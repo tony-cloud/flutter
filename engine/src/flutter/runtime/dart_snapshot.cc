@@ -12,6 +12,9 @@
 #include "flutter/fml/trace_event.h"
 #include "flutter/lib/snapshot/snapshot.h"
 #include "flutter/runtime/dart_vm.h"
+#if SHOREBIRD_MIXED_MODE
+#include "flutter/runtime/shorebird/mixed_patch.h"  // nogncheck
+#endif
 #include "third_party/dart/runtime/include/dart_api.h"
 
 #if SHOREBIRD_USE_INTERPRETER && !FML_OS_IOS
@@ -233,6 +236,19 @@ fml::RefPtr<const DartSnapshot> DartSnapshot::IsolateSnapshotFromSettings(
     // candidate. Resolve the complete bundled pair through the usual route.
   }
 #endif
+#if SHOREBIRD_MIXED_MODE && !DART_SNAPSHOT_STATIC_LINK
+  if (!settings.shorebird_mixed_patch_path.empty()) {
+    // The release stays mapped: linked patch code runs from its text. Any
+    // failure to load or link the patch boots the release (fail closed).
+    auto release_data = ResolveIsolateData(settings);
+    auto release_instructions = ResolveIsolateInstructions(settings);
+    if (auto patch = shorebird::LoadMixedPatch(
+            settings.shorebird_mixed_patch_path, release_instructions)) {
+      return IsolateSnapshotFromMappings(patch->data, patch->instructions);
+    }
+    return IsolateSnapshotFromMappings(release_data, release_instructions);
+  }
+#endif  // SHOREBIRD_MIXED_MODE && !DART_SNAPSHOT_STATIC_LINK
   auto snapshot =
       fml::MakeRefCounted<DartSnapshot>(ResolveIsolateData(settings),         //
                                         ResolveIsolateInstructions(settings)  //

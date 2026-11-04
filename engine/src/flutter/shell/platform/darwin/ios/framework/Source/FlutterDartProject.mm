@@ -194,6 +194,18 @@ flutter::Settings FLTDefaultSettingsForBundle(NSBundle* bundle, NSProcessInfo* p
   } else {
     NSLog(@"Failed to find shorebird.yaml, not starting updater.");
   }
+#if SHOREBIRD_MIXED_DEV_PATCH
+  // Test engines only (GN shorebird_mixed_dev_patch): a mixed-mode patch put
+  // into the app container by hand, bypassing the updater.
+  if (settings.shorebird_mixed_patch_path.empty()) {
+    std::string dev_patch = fml::paths::JoinPaths({cache_path, "mixed_dev_patch.vmcode"});
+    if ([[NSFileManager defaultManager]
+            fileExistsAtPath:[NSString stringWithUTF8String:dev_patch.c_str()]]) {
+      NSLog(@"Shorebird mixed mode: using the development patch %s", dev_patch.c_str());
+      settings.shorebird_mixed_patch_path = dev_patch;
+    }
+  }
+#endif
 
   // Domain network configuration
   // Disabled in https://github.com/flutter/flutter/issues/72723.
