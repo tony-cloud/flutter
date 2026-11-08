@@ -9,6 +9,7 @@ import 'package:flutter_tools/src/shorebird/shorebird_yaml.dart';
 import 'package:test/test.dart';
 import 'package:yaml/yaml.dart';
 
+import '../../src/shorebird_native_selection.dart';
 import '../../src/shorebird_replacement.dart';
 
 void main() {
@@ -360,6 +361,268 @@ base_url: https://example.com
       expect(yamlMap['app_id'], '2-a');
       expect(yamlMap['auto_update'], false);
       expect(yamlMap['base_url'], 'https://example.com');
+    });
+  });
+
+  group('security profiles', () {
+    final toolchainId = 'sha256:${'ab' * 32}';
+    const hardenedYaml = '''
+app_id: app
+base_url: https://updates.example.com
+''';
+    Map<String, String> hardenedEnv([Map<String, String> extra = const <String, String>{}]) =>
+        <String, String>{
+          'SHOREBIRD_SECURITY_PROFILE': 'hardened',
+          'SHOREBIRD_TOOLCHAIN_ID': toolchainId,
+          'SHOREBIRD_PUBLIC_KEY': 'pinned-key',
+          ...extra,
+        };
+    Map<String, dynamic> compile(String yaml, Map<String, String> environment) =>
+        compileShorebirdYaml(loadYaml(yaml) as YamlMap, flavor: null, environment: environment);
+    void expectRejected(String yaml, Map<String, String> environment, {String? reason}) {
+      expect(() => compile(yaml, environment), throwsFormatException, reason: reason);
+    }
+
+    test('legacy output is unchanged when profile is unset, empty or legacy', () {
+      const yaml = 'app_id: app\nbase_url: http://example.com\npatch_verification: install_only\n';
+      final Map<String, dynamic> baseline = compile(yaml, <String, String>{
+        'SHOREBIRD_PUBLIC_KEY': 'k',
+      });
+      expect(baseline, <String, dynamic>{
+        'app_id': 'app',
+        'base_url': 'http://example.com',
+        'patch_verification': 'install_only',
+        'patch_public_key': 'k',
+        'patch_response_verification': 'required',
+      });
+      for (final profile in <String?>[null, '', 'legacy']) {
+        final Map<String, dynamic> compiled = compile(yaml, <String, String>{
+          'SHOREBIRD_PUBLIC_KEY': 'k',
+          'SHOREBIRD_TOOLCHAIN_ID': toolchainId,
+          'SHOREBIRD_SECURITY_DEVELOPMENT_EXCEPTIONS': 'false',
+          'SHOREBIRD_SECURITY_PROFILE': ?profile,
+        });
+        expect(compiled, baseline, reason: '$profile');
+        for (final key in <String>[
+          'security_profile',
+          'security_contract_version',
+          'toolchain_id',
+          'security_development_exceptions',
+        ]) {
+          expect(compiled.containsKey(key), isFalse, reason: key);
+        }
+      }
+    });
+
+    test('hardened writes declarations and forces strict and required', () {
+      final Map<String, dynamic> compiled = compile(hardenedYaml, hardenedEnv());
+      expect(compiled, <String, dynamic>{
+        'app_id': 'app',
+        'base_url': 'https://updates.example.com',
+        'patch_public_key': 'pinned-key',
+        'patch_verification': 'strict',
+        'patch_response_verification': 'required',
+        'security_profile': 'hardened',
+        'security_contract_version': 1,
+        'toolchain_id': toolchainId,
+      });
+      expect(compiled['security_contract_version'], isA<int>());
+      // Explicit but compliant source values are accepted.
+      final Map<String, dynamic> explicit = compile(
+        '${hardenedYaml}patch_verification: strict\npatch_response_verification: required\n'
+        'patch_public_key: source-key\n',
+        hardenedEnv()..remove('SHOREBIRD_PUBLIC_KEY'),
+      );
+      expect(explicit['patch_public_key'], 'source-key');
+      expect(explicit['patch_verification'], 'strict');
+      expect(explicit.containsKey('security_development_exceptions'), isFalse);
+    });
+
+    test('hardened toolchain_id round-trips through YamlEditor and loadYaml', () {
+      final fs = MemoryFileSystem.test();
+      fs.file('/shorebird.yaml')
+        ..createSync()
+        ..writeAsStringSync(hardenedYaml);
+      updateShorebirdYaml('', '/shorebird.yaml', environment: hardenedEnv(), fileSystem: fs);
+      final String text = fs.file('/shorebird.yaml').readAsStringSync();
+      final loaded = loadYaml(text) as YamlMap;
+      expect(loaded['toolchain_id'], toolchainId);
+      expect(loaded['security_profile'], 'hardened');
+      expect(loaded['security_contract_version'], 1);
+      // The updater splits at the first ':'; the value is emitted plain (unquoted).
+      expect(text, contains(RegExp('^toolchain_id: $toolchainId\$', multiLine: true)));
+    });
+
+    test('hardened rejects bad or missing toolchain id and missing trust root', () {
+      expectRejected(
+        hardenedYaml,
+        hardenedEnv()..remove('SHOREBIRD_TOOLCHAIN_ID'),
+        reason: 'missing',
+      );
+      for (final bad in <String>[
+        '',
+        'ab' * 32,
+        'sha256:${'ab' * 31}',
+        'sha256:${'ab' * 33}',
+        'sha256:${'AB' * 32}',
+        'sha256:${'zz' * 32}',
+        'sha256:${'ab' * 32}\n',
+        ' sha256:${'ab' * 32}',
+        'sha1:${'ab' * 20}',
+      ]) {
+        expectRejected(
+          hardenedYaml,
+          hardenedEnv(<String, String>{'SHOREBIRD_TOOLCHAIN_ID': bad}),
+          reason: bad,
+        );
+      }
+      expectRejected(hardenedYaml, hardenedEnv()..remove('SHOREBIRD_PUBLIC_KEY'));
+      expectRejected(hardenedYaml, hardenedEnv(<String, String>{'SHOREBIRD_PUBLIC_KEY': ''}));
+      expectRejected(hardenedYaml, hardenedEnv(<String, String>{'SHOREBIRD_PUBLIC_KEY': '  '}));
+    });
+
+    test('hardened source yaml cannot lower the verification floor', () {
+      expectRejected('${hardenedYaml}patch_verification: install_only\n', hardenedEnv());
+      expectRejected('${hardenedYaml}patch_verification: permissive\n', hardenedEnv());
+      expectRejected('${hardenedYaml}patch_response_verification: optional\n', hardenedEnv());
+    });
+
+    test('hardened requires an explicit https base_url without user info', () {
+      expectRejected('app_id: app\n', hardenedEnv(), reason: 'missing base_url');
+      for (final url in <String>[
+        'http://updates.example.com',
+        'http://localhost:8080',
+        'ftp://updates.example.com',
+        'updates.example.com',
+        'https://',
+        'https:///path',
+        'https://user@updates.example.com',
+        'https://user:pw@updates.example.com',
+        'https://@updates.example.com',
+      ]) {
+        expectRejected('app_id: app\nbase_url: "$url"\n', hardenedEnv(), reason: url);
+      }
+      expectRejected(
+        'app_id: app\nbase_url: https://updates.example.com\n',
+        hardenedEnv()..remove('SHOREBIRD_PUBLIC_KEY'),
+      );
+    });
+
+    test('development exception allows only http to loopback hosts', () {
+      final Map<String, String> dev = hardenedEnv(<String, String>{
+        'SHOREBIRD_SECURITY_DEVELOPMENT_EXCEPTIONS': 'true',
+      });
+      for (final url in <String>[
+        'http://localhost:8080',
+        'http://127.0.0.1',
+        'http://127.1.2.3:9000/x',
+        'http://[::1]:8080',
+        'https://updates.example.com',
+      ]) {
+        final Map<String, dynamic> compiled = compile('app_id: app\nbase_url: "$url"\n', dev);
+        expect(compiled['security_development_exceptions'], true, reason: url);
+        expect(compiled['security_profile'], 'hardened');
+      }
+      for (final url in <String>[
+        'http://example.com',
+        'http://localhost.example.com',
+        'http://128.0.0.1',
+        'http://127.0.0.256',
+        'http://127.0.0.1.example.com',
+        'http://user@localhost',
+        'ftp://localhost',
+      ]) {
+        expectRejected('app_id: app\nbase_url: "$url"\n', dev, reason: url);
+      }
+      // Without the exception, loopback http is rejected, and false is never written.
+      expectRejected('app_id: app\nbase_url: http://localhost:8080\n', hardenedEnv());
+      final Map<String, dynamic> explicitFalse = compile(
+        hardenedYaml,
+        hardenedEnv(<String, String>{'SHOREBIRD_SECURITY_DEVELOPMENT_EXCEPTIONS': 'false'}),
+      );
+      expect(explicitFalse.containsKey('security_development_exceptions'), isFalse);
+      for (final bad in <String>['', 'TRUE', '1', 'yes']) {
+        expectRejected(
+          hardenedYaml,
+          hardenedEnv(<String, String>{'SHOREBIRD_SECURITY_DEVELOPMENT_EXCEPTIONS': bad}),
+          reason: bad,
+        );
+      }
+    });
+
+    test('source yaml cannot contain the reserved declaration keys in any profile', () {
+      const values = <String, String>{
+        'security_profile': 'hardened',
+        'security_contract_version': '1',
+        'toolchain_id': 'x',
+        'security_development_exceptions': 'true',
+      };
+      for (final MapEntry<String, String> entry in values.entries) {
+        final yaml = '$hardenedYaml${entry.key}: ${entry.value}\n';
+        expectRejected(yaml, hardenedEnv(), reason: entry.key);
+        expectRejected(yaml, <String, String>{}, reason: 'unset ${entry.key}');
+        expectRejected(yaml, <String, String>{
+          'SHOREBIRD_SECURITY_PROFILE': 'legacy',
+        }, reason: 'legacy ${entry.key}');
+      }
+    });
+
+    test('unknown, reserved and legacy-invalid settings are rejected', () {
+      for (final profile in <String>['hardened-diversified', 'strict', 'HARDENED', ' hardened']) {
+        expectRejected(
+          hardenedYaml,
+          hardenedEnv(<String, String>{'SHOREBIRD_SECURITY_PROFILE': profile}),
+          reason: profile,
+        );
+      }
+      expectRejected(hardenedYaml, <String, String>{
+        'SHOREBIRD_SECURITY_DEVELOPMENT_EXCEPTIONS': 'true',
+      }, reason: 'unset profile');
+      expectRejected(hardenedYaml, <String, String>{
+        'SHOREBIRD_SECURITY_PROFILE': 'legacy',
+        'SHOREBIRD_SECURITY_DEVELOPMENT_EXCEPTIONS': 'true',
+      }, reason: 'legacy profile');
+    });
+
+    test('hardened keys and checks apply to the native selection_protocol 2 path', () {
+      final fs = MemoryFileSystem.test();
+      final Map<String, String> nativeEnv = writeNativeSelectionManifest(fs);
+      const nativeYaml = '$nativeSelectionYaml\nbase_url: https://updates.example.com\n';
+      Map<String, dynamic> compileNative(String yaml, Map<String, String> environment) =>
+          compileShorebirdYaml(
+            loadYaml(yaml) as YamlMap,
+            flavor: null,
+            environment: environment,
+            fileSystem: fs,
+          );
+      final env = <String, String>{...nativeEnv, ...hardenedEnv()..remove('SHOREBIRD_PUBLIC_KEY')};
+      final Map<String, dynamic> compiled = compileNative(nativeYaml, env);
+      expect(compiled['selection_protocol'], 2);
+      expect(compiled['aot_patch_app_build_id'], '1.0.0+1');
+      expect(compiled['security_profile'], 'hardened');
+      expect(compiled['security_contract_version'], 1);
+      expect(compiled['toolchain_id'], toolchainId);
+      expect(compiled['patch_verification'], 'strict');
+      expect(compiled['patch_response_verification'], 'required');
+      // Checks also run on the early-return path.
+      expect(
+        () => compileNative(
+          nativeYaml.replaceFirst('https://updates.example.com', 'http://updates.example.com'),
+          env,
+        ),
+        throwsFormatException,
+      );
+      expect(
+        () => compileNative(
+          nativeYaml.replaceFirst('base_url: https://updates.example.com\n', ''),
+          env,
+        ),
+        throwsFormatException,
+      );
+      expect(
+        () => compileNative(nativeYaml, <String, String>{...env}..remove('SHOREBIRD_TOOLCHAIN_ID')),
+        throwsFormatException,
+      );
     });
   });
 }

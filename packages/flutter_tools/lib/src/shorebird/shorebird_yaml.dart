@@ -68,7 +68,175 @@ String appIdForFlavor(YamlMap yamlMap, {required String? flavor}) {
   return flavorAppId;
 }
 
+/// The environment variable selecting the security profile: `legacy` (default
+/// when unset or empty) or `hardened`. `hardened-diversified` is reserved by
+/// contract v1 and rejected.
+const kShorebirdSecurityProfileEnvVar = 'SHOREBIRD_SECURITY_PROFILE';
+
+/// The environment variable carrying the toolchain identity,
+/// `sha256:<64 lowercase hex>`. Required by the hardened profile.
+const kShorebirdToolchainIdEnvVar = 'SHOREBIRD_TOOLCHAIN_ID';
+
+/// `true` allows a visibly development-only hardened build (http to loopback).
+const kShorebirdSecurityDevelopmentExceptionsEnvVar = 'SHOREBIRD_SECURITY_DEVELOPMENT_EXCEPTIONS';
+
+/// Bundled shorebird.yaml declaration keys, written only by this compiler for
+/// hardened builds; a source shorebird.yaml must never contain them.
+const kShorebirdSecurityProfileKey = 'security_profile';
+const kShorebirdSecurityContractVersionKey = 'security_contract_version';
+const kShorebirdToolchainIdKey = 'toolchain_id';
+const kShorebirdSecurityDevelopmentExceptionsKey = 'security_development_exceptions';
+
+const _kShorebirdSecurityContractVersion = 1;
+const _kShorebirdReservedSecurityKeys = <String>[
+  kShorebirdSecurityProfileKey,
+  kShorebirdSecurityContractVersionKey,
+  kShorebirdToolchainIdKey,
+  kShorebirdSecurityDevelopmentExceptionsKey,
+];
+
 Map<String, dynamic> compileShorebirdYaml(
+  YamlMap yamlMap, {
+  required String? flavor,
+  required Map<String, String> environment,
+  FileSystem? fileSystem,
+}) {
+  for (final String key in _kShorebirdReservedSecurityKeys) {
+    if (yamlMap.containsKey(key)) {
+      throw FormatException(
+        'shorebird.yaml must not contain "$key"; security declarations are written by '
+        '`shorebird release --security-profile`, not shorebird.yaml',
+      );
+    }
+  }
+  final String profile = environment[kShorebirdSecurityProfileEnvVar] ?? '';
+  final String? developmentExceptionsValue =
+      environment[kShorebirdSecurityDevelopmentExceptionsEnvVar];
+  if (profile.isEmpty || profile == 'legacy') {
+    if (developmentExceptionsValue == 'true') {
+      throw const FormatException(
+        '$kShorebirdSecurityDevelopmentExceptionsEnvVar=true is not valid for the legacy '
+        'security profile',
+      );
+    }
+    return _compileLegacyShorebirdYaml(
+      yamlMap,
+      flavor: flavor,
+      environment: environment,
+      fileSystem: fileSystem,
+    );
+  }
+  if (profile != 'hardened') {
+    throw FormatException(
+      'Unsupported $kShorebirdSecurityProfileEnvVar "$profile"; expected "legacy" or "hardened"',
+    );
+  }
+  // The hardened step wraps the legacy compiler so that its keys and checks
+  // apply on every return path (including the native selection_protocol 2
+  // early return).
+  final Map<String, dynamic> compiled = _compileLegacyShorebirdYaml(
+    yamlMap,
+    flavor: flavor,
+    environment: environment,
+    fileSystem: fileSystem,
+  );
+  return _applyHardenedProfile(
+    yamlMap,
+    compiled,
+    environment: environment,
+    developmentExceptionsValue: developmentExceptionsValue,
+  );
+}
+
+Map<String, dynamic> _applyHardenedProfile(
+  YamlMap source,
+  Map<String, dynamic> compiled, {
+  required Map<String, String> environment,
+  required String? developmentExceptionsValue,
+}) {
+  final bool developmentExceptions;
+  switch (developmentExceptionsValue) {
+    case null:
+    case 'false':
+      developmentExceptions = false;
+    case 'true':
+      developmentExceptions = true;
+    default:
+      throw const FormatException(
+        '$kShorebirdSecurityDevelopmentExceptionsEnvVar must be unset, "true" or "false"',
+      );
+  }
+  final String? toolchainId = environment[kShorebirdToolchainIdEnvVar];
+  if (toolchainId == null || !RegExp(r'^sha256:[0-9a-f]{64}$').hasMatch(toolchainId)) {
+    throw const FormatException(
+      'The hardened security profile requires $kShorebirdToolchainIdEnvVar of the form '
+      'sha256:<64 lowercase hex>',
+    );
+  }
+  final Object? publicKey = compiled['patch_public_key'];
+  if (publicKey is! String || publicKey.trim().isEmpty) {
+    throw const FormatException(
+      'The hardened security profile requires a pinned patch_public_key or '
+      '$kShorebirdPublicKeyEnvVar',
+    );
+  }
+  if (source.containsKey('patch_verification') && source['patch_verification'] != 'strict') {
+    throw const FormatException(
+      'The hardened security profile requires patch_verification: strict',
+    );
+  }
+  if (source.containsKey('patch_response_verification') &&
+      source['patch_response_verification'] != 'required') {
+    throw const FormatException(
+      'The hardened security profile requires patch_response_verification: required',
+    );
+  }
+  _checkHardenedBaseUrl(source, compiled['base_url'], developmentExceptions);
+  compiled['patch_verification'] = 'strict';
+  compiled['patch_response_verification'] = 'required';
+  compiled[kShorebirdSecurityProfileKey] = 'hardened';
+  compiled[kShorebirdSecurityContractVersionKey] = _kShorebirdSecurityContractVersion;
+  compiled[kShorebirdToolchainIdKey] = toolchainId;
+  if (developmentExceptions) {
+    compiled[kShorebirdSecurityDevelopmentExceptionsKey] = true;
+  }
+  return compiled;
+}
+
+void _checkHardenedBaseUrl(YamlMap source, Object? baseUrl, bool developmentExceptions) {
+  if (!source.containsKey('base_url') || baseUrl is! String || baseUrl.isEmpty) {
+    throw const FormatException('The hardened security profile requires an explicit base_url');
+  }
+  final Uri? uri = Uri.tryParse(baseUrl);
+  if (uri == null ||
+      uri.host.isEmpty ||
+      uri.userInfo.isNotEmpty ||
+      RegExp(r'^[^/?#]*//[^/?#]*@').hasMatch(baseUrl)) {
+    throw FormatException(
+      'The hardened security profile requires base_url to have a host and no user info: $baseUrl',
+    );
+  }
+  if (uri.scheme == 'https') {
+    return;
+  }
+  if (uri.scheme == 'http' && developmentExceptions && _isLoopbackHost(uri.host)) {
+    return;
+  }
+  throw FormatException('The hardened security profile requires an https base_url: $baseUrl');
+}
+
+bool _isLoopbackHost(String host) {
+  if (host == 'localhost' || host == '::1') {
+    return true;
+  }
+  final RegExpMatch? match = RegExp(
+    r'^127\.(0|[1-9]\d{0,2})\.(0|[1-9]\d{0,2})\.(0|[1-9]\d{0,2})$',
+  ).firstMatch(host);
+  return match != null &&
+      <int>[1, 2, 3].every((int group) => int.parse(match.group(group)!) <= 255);
+}
+
+Map<String, dynamic> _compileLegacyShorebirdYaml(
   YamlMap yamlMap, {
   required String? flavor,
   required Map<String, String> environment,
