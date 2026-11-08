@@ -61,6 +61,13 @@ declare_args() {
   # Optional pinned trust-root key IDs (sha256:<hex> of the DER public key)
   # for engines built for specific apps. Hardened only.
   shorebird_trust_root_key_ids = []
+
+  # Base64 raw 32-byte Ed25519 public keys allowed to sign the build manifest
+  # that hardened builds append to shorebird.yaml (hardening P3,
+  # docs/HARDENING_CONTRACTS.md §9). The hardened updater refuses to
+  # initialize unless the manifest verifies under one of them. Required for
+  # hardened; never set for legacy.
+  shorebird_build_manifest_keys = []
 }
 
 assert(shorebird_security_profile == "legacy" ||
@@ -70,11 +77,14 @@ assert(shorebird_security_profile == "legacy" ||
 if (shorebird_security_profile == "hardened") {
   assert(shorebird_toolchain_id != "",
          "A hardened engine requires shorebird_toolchain_id")
+  assert(shorebird_build_manifest_keys != [],
+         "A hardened engine requires shorebird_build_manifest_keys")
 } else {
   assert(!shorebird_security_development_exceptions &&
-             shorebird_trust_root_key_ids == [],
-         "Development exceptions and pinned trust roots require " +
-             "shorebird_security_profile = \"hardened\"")
+             shorebird_trust_root_key_ids == [] &&
+             shorebird_build_manifest_keys == [],
+         "Development exceptions, pinned trust roots and build-manifest " +
+             "keys require shorebird_security_profile = \"hardened\"")
 }
 
 # feature_defines_list ---------------------------------------------------------

@@ -168,6 +168,18 @@ class Updater {
     return EngineSecurityProfile();
   }
 
+  /// The Rust updater's startup integrity status (hardening P3):
+  /// "not_checked" (legacy, or before init), "ok", or a stable failure code
+  /// such as "config_digest_mismatch" or "module_mismatch".
+  virtual std::string IntegrityStatus() const { return "not_checked"; }
+
+  /// The integrity status observed when the last `Init` call failed in a
+  /// hardened engine (empty otherwise). Recorded for support/diagnostics; a
+  /// failure never deletes data and the engine runs the bundled base.
+  const std::string& last_init_integrity_failure() const {
+    return last_init_integrity_failure_;
+  }
+
   /// Initialize the updater with configuration. Remembers a success so
   /// `ReportLaunchSuccess` knows whether it may start the update thread; a
   /// later failed call (add-to-app calls this once per engine) does not
@@ -243,6 +255,8 @@ class Updater {
   }
 
  private:
+  std::string last_init_integrity_failure_;
+
   // Starts the update thread at most once per process, if the updater is
   // configured and auto-update is on. Called from `ReportLaunchSuccess`.
   void MaybeStartUpdateThread();
@@ -296,6 +310,7 @@ class RealUpdater : public Updater {
 
   bool SupportsPreparedBootSources() const override;
   std::string UpdaterSecurityProfile() const override;
+  std::string IntegrityStatus() const override;
   bool DoInit(const AppConfig& config) override;
   std::unique_ptr<PreparedBootSource> PrepareBootSource() override;
   bool DoBeginBootSource(uint64_t selection_id) override;
@@ -360,6 +375,13 @@ class MockUpdater : public Updater {
     return updater_security_profile_.empty() ? EngineSecurityProfile()
                                              : updater_security_profile_;
   }
+  void set_integrity_status(const std::string& status) {
+    integrity_status_ = status;
+  }
+  std::string IntegrityStatus() const override {
+    return integrity_status_.empty() ? Updater::IntegrityStatus()
+                                     : integrity_status_;
+  }
 
   // Reset all counters and logs
   void Reset();
@@ -377,6 +399,7 @@ class MockUpdater : public Updater {
   bool launch_deferred_result_ = true;
   std::string next_boot_patch_path_;
   std::string updater_security_profile_;
+  std::string integrity_status_;
   std::string last_release_version_;
   std::string last_yaml_config_;
   std::vector<std::string> call_log_;

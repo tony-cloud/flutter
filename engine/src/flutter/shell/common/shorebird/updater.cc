@@ -162,6 +162,21 @@ bool Updater::Init(const AppConfig& config) {
     RequirePreparedBootSource();
   }
   bool result = DoInit(config);
+#if SHOREBIRD_SECURITY_HARDENED
+  if (!result) {
+    // Hardening P3: record why a hardened install refused to initialize
+    // (repacked, replaced engine/updater, tampered configuration). No key
+    // provider is called, no patch is activated and nothing is deleted; the
+    // bundled release runs.
+    const std::string status = IntegrityStatus();
+    if (status != "ok" && status != "not_checked") {
+      last_init_integrity_failure_ = status;
+      FML_LOG(ERROR) << "Shorebird integrity check failed (" << status
+                     << "); running the bundled release without patches. "
+                        "Reinstall the app from its original source.";
+    }
+  }
+#endif
   // Latch rather than assign: add-to-app calls Init once per engine, and a
   // later failure must not forget that the process already configured.
   if (result) {
@@ -379,6 +394,11 @@ bool RealUpdater::SupportsPreparedBootSources() const {
 std::string RealUpdater::UpdaterSecurityProfile() const {
   const char* profile = shorebird_compiled_security_profile();
   return profile == nullptr ? std::string() : std::string(profile);
+}
+
+std::string RealUpdater::IntegrityStatus() const {
+  const char* status = shorebird_integrity_status();
+  return status == nullptr ? std::string() : std::string(status);
 }
 
 bool RealUpdater::DoInit(const AppConfig& config) {

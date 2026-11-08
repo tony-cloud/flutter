@@ -70,6 +70,12 @@ if (shorebird_updater_supported) {
         key_id,
       ]
     }
+    foreach(key, shorebird_build_manifest_keys) {
+      args += [
+        "--build-manifest-key",
+        key,
+      ]
+    }
 
     if (is_android) {
       args += [

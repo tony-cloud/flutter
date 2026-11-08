@@ -57,6 +57,12 @@ def main():
       default=[],
       help='Pinned trust-root key ID (repeatable; hardened only)',
   )
+  parser.add_argument(
+      '--build-manifest-key',
+      action='append',
+      default=[],
+      help='Base64 raw Ed25519 build-manifest public key (repeatable; required for hardened)',
+  )
   args = parser.parse_args()
 
   env = os.environ.copy()
@@ -148,6 +154,7 @@ _SECURITY_ENV = (
     'SHOREBIRD_TOOLCHAIN_ID',
     'SHOREBIRD_SECURITY_DEVELOPMENT_EXCEPTIONS',
     'SHOREBIRD_TRUST_ROOT_KEY_IDS',
+    'SHOREBIRD_BUILD_MANIFEST_KEYS',
 )
 
 
@@ -169,12 +176,18 @@ def _configure_security_env(env, args):
     return '--security-development-exceptions must be true or false'
   if args.security_profile == 'hardened' and not args.toolchain_id:
     return 'a hardened updater requires --toolchain-id'
+  if args.security_profile == 'hardened' and not args.build_manifest_key:
+    return 'a hardened updater requires --build-manifest-key'
+  if args.security_profile != 'hardened' and args.build_manifest_key:
+    return '--build-manifest-key requires --security-profile hardened'
   env['SHOREBIRD_SECURITY_PROFILE'] = args.security_profile
   if args.toolchain_id:
     env['SHOREBIRD_TOOLCHAIN_ID'] = args.toolchain_id
   env['SHOREBIRD_SECURITY_DEVELOPMENT_EXCEPTIONS'] = args.security_development_exceptions
   if args.trust_root_key_id:
     env['SHOREBIRD_TRUST_ROOT_KEY_IDS'] = ','.join(args.trust_root_key_id)
+  if args.build_manifest_key:
+    env['SHOREBIRD_BUILD_MANIFEST_KEYS'] = ','.join(args.build_manifest_key)
   return None
 
 

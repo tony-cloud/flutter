@@ -62,6 +62,37 @@ TEST(UpdaterSecurityProfile, MismatchedUpdaterLibraryIsNeverInitialized) {
   Updater::ResetLaunchStateForTesting();
 }
 
+TEST(UpdaterIntegrity, HardenedInitFailureRecordsTheTypedReason) {
+  Updater::ResetLaunchStateForTesting();
+  MockUpdater updater;
+  updater.set_init_result(false);
+  updater.set_should_auto_update(true);
+  updater.set_integrity_status("config_digest_mismatch");
+  AppConfig config;
+  EXPECT_FALSE(updater.Init(config));
+  EXPECT_EQ(updater.init_count(), 1);
+#if SHOREBIRD_SECURITY_HARDENED
+  EXPECT_EQ(updater.last_init_integrity_failure(), "config_digest_mismatch");
+#else
+  // Legacy engines never run the gate and record nothing.
+  EXPECT_EQ(updater.last_init_integrity_failure(), "");
+#endif
+  // A refused install is not latched as initialized: no update thread.
+  updater.ReportLaunchSuccess();
+  EXPECT_EQ(updater.start_update_thread_count(), 0);
+  Updater::ResetLaunchStateForTesting();
+}
+
+TEST(UpdaterIntegrity, SuccessfulInitRecordsNoFailure) {
+  Updater::ResetLaunchStateForTesting();
+  MockUpdater updater;
+  updater.set_integrity_status("ok");
+  AppConfig config;
+  EXPECT_TRUE(updater.Init(config));
+  EXPECT_EQ(updater.last_init_integrity_failure(), "");
+  Updater::ResetLaunchStateForTesting();
+}
+
 class PreparedUpdater : public MockUpdater {
  public:
   std::vector<std::string> events;
