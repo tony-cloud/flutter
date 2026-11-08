@@ -21,6 +21,31 @@
 namespace flutter {
 namespace shorebird {
 
+namespace {
+#if SHOREBIRD_SECURITY_HARDENED
+constexpr char kEngineSecurityProfile[] = "hardened";
+#else
+constexpr char kEngineSecurityProfile[] = "legacy";
+#endif
+
+constexpr bool SameProfile(const char* a, const char* b) {
+  while (*a != '\0' && *a == *b) {
+    ++a;
+    ++b;
+  }
+  return *a == *b;
+}
+
+// Contract v1 knows exactly two compiled profiles; GN asserts the same.
+static_assert(SameProfile(kEngineSecurityProfile, "legacy") ||
+                  SameProfile(kEngineSecurityProfile, "hardened"),
+              "unknown compiled Shorebird security profile");
+}  // namespace
+
+const char* EngineSecurityProfile() {
+  return kEngineSecurityProfile;
+}
+
 PreparedBootSource::PreparedBootSource(Kind kind,
                                        uint64_t selection_id,
                                        uint64_t patch_number,
@@ -101,6 +126,16 @@ void Updater::ResetLaunchStateForTesting() {
 }
 
 bool Updater::Init(const AppConfig& config) {
+  // The engine and its updater are built from the same GN args. A different
+  // profile means a stale or substituted updater library; never initialize
+  // it (the app then runs its bundled base without patches).
+  const std::string updater_profile = UpdaterSecurityProfile();
+  if (updater_profile != EngineSecurityProfile()) {
+    FML_LOG(ERROR) << "Shorebird updater security profile " << updater_profile
+                   << " differs from the engine's " << EngineSecurityProfile()
+                   << "; not initializing";
+    return false;
+  }
   // A compiled protocol marker cannot be ignored by an older initializer or
   // by a later independently created engine after failed v2 configuration.
   std::stringstream lines(config.yaml_config);
@@ -339,6 +374,11 @@ bool RealUpdater::SupportsPreparedBootSources() const {
 #else
   return false;
 #endif
+}
+
+std::string RealUpdater::UpdaterSecurityProfile() const {
+  const char* profile = shorebird_compiled_security_profile();
+  return profile == nullptr ? std::string() : std::string(profile);
 }
 
 bool RealUpdater::DoInit(const AppConfig& config) {

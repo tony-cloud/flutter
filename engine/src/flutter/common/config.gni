@@ -40,6 +40,41 @@ declare_args() {
   # <app home>/Library/Application Support/shorebird/mixed_dev_patch.vmcode
   # without the updater. Never enable in a shipping engine.
   shorebird_mixed_dev_patch = false
+
+  # Release security profile compiled into the engine and its Rust updater
+  # (docs/HARDENING_CONTRACTS.md §2 and §7 in the workspace). "legacy" keeps
+  # today's behavior. "hardened" requires shorebird_toolchain_id and makes the
+  # updater refuse any bundled shorebird.yaml that does not declare the same
+  # profile and toolchain or that is weaker than the hardened floor. Nothing
+  # at runtime can select a different profile. "hardened-diversified" is
+  # reserved by contract v1 and rejected.
+  shorebird_security_profile = "legacy"
+
+  # sha256:<hex> toolchain identity (build-identity manifest). Required for
+  # hardened.
+  shorebird_toolchain_id = ""
+
+  # Development only: a hardened engine that also accepts loopback HTTP.
+  # Release packaging never produces the matching YAML declaration.
+  shorebird_security_development_exceptions = false
+
+  # Optional pinned trust-root key IDs (sha256:<hex> of the DER public key)
+  # for engines built for specific apps. Hardened only.
+  shorebird_trust_root_key_ids = []
+}
+
+assert(shorebird_security_profile == "legacy" ||
+           shorebird_security_profile == "hardened",
+       "shorebird_security_profile must be \"legacy\" or \"hardened\" " +
+           "(\"hardened-diversified\" is reserved by contract v1)")
+if (shorebird_security_profile == "hardened") {
+  assert(shorebird_toolchain_id != "",
+         "A hardened engine requires shorebird_toolchain_id")
+} else {
+  assert(!shorebird_security_development_exceptions &&
+             shorebird_trust_root_key_ids == [],
+         "Development exceptions and pinned trust roots require " +
+             "shorebird_security_profile = \"hardened\"")
 }
 
 # feature_defines_list ---------------------------------------------------------
@@ -80,6 +115,10 @@ if (slimpeller) {
 
 if (is_android || is_ios || is_linux || is_mac || is_win) {
   feature_defines_list += [ "SHOREBIRD_PLATFORM_SUPPORTED=1" ]
+}
+
+if (shorebird_security_profile == "hardened") {
+  feature_defines_list += [ "SHOREBIRD_SECURITY_HARDENED=1" ]
 }
 
 if (is_ios) {

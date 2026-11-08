@@ -33,6 +33,35 @@ TEST(UpdaterV2Marker, DirectConfigurationCannotIgnoreCompiledProtocol) {
   Updater::ResetLaunchStateForTesting();
 }
 
+TEST(UpdaterSecurityProfile, EngineProfileIsOneOfTheContractProfiles) {
+  const std::string profile = EngineSecurityProfile();
+#if SHOREBIRD_SECURITY_HARDENED
+  EXPECT_EQ(profile, "hardened");
+#else
+  EXPECT_EQ(profile, "legacy");
+#endif
+}
+
+TEST(UpdaterSecurityProfile, MismatchedUpdaterLibraryIsNeverInitialized) {
+  Updater::ResetLaunchStateForTesting();
+  const std::string engine = EngineSecurityProfile();
+  for (const std::string& other :
+       {std::string(engine == "legacy" ? "hardened" : "legacy"),
+        std::string("hardened-diversified"), std::string()}) {
+    MockUpdater updater;
+    updater.set_updater_security_profile(other.empty() ? "unknown" : other);
+    AppConfig config;
+    EXPECT_FALSE(updater.Init(config)) << other;
+    // Refused before the Rust initializer runs: no config, no key requests.
+    EXPECT_EQ(updater.init_count(), 0) << other;
+  }
+  MockUpdater matching;
+  AppConfig config;
+  EXPECT_TRUE(matching.Init(config));
+  EXPECT_EQ(matching.init_count(), 1);
+  Updater::ResetLaunchStateForTesting();
+}
+
 class PreparedUpdater : public MockUpdater {
  public:
   std::vector<std::string> events;

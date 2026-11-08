@@ -151,9 +151,22 @@ struct AppConfig {
 /// out.
 ///
 /// Tests can call `ResetLaunchStateForTesting()` to re-enable the guards.
+/// The release security profile compiled into this engine: "hardened" when
+/// built with GN `shorebird_security_profile = "hardened"`, else "legacy".
+/// docs/HARDENING_CONTRACTS.md (workspace) §2/§7.
+const char* EngineSecurityProfile();
+
 class Updater {
  public:
   virtual ~Updater() = default;
+
+  /// The profile the linked Rust updater was compiled with. `Init` refuses
+  /// to initialize when it differs from `EngineSecurityProfile()`, so a
+  /// stale or mismatched updater library cannot run with weaker checks than
+  /// the engine was built for.
+  virtual std::string UpdaterSecurityProfile() const {
+    return EngineSecurityProfile();
+  }
 
   /// Initialize the updater with configuration. Remembers a success so
   /// `ReportLaunchSuccess` knows whether it may start the update thread; a
@@ -282,6 +295,7 @@ class RealUpdater : public Updater {
   ~RealUpdater() override = default;
 
   bool SupportsPreparedBootSources() const override;
+  std::string UpdaterSecurityProfile() const override;
   bool DoInit(const AppConfig& config) override;
   std::unique_ptr<PreparedBootSource> PrepareBootSource() override;
   bool DoBeginBootSource(uint64_t selection_id) override;
@@ -339,6 +353,13 @@ class MockUpdater : public Updater {
   void set_next_boot_patch_path(const std::string& path) {
     next_boot_patch_path_ = path;
   }
+  void set_updater_security_profile(const std::string& profile) {
+    updater_security_profile_ = profile;
+  }
+  std::string UpdaterSecurityProfile() const override {
+    return updater_security_profile_.empty() ? EngineSecurityProfile()
+                                             : updater_security_profile_;
+  }
 
   // Reset all counters and logs
   void Reset();
@@ -355,6 +376,7 @@ class MockUpdater : public Updater {
   bool should_auto_update_ = false;
   bool launch_deferred_result_ = true;
   std::string next_boot_patch_path_;
+  std::string updater_security_profile_;
   std::string last_release_version_;
   std::string last_yaml_config_;
   std::vector<std::string> call_log_;

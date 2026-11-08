@@ -38,9 +38,32 @@ def main():
       '--mac-deployment-target',
       help='macOS deployment target (e.g. 10.15); required for *-apple-darwin targets',
   )
+  parser.add_argument(
+      '--security-profile',
+      default='legacy',
+      help='Compiled security profile: legacy or hardened (GN shorebird_security_profile)',
+  )
+  parser.add_argument(
+      '--toolchain-id', default='', help='sha256:<hex> toolchain identity (GN shorebird_toolchain_id)'
+  )
+  parser.add_argument(
+      '--security-development-exceptions',
+      default='false',
+      help='true for a development-only hardened updater (loopback HTTP allowed)',
+  )
+  parser.add_argument(
+      '--trust-root-key-id',
+      action='append',
+      default=[],
+      help='Pinned trust-root key ID (repeatable; hardened only)',
+  )
   args = parser.parse_args()
 
   env = os.environ.copy()
+  error = _configure_security_env(env, args)
+  if error:
+    print(f'ERROR: {error}', file=sys.stderr)
+    return 1
 
   is_android = 'android' in args.rust_target
   is_apple_ios = 'apple-ios' in args.rust_target
@@ -118,6 +141,41 @@ def main():
     f.write('')
 
   return 0
+
+
+_SECURITY_ENV = (
+    'SHOREBIRD_SECURITY_PROFILE',
+    'SHOREBIRD_TOOLCHAIN_ID',
+    'SHOREBIRD_SECURITY_DEVELOPMENT_EXCEPTIONS',
+    'SHOREBIRD_TRUST_ROOT_KEY_IDS',
+)
+
+
+def _configure_security_env(env, args):
+  """Set the updater's compiled-policy inputs from GN args only.
+
+  Inherited values are removed first so a developer shell or CI step cannot
+  change the compiled profile. The updater's build.rs validates the values
+  again and fails the build on anything invalid or reserved.
+  """
+  for name in _SECURITY_ENV:
+    env.pop(name, None)
+  if args.security_profile not in ('legacy', 'hardened'):
+    return (
+        f'--security-profile must be legacy or hardened, not {args.security_profile!r} '
+        '(hardened-diversified is reserved by contract v1)'
+    )
+  if args.security_development_exceptions not in ('true', 'false'):
+    return '--security-development-exceptions must be true or false'
+  if args.security_profile == 'hardened' and not args.toolchain_id:
+    return 'a hardened updater requires --toolchain-id'
+  env['SHOREBIRD_SECURITY_PROFILE'] = args.security_profile
+  if args.toolchain_id:
+    env['SHOREBIRD_TOOLCHAIN_ID'] = args.toolchain_id
+  env['SHOREBIRD_SECURITY_DEVELOPMENT_EXCEPTIONS'] = args.security_development_exceptions
+  if args.trust_root_key_id:
+    env['SHOREBIRD_TRUST_ROOT_KEY_IDS'] = ','.join(args.trust_root_key_id)
+  return None
 
 
 def _configure_msvc_env(env, rust_target):

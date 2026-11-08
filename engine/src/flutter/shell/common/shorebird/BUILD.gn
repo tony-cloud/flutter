@@ -49,7 +49,27 @@ if (shorebird_updater_supported) {
       rebase_path("$shorebird_updater_output_lib", root_build_dir),
       "--stamp",
       rebase_path(_stamp, root_build_dir),
+
+      # The compiled security policy. Always passed, so the cargo build never
+      # inherits SHOREBIRD_SECURITY_* from the invoking environment and a
+      # changed profile changes this action's command line (Ninja reruns it).
+      "--security-profile",
+      shorebird_security_profile,
+      "--security-development-exceptions",
+      "$shorebird_security_development_exceptions",
     ]
+    if (shorebird_toolchain_id != "") {
+      args += [
+        "--toolchain-id",
+        shorebird_toolchain_id,
+      ]
+    }
+    foreach(key_id, shorebird_trust_root_key_ids) {
+      args += [
+        "--trust-root-key-id",
+        key_id,
+      ]
+    }
 
     if (is_android) {
       args += [
