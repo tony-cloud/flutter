@@ -2,9 +2,12 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
+import 'dart:convert';
 import 'dart:io';
 
 import 'package:file/memory.dart';
+import 'package:flutter_tools/src/artifacts.dart';
+import 'package:flutter_tools/src/build_info.dart';
 import 'package:flutter_tools/src/shorebird/shorebird_yaml.dart';
 import 'package:test/test.dart';
 import 'package:yaml/yaml.dart';
@@ -443,8 +446,28 @@ base_url: https://updates.example.com
       fs.file('/shorebird.yaml')
         ..createSync()
         ..writeAsStringSync(hardenedYaml);
-      updateShorebirdYaml('', '/shorebird.yaml', environment: hardenedEnv(), fileSystem: fs);
+      // P3: a hardened build also signs a build manifest (see
+      // shorebird_build_manifest_test.dart); Android binds no engine module.
+      fs
+          .file('/manifest.pem')
+          .writeAsStringSync(
+            '-----BEGIN PRIVATE KEY-----\n'
+            '${base64.encode(<int>[0x30, 0x2e, 0x02, 0x01, 0x00, 0x30, 0x05, 0x06, 0x03, 0x2b, 0x65, 0x70, 0x04, 0x22, 0x04, 0x20, ...List<int>.filled(32, 7)])}\n'
+            '-----END PRIVATE KEY-----\n',
+          );
+      updateShorebirdYaml(
+        '',
+        '/shorebird.yaml',
+        environment: hardenedEnv(<String, String>{
+          'SHOREBIRD_BUILD_MANIFEST_SIGNING_KEY': '/manifest.pem',
+        }),
+        fileSystem: fs,
+        targetPlatform: TargetPlatform.android,
+        buildMode: BuildMode.release,
+        artifacts: Artifacts.test(fileSystem: fs),
+      );
       final String text = fs.file('/shorebird.yaml').readAsStringSync();
+      expect(text.trimRight().split('\n').last, startsWith('shorebird_build_manifest: v1.'));
       final loaded = loadYaml(text) as YamlMap;
       expect(loaded['toolchain_id'], toolchainId);
       expect(loaded['security_profile'], 'hardened');

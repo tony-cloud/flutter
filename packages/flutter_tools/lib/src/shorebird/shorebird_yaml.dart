@@ -5,8 +5,11 @@
 import 'package:yaml/yaml.dart';
 import 'package:yaml_edit/yaml_edit.dart';
 
+import '../artifacts.dart';
 import '../base/file_system.dart';
+import '../build_info.dart';
 import '../globals.dart' as globals;
+import 'shorebird_build_manifest.dart';
 import 'shorebird_interpreter.dart';
 import 'shorebird_native_selection.dart';
 import 'shorebird_replacement.dart';
@@ -27,6 +30,9 @@ void updateShorebirdYaml(
   String shorebirdYamlPath, {
   required Map<String, String> environment,
   FileSystem? fileSystem,
+  TargetPlatform? targetPlatform,
+  BuildMode? buildMode,
+  Artifacts? artifacts,
 }) {
   final File shorebirdYaml = (fileSystem ?? globals.fs).file(shorebirdYamlPath);
   if (!shorebirdYaml.existsSync()) {
@@ -45,7 +51,70 @@ void updateShorebirdYaml(
   // input and compiled files.
   final yamlEditor = YamlEditor('');
   yamlEditor.update(<Object?>[], compiled);
-  shorebirdYaml.writeAsStringSync(yamlEditor.toString(), flush: true);
+  if (compiled[kShorebirdSecurityProfileKey] != 'hardened') {
+    shorebirdYaml.writeAsStringSync(yamlEditor.toString(), flush: true);
+    return;
+  }
+  shorebirdYaml.writeAsStringSync(
+    signHardenedShorebirdYaml(
+      yamlEditor.toString(),
+      compiled: compiled,
+      environment: environment,
+      fileSystem: fileSystem ?? globals.fs,
+      targetPlatform: targetPlatform,
+      buildMode: buildMode,
+      artifacts: artifacts,
+    ),
+    flush: true,
+  );
+}
+
+/// Appends the signed build manifest (hardening P3) to the hardened YAML
+/// [text]. The manifest binds every byte of [text], so nothing may change
+/// the file afterwards.
+String signHardenedShorebirdYaml(
+  String text, {
+  required Map<String, dynamic> compiled,
+  required Map<String, String> environment,
+  required FileSystem fileSystem,
+  required TargetPlatform? targetPlatform,
+  required BuildMode? buildMode,
+  required Artifacts? artifacts,
+}) {
+  final String keyPath = environment[kShorebirdBuildManifestSigningKeyEnvVar] ?? '';
+  if (keyPath.isEmpty) {
+    throw const FormatException(
+      'The hardened security profile requires $kShorebirdBuildManifestSigningKeyEnvVar '
+      '(the build-manifest signing key compiled into the hardened engine)',
+    );
+  }
+  final File keyFile = fileSystem.file(keyPath);
+  if (!keyFile.existsSync()) {
+    throw FormatException('$kShorebirdBuildManifestSigningKeyEnvVar does not exist: $keyPath');
+  }
+  if (targetPlatform == null || buildMode == null || artifacts == null) {
+    throw const FormatException(
+      'A hardened shorebird.yaml needs the build target to measure its engine module',
+    );
+  }
+  final List<int> seed = parseShorebirdEd25519PrivateKeyPem(keyFile.readAsStringSync());
+  return appendShorebirdBuildManifest(
+    text.endsWith('\n') ? text : '$text\n',
+    signingSeed: seed,
+    toolchainId: compiled[kShorebirdToolchainIdKey] as String,
+    developmentExceptions: compiled[kShorebirdSecurityDevelopmentExceptionsKey] == true,
+    modules: shorebirdEngineModuleMeasurements(
+      artifacts: artifacts,
+      fileSystem: fileSystem,
+      targetPlatform: targetPlatform,
+      buildMode: buildMode,
+    ),
+    targetPlatform: targetPlatform,
+    androidSigningCerts: shorebirdAndroidSigningCerts(
+      environment[kShorebirdAndroidSigningCertEnvVar],
+    ),
+    appleTeamIds: shorebirdAppleTeamIds(environment[kShorebirdAppleTeamIdsEnvVar]),
+  );
 }
 
 String appIdForFlavor(YamlMap yamlMap, {required String? flavor}) {
@@ -93,6 +162,7 @@ const _kShorebirdReservedSecurityKeys = <String>[
   kShorebirdSecurityContractVersionKey,
   kShorebirdToolchainIdKey,
   kShorebirdSecurityDevelopmentExceptionsKey,
+  kShorebirdBuildManifestKey,
 ];
 
 Map<String, dynamic> compileShorebirdYaml(

@@ -2,11 +2,14 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-/// Ed25519 signature verification (RFC 8032 section 5.1.7), used only to
-/// authenticate Open Shorebird artifact catalogs.
+/// Ed25519 signature verification (RFC 8032 section 5.1.7), used to
+/// authenticate Open Shorebird artifact catalogs, and signing (section
+/// 5.1.6), used only to sign hardened build manifests at build time.
 ///
 /// Verification handles public data only, so it has no secret-dependent
-/// timing to protect. It rejects non-canonical point encodings and a scalar
+/// timing to protect. Signing is not constant time (BigInt arithmetic): it is
+/// meant for a build machine the signer controls, and an operator who needs
+/// an HSM/KMS boundary signs elsewhere (hardening P4). It rejects non-canonical point encodings and a scalar
 /// `S >= L`, and checks `[S]B == R + [k]A`. The same algorithm is implemented in
 /// shorebird-workspace `scripts/artifact_catalog.py`; both are tested against
 /// the RFC 8032 vectors.
@@ -123,4 +126,56 @@ bool ed25519Verify(List<int> publicKey, List<int> message, List<int> signature) 
   ]).bytes;
   final BigInt k = _littleEndian(digest) % _l;
   return _equal(_mul(s, _base), _add(r, _mul(k, a)));
+}
+
+List<int> _encode(_Point point) {
+  final BigInt zInv = _inv(point.$3);
+  final BigInt x = (point.$1 * zInv) % _p;
+  final BigInt y = (point.$2 * zInv) % _p;
+  final bytes = List<int>.filled(32, 0);
+  var v = y;
+  for (var i = 0; i < 32; i++) {
+    bytes[i] = (v & BigInt.from(0xff)).toInt();
+    v = v >> 8;
+  }
+  if (x.isOdd) {
+    bytes[31] |= 0x80;
+  }
+  return bytes;
+}
+
+List<int> _scalarBytes(BigInt value) {
+  final bytes = List<int>.filled(32, 0);
+  var v = value;
+  for (var i = 0; i < 32; i++) {
+    bytes[i] = (v & BigInt.from(0xff)).toInt();
+    v = v >> 8;
+  }
+  return bytes;
+}
+
+(BigInt, List<int>) _expandSeed(List<int> seed) {
+  if (seed.length != 32) {
+    throw ArgumentError('An Ed25519 seed is 32 bytes');
+  }
+  final List<int> h = sha512.convert(seed).bytes;
+  final List<int> scalar = h.sublist(0, 32);
+  scalar[0] &= 248;
+  scalar[31] &= 127;
+  scalar[31] |= 64;
+  return (_littleEndian(scalar), h.sublist(32));
+}
+
+/// The 32-byte Ed25519 public key of a 32-byte private [seed].
+List<int> ed25519PublicKey(List<int> seed) => _encode(_mul(_expandSeed(seed).$1, _base));
+
+/// The 64-byte Ed25519 signature of [message] by the private [seed].
+List<int> ed25519Sign(List<int> seed, List<int> message) {
+  final (BigInt a, List<int> prefix) = _expandSeed(seed);
+  final List<int> publicKey = _encode(_mul(a, _base));
+  final BigInt r = _littleEndian(sha512.convert(<int>[...prefix, ...message]).bytes) % _l;
+  final List<int> encodedR = _encode(_mul(r, _base));
+  final BigInt k =
+      _littleEndian(sha512.convert(<int>[...encodedR, ...publicKey, ...message]).bytes) % _l;
+  return <int>[...encodedR, ..._scalarBytes((r + k * a) % _l)];
 }

@@ -337,6 +337,9 @@ Future<Depfile> copyAssets(
                   file.path,
                   environment: environment.platform.environment,
                   fileSystem: environment.fileSystem,
+                  targetPlatform: targetPlatform,
+                  buildMode: buildMode,
+                  artifacts: environment.artifacts,
                 );
               } on Exception catch (error) {
                 throw Exception('Failed to generate shorebird configuration. Error: $error');
