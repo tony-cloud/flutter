@@ -35,46 +35,26 @@ if ($psMajorVersionLocal -lt $psMajorVersionRequired) {
     exit 2
 }
 
-if ((Test-Path $engineStamp) -and ($engineVersion -eq (Get-Content $engineStamp))) {
-    return
-}
+# Open Shorebird: verified custom Dart SDK resolution (shorebird_dart_sdk.ps1).
+. "$flutterRoot\bin\internal\shorebird_dart_sdk.ps1"
 
-$dartSdkBaseUrl = $Env:FLUTTER_STORAGE_BASE_URL
-$usesFlutterStorageLayout = [bool]$dartSdkBaseUrl
-if ($usesFlutterStorageLayout -and $engineRealm) {
-    $dartSdkBaseUrl = "$dartSdkBaseUrl/$engineRealm"
-}
-if (-not $usesFlutterStorageLayout) {
-    $dartSdkBaseUrl = $Env:SHOREBIRD_DART_SDK_RELEASE_BASE_URL
-    if (-not $dartSdkBaseUrl) {
-        $dartSdkBaseUrl = "https://github.com/tony-cloud/shorebird-workspace/releases/latest/download"
-    }
+if (-not (Test-ShorebirdDartSdkNeedsUpdate)) {
+    return
 }
 
 # It's important to use the native Dart SDK as the default target architecture
 # for Flutter Windows builds depend on the Dart executable's architecture.
 $dartZipNameX64 = "dart-sdk-windows-x64.zip"
 $dartZipNameArm64 = "dart-sdk-windows-arm64.zip"
-$dartZipName = $dartZipNameX64
+$dartZipNames = @($dartZipNameX64)
 if ($env:PROCESSOR_ARCHITECTURE -eq "ARM64") {
-    if ($usesFlutterStorageLayout) {
-        $dartSdkArm64Url = "$dartSdkBaseUrl/flutter_infra_release/flutter/$engineVersion/$dartZipNameArm64"
-    } else {
-        $dartSdkArm64Url = "$dartSdkBaseUrl/$dartZipNameArm64"
-    }
-    Try {
-        Invoke-WebRequest -Uri $dartSdkArm64Url -UseBasicParsing -Method Head | Out-Null
-        $dartZipName = $dartZipNameArm64
-    }
-    Catch {
-        Write-Host "The current channel's Dart SDK does not support Windows Arm64, falling back to Windows x64..."
-    }
+    $dartZipNames = @($dartZipNameArm64, $dartZipNameX64)
 }
-if ($usesFlutterStorageLayout) {
-    $dartSdkUrl = "$dartSdkBaseUrl/flutter_infra_release/flutter/$engineVersion/$dartZipName"
-} else {
-    $dartSdkUrl = "$dartSdkBaseUrl/$dartZipName"
-}
+# Open Shorebird: the SDK is patched, so it never comes from
+# FLUTTER_STORAGE_BASE_URL's official origin. Exits with the precise reason
+# when no verified archive is available.
+$dartSdk = Resolve-ShorebirdDartSdk $dartZipNames
+$dartZipName = $dartSdk.Zip
 
 if ((Test-Path $dartSdkPath) -or (Test-Path $dartSdkLicense)) {
     # Move old SDK to a new location instead of deleting it in case it is still in use (e.g. by IntelliJ).
@@ -90,24 +70,13 @@ if ((Test-Path $dartSdkPath) -or (Test-Path $dartSdkLicense)) {
     }
 }
 New-Item $dartSdkPath -force -type directory | Out-Null
+# Content-addressed, so a verified archive left here (or pre-seeded for
+# offline use) is reused without network access; verified before expansion.
 $dartSdkZip = "$cachePath\$dartZipName"
-
-Try {
-    Import-Module BitsTransfer
-    $ProgressPreference = 'SilentlyContinue'
-    Start-BitsTransfer -Source $dartSdkUrl -Destination $dartSdkZip -ErrorAction Stop
+if ($dartSdk.Pin) {
+    $dartSdkZip = "$cachePath\$(($dartSdk.Pin -split ' ')[0])-$dartZipName"
 }
-Catch {
-    Write-Host "Downloading the Dart SDK using the BITS service failed, retrying with WebRequest..."
-    # Invoke-WebRequest is very slow when the progress bar is visible - a 28
-    # second download can become a 33 minute download. Disable it with
-    # $ProgressPreference and then restore the original value afterwards.
-    # https://github.com/flutter/flutter/issues/37789
-    $OriginalProgressPreference = $ProgressPreference
-    $ProgressPreference = 'SilentlyContinue'
-    Invoke-WebRequest -Uri $dartSdkUrl -OutFile $dartSdkZip
-    $ProgressPreference = $OriginalProgressPreference
-}
+Get-ShorebirdDartSdkArchive $dartSdk $dartSdkZip
 
 If (Get-Command 7z -errorAction SilentlyContinue) {
     Write-Host "Expanding downloaded archive with 7z..."
@@ -134,6 +103,7 @@ If (Get-Command 7z -errorAction SilentlyContinue) {
 
 Remove-Item $dartSdkZip
 $engineVersion | Out-File $engineStamp -Encoding ASCII
+$dartSdk.Identity | Out-File $shorebirdDartSdkIdentity -Encoding ASCII
 
 # Try to delete all old SDKs and license files.
 Get-ChildItem -Path $cachePath | Where {$_.BaseName.StartsWith($oldDartSdkPrefix)} | Remove-Item -Recurse -ErrorAction SilentlyContinue

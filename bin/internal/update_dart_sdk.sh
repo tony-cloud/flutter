@@ -25,7 +25,10 @@ ENGINE_VERSION=$(< "$FLUTTER_ROOT/bin/cache/engine.stamp")
 ENGINE_REALM=$(< "$FLUTTER_ROOT/bin/cache/engine.realm")
 ENGINE_REALM="${ENGINE_REALM//[[:space:]]/}"
 
-if [ ! -f "$ENGINE_STAMP" ] || [ "$ENGINE_VERSION" != "$(< "$ENGINE_STAMP")" ]; then
+# Open Shorebird: verified custom Dart SDK resolution (shorebird_dart_sdk.sh).
+source "$FLUTTER_ROOT/bin/internal/shorebird_dart_sdk.sh"
+
+if shorebird::dart_sdk_needs_update; then
   command -v curl > /dev/null 2>&1 || {
     >&2 echo
     >&2 echo 'Missing "curl" tool. Unable to download Dart SDK.'
@@ -127,17 +130,10 @@ if [ ! -f "$ENGINE_STAMP" ] || [ "$ENGINE_VERSION" != "$(< "$ENGINE_STAMP")" ]; 
     FIND=find
   fi
 
-  # Prefer a workspace GitHub Release asset when Flutter's storage base URL
-  # has not been explicitly configured. This keeps direct Flutter SDK refreshes
-  # independent of Shorebird's hosted artifact service while preserving the
-  # normal Flutter storage layout for explicit mirrors.
-  if [[ -n "${FLUTTER_STORAGE_BASE_URL:-}" ]]; then
-    DART_SDK_BASE_URL="$FLUTTER_STORAGE_BASE_URL${ENGINE_REALM:+/$ENGINE_REALM}"
-    DART_SDK_URL="$DART_SDK_BASE_URL/flutter_infra_release/flutter/$ENGINE_VERSION/$DART_ZIP_NAME"
-  else
-    DART_SDK_RELEASE_BASE_URL="${SHOREBIRD_DART_SDK_RELEASE_BASE_URL:-https://github.com/tony-cloud/shorebird-workspace/releases/latest/download}"
-    DART_SDK_URL="$DART_SDK_RELEASE_BASE_URL/$DART_ZIP_NAME"
-  fi
+  # Open Shorebird: the SDK is patched, so it never comes from
+  # FLUTTER_STORAGE_BASE_URL's official origin. Sets DART_SDK_URL and the
+  # pinned digest, or exits with the precise reason none is usable.
+  shorebird::resolve_dart_sdk "$DART_ZIP_NAME"
 
   # if the sdk path exists, copy it to a temporary location
   if [ -d "$DART_SDK_PATH" ]; then
@@ -148,30 +144,16 @@ if [ ! -f "$ENGINE_STAMP" ] || [ "$ENGINE_VERSION" != "$(< "$ENGINE_STAMP")" ]; 
   # install the new sdk
   rm -rf -- "$DART_SDK_PATH"
   mkdir -m 755 -p -- "$DART_SDK_PATH"
-  DART_SDK_ZIP="$FLUTTER_ROOT/bin/cache/$DART_ZIP_NAME"
-
-  # Conditionally set verbose flag for LUCI
-  verbose_curl=""
-  if [[ -n "$LUCI_CI" ]]; then
-    verbose_curl="--verbose"
+  # Open Shorebird: content-addressed, so a verified archive left here (or
+  # pre-seeded for offline use) is reused without network access.
+  DART_SDK_ZIP="$FLUTTER_ROOT/bin/cache/${DART_SDK_PIN%% *}-$DART_ZIP_NAME"
+  if [[ -z "$DART_SDK_PIN" ]]; then
+    DART_SDK_ZIP="$FLUTTER_ROOT/bin/cache/$DART_ZIP_NAME"
   fi
 
-  curl ${verbose_curl} --retry 3 --continue-at - --location --output "$DART_SDK_ZIP" "$DART_SDK_URL" 2>&1 || {
-    curlExitCode=$?
-    # Handle range errors specially: retry again with disabled ranges (`--continue-at -` argument)
-    # When this could happen:
-    # - missing support of ranges in proxy servers
-    # - curl with broken handling of completed downloads
-    #   This is not a proper fix, but doesn't require any user input
-    # - mirror of flutter storage without support of ranges
-    #
-    # 33  HTTP range error. The range "command" didn't work.
-    # https://man7.org/linux/man-pages/man1/curl.1.html#EXIT_CODES
-    if [ "$curlExitCode" -ne 33 ]; then
-      exit "$curlExitCode"
-    fi
-    curl ${verbose_curl} --retry 3 --location --output "$DART_SDK_ZIP" "$DART_SDK_URL" 2>&1
-  } || {
+  # Range errors (curl exit 33) are retried without resuming inside
+  # shorebird::fetch_dart_sdk, which also verifies the digest before unzip.
+  shorebird::fetch_dart_sdk "$DART_SDK_ZIP" || {
     >&2 echo
     >&2 echo "Failed to retrieve the Dart SDK from: $DART_SDK_URL"
     >&2 echo "If you're located in China, please see this page:"
@@ -193,6 +175,7 @@ if [ ! -f "$ENGINE_STAMP" ] || [ "$ENGINE_VERSION" != "$(< "$ENGINE_STAMP")" ]; 
   $FIND "$DART_SDK_PATH" -type d -exec chmod 755 {} +
   $FIND "$DART_SDK_PATH" -type f $IS_USER_EXECUTABLE -exec chmod a+x,a+r {} +
   echo "$ENGINE_VERSION" > "$ENGINE_STAMP"
+  shorebird::record_dart_sdk_identity
 
   # delete any temporary sdk path
   if [ -d "$DART_SDK_PATH_OLD" ]; then

@@ -1,0 +1,7 @@
+# Open Shorebird custom Dart SDK bootstrap lock, contract v1.
+# Read by update_dart_sdk.{sh,ps1} before the SDK runs. Written by
+# shorebird-workspace scripts/dart_sdk_lock.py; do not edit by hand.
+schema open-shorebird.dart-sdk-lock
+contract_version 1
+engine_revision 44a553c3b3c7797c7f0f20961d46a8b17e06444c
+dart_sdk_revision c3a98bfdfd296ad0f778e0a545ce1d3a18259068

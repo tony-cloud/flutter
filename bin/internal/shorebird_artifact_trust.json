@@ -1,0 +1,13 @@
+{
+  "schema": "open-shorebird.artifact-catalog-trust",
+  "contract_version": 1,
+  "keys": [
+    {
+      "key_id": "sha256:86d46e09d92b413100bb65c1f098235ed23ddb84e081b574c20be11d15fd6584",
+      "algorithm": "ed25519",
+      "public_key": "VvstGv/kb39X6r3F4zTpXhKdGmwSAFkWB9z8/RkQXto=",
+      "usage": "development",
+      "description": "DEVELOPMENT ONLY: the private key is public in shorebird-workspace scripts/testdata/artifact-catalog-signing-key.DEVELOPMENT-ONLY.pem. Legacy toolchains accept it with a warning; hardened toolchains reject it. Pin the operator's production key here with usage production (docs/HARDENING_CONTRACTS.md section 8)."
+    }
+  ]
+}

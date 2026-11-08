@@ -33,6 +33,7 @@ import '../flutter_manifest.dart';
 import '../globals.dart' as globals;
 import '../project.dart';
 import '../shorebird/android_build_trace_session.dart';
+import '../shorebird/shorebird_artifact_origins.dart';
 import 'android_builder.dart';
 import 'android_sdk.dart';
 import 'android_studio.dart';
@@ -355,7 +356,7 @@ class AndroidGradleBuilder implements AndroidBuilder {
         command,
         workingDirectory: project.android.hostAppGradleRoot.path,
         allowReentrantFlutter: true,
-        environment: _java?.environment,
+        environment: shorebirdGradleEnvironment(_java?.environment, globals.platform.environment),
         mapFunction: consumeLog,
         onStart: onStart,
       );
@@ -775,7 +776,7 @@ To fix this, you can either:
     final RunResult result = await _processUtils.run(
       <String>[apkAnalyzerPath, 'files', 'list', aabPath],
       workingDirectory: project.android.hostAppGradleRoot.path,
-      environment: _java?.environment,
+      environment: shorebirdGradleEnvironment(_java?.environment, globals.platform.environment),
     );
 
     if (result.exitCode != 0) {
@@ -980,7 +981,7 @@ To fix this, you can either:
         command,
         workingDirectory: project.android.hostAppGradleRoot.path,
         allowReentrantFlutter: true,
-        environment: _java?.environment,
+        environment: shorebirdGradleEnvironment(_java?.environment, globals.platform.environment),
       );
     } finally {
       status.stop();

@@ -93,10 +93,13 @@ GOTO :after_subroutine
   SET /P dart_required_version=<"%engine_version_path%"
   SET /P dart_installed_version=<"%engine_stamp%"
   IF %dart_required_version% NEQ %dart_installed_version% GOTO do_sdk_update_and_snapshot
-  IF NOT EXIST "%snapshot_path%" GOTO do_snapshot
-  IF NOT EXIST "%stamp_path%" GOTO do_snapshot
+  REM Open Shorebird: like shared.sh, re-check the Dart SDK whenever the tool is
+  REM rebuilt, so update_dart_sdk.ps1 can compare its verified identity with the
+  REM checkout's bin\internal\shorebird_dart_sdk.pins (it returns at once if current).
+  IF NOT EXIST "%snapshot_path%" GOTO do_sdk_update_and_snapshot
+  IF NOT EXIST "%stamp_path%" GOTO do_sdk_update_and_snapshot
   SET /P stamp_value=<"%stamp_path%"
-  IF %stamp_value% NEQ %compilekey% GOTO do_snapshot
+  IF %stamp_value% NEQ %compilekey% GOTO do_sdk_update_and_snapshot
   SET pubspec_yaml_path=%flutter_tools_dir%\pubspec.yaml
   SET pubspec_lock_path=%flutter_tools_dir%\pubspec.lock
   FOR /F %%i IN ('DIR /B /O:D "%pubspec_yaml_path%" "%pubspec_lock_path%"') DO SET newer_file=%%i

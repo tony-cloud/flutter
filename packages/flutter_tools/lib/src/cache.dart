@@ -39,6 +39,7 @@ import 'base/user_messages.dart';
 import 'base/utils.dart' show getElapsedAsSeconds, getSizeAsPlatformMB;
 import 'convert.dart';
 import 'features.dart';
+import 'shorebird/shorebird_artifact_origins.dart';
 
 const kOpenFlutterStorageUrl = 'http://localhost:8080/download.flutter.io';
 const kFlutterRootEnvironmentVariableName =
@@ -243,8 +244,19 @@ class Cache {
       httpClient: HttpClient(),
       allowedBaseUrls: <String>[storageBaseUrl, realmlessStorageBaseUrl, cipdBaseUrl],
       stdio: _stdio,
+      shorebirdResolver: shorebirdArtifactResolver,
     );
   }
+
+  /// Open Shorebird: resolves engine-revision routes through the signed
+  /// artifact catalog (split origin mode). See shorebird_artifact_origins.dart.
+  late final shorebirdArtifactResolver = ShorebirdArtifactResolver(
+    environment: _platform.environment,
+    fileSystem: _fileSystem,
+    flutterRoot: _rootOverride?.path ?? flutterRoot!,
+    engineRevision: () => engineRevision,
+    warn: (String message) => _logger.printWarning(message),
+  );
 
   static const _hostsBlockedInChina = <String>[
     'storage.googleapis.com',
@@ -542,10 +554,20 @@ class Cache {
   ///  * [cipdBaseUrl], which determines how CIPD artifacts are fetched.
   ///  * [Cache] class-level dartdocs that explain how artifact mirrors work.
   String get storageBaseUrl {
-    String? overrideUrl = _platform.environment[kFlutterStorageBaseUrl];
+    // Open Shorebird: FLUTTER_STORAGE_BASE_URL names official-compatible
+    // artifacts (split mode, the default), or the legacy all-in-one mirror.
+    final ShorebirdArtifactOrigins shorebirdOrigins;
+    try {
+      shorebirdOrigins = ShorebirdArtifactOrigins.fromEnvironment(_platform.environment);
+    } on ShorebirdOriginException catch (error) {
+      throwToolExit(error.message);
+    }
+    String? overrideUrl = shorebirdOrigins.officialBaseUrl == kShorebirdOfficialStorageUrl
+        ? null
+        : shorebirdOrigins.officialBaseUrl;
     if (overrideUrl == null) {
       return storageRealm.isEmpty
-          ? kOpenFlutterStorageUrl
+          ? kShorebirdOfficialStorageUrl
           : 'https://storage.googleapis.com/$storageRealm';
     }
     // The open workspace artifact proxy is a trusted source.
@@ -1131,7 +1153,9 @@ class ArtifactUpdater {
     required Platform platform,
     required List<String> allowedBaseUrls,
     Stdio? stdio,
-  }) : _operatingSystemUtils = operatingSystemUtils,
+    ShorebirdArtifactResolver? shorebirdResolver,
+  }) : _shorebirdResolver = shorebirdResolver,
+       _operatingSystemUtils = operatingSystemUtils,
        _httpClient = httpClient,
        _logger = logger,
        _fileSystem = fileSystem,
@@ -1158,6 +1182,9 @@ class ArtifactUpdater {
   final List<String> _allowedBaseUrls;
 
   final Stdio? _stdio;
+
+  /// Open Shorebird: maps engine routes to verified origins (null in tests).
+  final ShorebirdArtifactResolver? _shorebirdResolver;
 
   /// Keep track of the files we've downloaded for this execution so we
   /// can delete them after completion. We don't delete them right after
@@ -1257,6 +1284,10 @@ class ArtifactUpdater {
     Directory location,
     void Function(File, Directory) extractor,
   ) async {
+    final ShorebirdResolvedDownload? shorebird = await _resolveShorebird(url);
+    if (shorebird != null) {
+      url = shorebird.url;
+    }
     final String downloadPath = flattenNameSubdirs(url, _fileSystem);
     final File tempFile = _createDownloadFile(downloadPath);
     int retries = _kRetryCount;
@@ -1272,7 +1303,7 @@ class ArtifactUpdater {
         if (tempFile.existsSync()) {
           tempFile.deleteSync();
         }
-        await _download(url, tempFile, display);
+        await _download(url, tempFile, display, resolved: shorebird != null);
 
         if (!tempFile.existsSync()) {
           throw Exception('Did not find downloaded file ${tempFile.path}');
@@ -1281,6 +1312,13 @@ class ArtifactUpdater {
       } on Exception catch (err) {
         display.cancel();
         _logger.printTrace(err.toString());
+        if (shorebird != null && shorebird.custom && err.toString() == 'Exception: 404') {
+          throwToolExit(
+            'Missing custom artifact ${shorebird.route}: the signed artifact catalog lists it, but '
+            '$url returned HTTP 404. Publish it to the custom artifact store; a stock Flutter '
+            'artifact is never substituted.',
+          );
+        }
         retries -= 1;
         if (retries == 0) {
           throwToolExit(
@@ -1327,6 +1365,9 @@ class ArtifactUpdater {
         }
       }
       _ensureExists(location);
+      if (shorebird != null) {
+        _verifyShorebirdDownload(shorebird, tempFile);
+      }
 
       try {
         extractor(tempFile, location);
@@ -1355,10 +1396,14 @@ class ArtifactUpdater {
   ///
   /// See also:
   ///   * https://cloud.google.com/storage/docs/xml-api/reference-headers#xgooghash
-  Future<void> _download(Uri url, File file, _DownloadDisplay display) async {
-    final bool isAllowedUrl = _allowedBaseUrls.any(
-      (String baseUrl) => url.toString().startsWith(baseUrl),
-    );
+  Future<void> _download(
+    Uri url,
+    File file,
+    _DownloadDisplay display, {
+    bool resolved = false,
+  }) async {
+    final bool isAllowedUrl =
+        resolved || _allowedBaseUrls.any((String baseUrl) => url.toString().startsWith(baseUrl));
 
     // In tests make this a hard failure.
     assert(
@@ -1411,6 +1456,52 @@ class ArtifactUpdater {
           'stable.',
         );
       }
+    }
+  }
+
+  /// Open Shorebird: resolves [url] through the artifact catalog.
+  Future<ShorebirdResolvedDownload?> _resolveShorebird(Uri url) async {
+    final ShorebirdArtifactResolver? resolver = _shorebirdResolver;
+    if (resolver == null) {
+      return null;
+    }
+    try {
+      return await resolver.resolve(url, _fetchShorebirdMetadata);
+    } on ShorebirdOriginException catch (error) {
+      throwToolExit(error.message);
+    }
+  }
+
+  Future<List<int>?> _fetchShorebirdMetadata(Uri url) async {
+    final HttpClientRequest request = await _httpClient.getUrl(url);
+    final HttpClientResponse response = await request.close();
+    if (response.statusCode == HttpStatus.notFound) {
+      await response.drain<void>();
+      return null;
+    }
+    if (response.statusCode != HttpStatus.ok) {
+      await response.drain<void>();
+      throw Exception('HTTP ${response.statusCode}');
+    }
+    final bytes = <int>[];
+    await response.forEach(bytes.addAll);
+    return bytes;
+  }
+
+  /// Open Shorebird: a catalog-pinned download must match before unpacking.
+  void _verifyShorebirdDownload(ShorebirdResolvedDownload download, File file) {
+    final String? expected = download.sha256;
+    if (expected == null) {
+      return;
+    }
+    final int size = file.lengthSync();
+    final String actual = shorebirdFileSha256(file);
+    if (size != download.size || actual != expected) {
+      _deleteIgnoringErrors(file);
+      throwToolExit(
+        'Refusing ${download.route} from ${download.url}: sha256 $actual ($size bytes) does not '
+        'match the signed artifact catalog ($expected, ${download.size} bytes). Nothing was unpacked.',
+      );
     }
   }
 
