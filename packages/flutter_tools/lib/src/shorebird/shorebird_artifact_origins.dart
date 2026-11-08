@@ -26,6 +26,7 @@ import 'package:crypto/crypto.dart' show sha256;
 
 import '../base/file_system.dart';
 import 'shorebird_artifact_catalog.dart';
+import 'shorebird_release_trust.dart';
 
 /// The open artifact proxy; as `FLUTTER_STORAGE_BASE_URL` it is the legacy
 /// all-in-one mirror alias. Equal to `kOpenFlutterStorageUrl` in cache.dart.
@@ -349,6 +350,13 @@ class ShorebirdArtifactResolver {
         securityProfile: _securityProfile,
         engineRevision: engine,
         allowUnsigned: _environment['SHOREBIRD_ALLOW_UNSIGNED_ARTIFACT_CATALOG'] == '1',
+        releaseTrust: _securityProfile == 'hardened'
+            ? loadShorebirdReleaseTrust(_environment, _fileSystem)
+            : null,
+      );
+    } on FormatException catch (error) {
+      throw ShorebirdOriginException(
+        'Refusing the artifact catalog from $source: ${error.message}',
       );
     } on ShorebirdCatalogException catch (error) {
       throw ShorebirdOriginException('Refusing the artifact catalog from $source: $error');

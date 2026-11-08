@@ -70,10 +70,12 @@ if (shorebird_updater_supported) {
         key_id,
       ]
     }
-    foreach(key, shorebird_build_manifest_keys) {
+    if (shorebird_security_profile == "hardened") {
       args += [
-        "--build-manifest-key",
-        key,
+        "--release-root",
+        shorebird_release_root,
+        "--release-min-delegations-version",
+        "$shorebird_release_min_delegations_version",
       ]
     }
 

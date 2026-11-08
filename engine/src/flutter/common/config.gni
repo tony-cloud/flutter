@@ -62,13 +62,27 @@ declare_args() {
   # for engines built for specific apps. Hardened only.
   shorebird_trust_root_key_ids = []
 
-  # Base64 raw 32-byte Ed25519 public keys allowed to sign the build manifest
-  # that hardened builds append to shorebird.yaml (hardening P3,
-  # docs/HARDENING_CONTRACTS.md §9). The hardened updater refuses to
-  # initialize unless the manifest verifies under one of them. Required for
-  # hardened; never set for legacy.
+  # Release-root pin (hardening P4, contract v2, docs/HARDENING_CONTRACTS.md
+  # §10): the base64 of one canonical `release-root` payload, as printed by
+  # `scripts/release_trust.py pin`. The hardened updater accepts a build
+  # manifest only when its signer is a `build-manifest` key that the bundled
+  # release-trust delegations name under this root. Required for hardened;
+  # never set for legacy. The DEVELOPMENT-ONLY root needs development
+  # exceptions.
+  shorebird_release_root = ""
+
+  # Lowest release-delegations version the hardened updater accepts. Raise it
+  # to make a key revocation or rotation binding on new native releases.
+  shorebird_release_min_delegations_version = 1
+
+  # Retired by contract v2 (P3's bare build-manifest key list). Declared only
+  # so that setting it fails the build instead of being silently ignored.
   shorebird_build_manifest_keys = []
 }
+
+assert(shorebird_build_manifest_keys == [],
+       "shorebird_build_manifest_keys is retired: contract v2 pins a release " +
+           "root instead (shorebird_release_root, docs/HARDENING_CONTRACTS.md §10)")
 
 assert(shorebird_security_profile == "legacy" ||
            shorebird_security_profile == "hardened",
@@ -77,14 +91,18 @@ assert(shorebird_security_profile == "legacy" ||
 if (shorebird_security_profile == "hardened") {
   assert(shorebird_toolchain_id != "",
          "A hardened engine requires shorebird_toolchain_id")
-  assert(shorebird_build_manifest_keys != [],
-         "A hardened engine requires shorebird_build_manifest_keys")
+  assert(shorebird_release_root != "",
+         "A hardened engine requires shorebird_release_root " +
+             "(contract v2 replaced shorebird_build_manifest_keys)")
+  assert(shorebird_release_min_delegations_version >= 1,
+         "shorebird_release_min_delegations_version must be at least 1")
 } else {
   assert(!shorebird_security_development_exceptions &&
              shorebird_trust_root_key_ids == [] &&
-             shorebird_build_manifest_keys == [],
-         "Development exceptions, pinned trust roots and build-manifest " +
-             "keys require shorebird_security_profile = \"hardened\"")
+             shorebird_release_root == "" &&
+             shorebird_release_min_delegations_version == 1,
+         "Development exceptions, pinned trust roots and the release root " +
+             "require shorebird_security_profile = \"hardened\"")
 }
 
 # feature_defines_list ---------------------------------------------------------

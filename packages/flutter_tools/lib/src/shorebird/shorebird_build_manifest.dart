@@ -3,17 +3,22 @@
 // found in the LICENSE file.
 
 /// Signed build manifest for hardened releases (hardening stage P3,
-/// shorebird-workspace `docs/HARDENING_CONTRACTS.md` §9).
+/// shorebird-workspace `docs/HARDENING_CONTRACTS.md` §9; release root of
+/// trust from stage P4, contract v2, §10).
 ///
 /// A hardened build appends one final line to the bundled shorebird.yaml:
 ///
-///     shorebird_build_manifest: v1.<base64url(manifest JSON)>.<base64url(Ed25519 signature)>
+///     shorebird_build_manifest: v2.<b64url(manifest JSON)>.<b64url(Ed25519 signature)>.<b64url(release-trust JSON)>
+///
+/// The signer is a `build-manifest` key that the release-trust bundle
+/// delegates under the release root compiled into the engine, and the
+/// manifest binds the digest of those delegations.
 ///
 /// The manifest binds the compiled policy, the SHA-256 of every YAML byte
 /// before that line, the measurement of each engine module the build
 /// packages, and optional platform package identities. The updater
 /// (`updater/library/src/integrity.rs`) verifies it at startup against the
-/// build-manifest keys compiled into the engine. Module measurements follow
+/// release root compiled into the engine. Module measurements follow
 /// `updater/library/src/module_measurement.rs`; both are pinned to the same
 /// golden values.
 library;
@@ -27,10 +32,26 @@ import '../artifacts.dart';
 import '../base/file_system.dart';
 import '../build_info.dart';
 import 'shorebird_ed25519.dart';
+import 'shorebird_release_trust.dart';
 
 /// Path of a PKCS#8 PEM Ed25519 private key that signs the build manifest
-/// (`openssl genpkey -algorithm ed25519`). Required for hardened builds.
+/// (`openssl genpkey -algorithm ed25519`): the file signer. A hardened build
+/// sets exactly one of this and [kShorebirdBuildManifestSignerEnvVar].
 const kShorebirdBuildManifestSigningKeyEnvVar = 'SHOREBIRD_BUILD_MANIFEST_SIGNING_KEY';
+
+/// Path of an external signer executable (the KMS/HSM interface, contract
+/// §10): invoked as `<signer> sign --key-id <sha256:..> --message <text>`, it
+/// prints the base64 Ed25519 signature of the message bytes. The private key
+/// never enters this process.
+const kShorebirdBuildManifestSignerEnvVar = 'SHOREBIRD_BUILD_MANIFEST_SIGNER';
+
+/// The `sha256:` key ID the external signer holds (required with
+/// [kShorebirdBuildManifestSignerEnvVar]).
+const kShorebirdBuildManifestSignerKeyIdEnvVar = 'SHOREBIRD_BUILD_MANIFEST_SIGNER_KEY_ID';
+
+/// Directory where a hardened build writes its release record
+/// (`release-record.v2`, one file per distinct manifest) for the CLI.
+const kShorebirdBuildManifestRecordDirEnvVar = 'SHOREBIRD_BUILD_MANIFEST_RECORD_DIR';
 
 /// Comma-separated SHA-256 digests of the Android signer certificate(s) the
 /// installed APK may carry (`keytool`/Play Console form with colons, or hex).
@@ -40,8 +61,9 @@ const kShorebirdAndroidSigningCertEnvVar = 'SHOREBIRD_ANDROID_SIGNING_CERT_SHA25
 const kShorebirdAppleTeamIdsEnvVar = 'SHOREBIRD_APPLE_TEAM_IDS';
 
 const kShorebirdBuildManifestKey = 'shorebird_build_manifest';
-const _kTokenPrefix = 'v1.';
-const _kSignatureDomain = 'open-shorebird.build-manifest-signature.v1:';
+const _kTokenPrefix = 'v2.';
+const kShorebirdBuildManifestSignatureDomain = 'open-shorebird.build-manifest-signature.v2:';
+const _kContractVersion = 2;
 const _kManifestSchema = 'open-shorebird.build-manifest';
 const _kMeasurementDomain = 'open-shorebird.module-measurement.v1\u0000';
 
@@ -457,12 +479,73 @@ List<String> shorebirdAppleTeamIds(String? value) {
 
 String _b64url(List<int> bytes) => base64Url.encode(bytes).replaceAll('=', '');
 
+/// Signs build-manifest messages with the key [keyId].
+abstract class ShorebirdBuildManifestSigner {
+  /// The `sha256:` ID of the public key.
+  String get keyId;
+
+  /// The 64-byte Ed25519 signature of [message].
+  List<int> sign(List<int> message);
+}
+
+/// Signs in process with a 32-byte seed (a PEM file on a build machine the
+/// signer controls; not constant time).
+class ShorebirdSeedManifestSigner implements ShorebirdBuildManifestSigner {
+  ShorebirdSeedManifestSigner(this._seed) : keyId = shorebirdEd25519KeyId(ed25519PublicKey(_seed));
+
+  final List<int> _seed;
+
+  @override
+  final String keyId;
+
+  @override
+  List<int> sign(List<int> message) => ed25519Sign(_seed, message);
+}
+
+/// Signs through an external signer (KMS/HSM adapter); [run] executes
+/// `argv` and returns its standard output, throwing on failure.
+class ShorebirdCommandManifestSigner implements ShorebirdBuildManifestSigner {
+  ShorebirdCommandManifestSigner(this.executable, this.keyId, this.run);
+
+  final String executable;
+
+  @override
+  final String keyId;
+  final String Function(List<String> argv) run;
+
+  @override
+  List<int> sign(List<int> message) {
+    final String output = run(<String>[
+      executable,
+      'sign',
+      '--key-id',
+      keyId,
+      '--message',
+      ascii.decode(message),
+    ]).trim();
+    try {
+      final List<int> signature = base64.decode(output);
+      if (signature.length == 64) {
+        return signature;
+      }
+    } on FormatException {
+      // Reported below.
+    }
+    throw FormatException(
+      'The build-manifest signer $executable did not print a base64 Ed25519 signature',
+    );
+  }
+}
+
 /// Appends the signed manifest line to [config], the complete hardened YAML
 /// text as written (must end with `\n`, contain no `\r`, and not mention the
-/// manifest key). Returns the final file contents.
+/// manifest key). [signer] must hold a `build-manifest` key delegated by
+/// [trust]; the signature is verified before anything is returned. Returns
+/// the final file contents.
 String appendShorebirdBuildManifest(
   String config, {
-  required List<int> signingSeed,
+  required ShorebirdBuildManifestSigner signer,
+  required ShorebirdReleaseTrust trust,
   required String toolchainId,
   required bool developmentExceptions,
   required List<ShorebirdModuleMeasurement> modules,
@@ -489,16 +572,17 @@ String appendShorebirdBuildManifest(
       '$kShorebirdAppleTeamIdsEnvVar applies only to macOS builds, not ${targetPlatform.getName()}',
     );
   }
-  final List<int> publicKey = ed25519PublicKey(signingSeed);
+  final List<int> publicKey = trust.roleKey(ShorebirdSigningRole.buildManifest, signer.keyId);
   // Field order is fixed for reproducible output; the signature covers the
   // exact bytes, so the order carries no meaning to the verifier.
   final String manifest = jsonEncode(<String, Object>{
     'schema': _kManifestSchema,
-    'contract_version': 1,
+    'contract_version': _kContractVersion,
     'security_profile': 'hardened',
     'toolchain_id': toolchainId,
     'development_exceptions': developmentExceptions,
-    'signer_key_id': shorebirdEd25519KeyId(publicKey),
+    'signer_key_id': signer.keyId,
+    'delegations_sha256': trust.delegationsSha256,
     'config_sha256': sha256.convert(utf8.encode(config)).toString(),
     'modules': <Map<String, String>>[
       for (final ShorebirdModuleMeasurement module in modules) module.toJson(),
@@ -509,10 +593,44 @@ String appendShorebirdBuildManifest(
     },
   });
   final List<int> manifestBytes = utf8.encode(manifest);
-  final List<int> signature = ed25519Sign(
-    signingSeed,
-    utf8.encode('$_kSignatureDomain${sha256.convert(manifestBytes)}'),
+  final List<int> message = utf8.encode(
+    '$kShorebirdBuildManifestSignatureDomain${sha256.convert(manifestBytes)}',
   );
+  final List<int> signature = signer.sign(message);
+  if (!ed25519Verify(publicKey, message, signature)) {
+    throw FormatException(
+      'The build-manifest signature does not verify under the delegated key ${signer.keyId}',
+    );
+  }
   return '$config$kShorebirdBuildManifestKey: '
-      '$_kTokenPrefix${_b64url(manifestBytes)}.${_b64url(signature)}\n';
+      '$_kTokenPrefix${_b64url(manifestBytes)}.${_b64url(signature)}.'
+      '${_b64url(utf8.encode(trust.compactBundle))}\n';
+}
+
+/// The `release-record.v2` document describing the manifest in [text] (the
+/// final hardened shorebird.yaml), which the CLI stores with the release.
+Map<String, Object?> shorebirdReleaseRecord(String text, ShorebirdReleaseTrust trust) {
+  final String line = text.trimRight().split('\n').last;
+  final String token = line.substring('$kShorebirdBuildManifestKey: '.length);
+  final List<int> manifestBytes = base64Url.decode(base64Url.normalize(token.split('.')[1]));
+  final manifest = jsonDecode(utf8.decode(manifestBytes)) as Map<String, Object?>;
+  return <String, Object?>{
+    'schema': 'open-shorebird.release-record',
+    'contract_version': _kContractVersion,
+    'security_profile': 'hardened',
+    'toolchain_id': manifest['toolchain_id'],
+    'development_exceptions': manifest['development_exceptions'],
+    'release_root_sha256': trust.rootSha256,
+    'root_version': trust.rootVersion,
+    'delegations_version': trust.delegationsVersion,
+    'delegations_sha256': trust.delegationsSha256,
+    'build_manifests': <Object>[
+      <String, Object?>{
+        'manifest_sha256': sha256.convert(manifestBytes).toString(),
+        'signer_key_id': manifest['signer_key_id'],
+        'config_sha256': manifest['config_sha256'],
+        'modules': manifest['modules'],
+      },
+    ],
+  };
 }

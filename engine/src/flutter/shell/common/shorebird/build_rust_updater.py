@@ -6,6 +6,8 @@
 """Build the Rust updater library via cargo, invoked as a GN action."""
 
 import argparse
+import base64
+import json
 import os
 import subprocess
 import sys
@@ -58,10 +60,14 @@ def main():
       help='Pinned trust-root key ID (repeatable; hardened only)',
   )
   parser.add_argument(
-      '--build-manifest-key',
-      action='append',
-      default=[],
-      help='Base64 raw Ed25519 build-manifest public key (repeatable; required for hardened)',
+      '--release-root',
+      default='',
+      help='Release-root pin: base64 canonical release-root payload (required for hardened)',
+  )
+  parser.add_argument(
+      '--release-min-delegations-version',
+      default='1',
+      help='Lowest release-delegations version the updater accepts (hardened only)',
   )
   args = parser.parse_args()
 
@@ -155,7 +161,41 @@ _SECURITY_ENV = (
     'SHOREBIRD_SECURITY_DEVELOPMENT_EXCEPTIONS',
     'SHOREBIRD_TRUST_ROOT_KEY_IDS',
     'SHOREBIRD_BUILD_MANIFEST_KEYS',
+    'SHOREBIRD_RELEASE_ROOT',
+    'SHOREBIRD_RELEASE_MIN_DELEGATIONS_VERSION',
 )
+
+# Public key of the committed DEVELOPMENT-ONLY release root
+# (scripts/testdata/release-trust/root-1.DEVELOPMENT-ONLY.pem); its private
+# half is public, so only a development build may pin it.
+_DEVELOPMENT_ROOT_PUBLIC_KEYS = ('iojj3XQJ8ZX9UtstPLpdcspnCb8dlBIb83SIAbQPb1w=',)
+
+
+def _check_release_root(pin, development_exceptions):
+  """Return an error for a pin that is not a contract v2 release-root payload."""
+  try:
+    raw = base64.b64decode(pin, validate=True)
+    if base64.b64encode(raw).decode('ascii') != pin:
+      raise ValueError
+    root = json.loads(raw.decode('utf-8'))
+  except ValueError:
+    return '--release-root must be the base64 release-root payload (scripts/release_trust.py pin)'
+  if (not isinstance(root, dict) or root.get('schema') != 'open-shorebird.release-root' or
+      root.get('contract_version') != 2):
+    return '--release-root is not a contract v2 release-root payload'
+  canonical = json.dumps(root, sort_keys=True, separators=(',', ':'), ensure_ascii=False)
+  if canonical.encode('utf-8') != raw:
+    return '--release-root payload is not canonical JSON'
+  keys = root.get('keys')
+  threshold = root.get('threshold')
+  if (not isinstance(keys, list) or not keys or not isinstance(threshold, int) or
+      isinstance(threshold, bool) or not 1 <= threshold <= len(keys)):
+    return '--release-root needs keys and a threshold between 1 and their number'
+  if not development_exceptions and any(
+      isinstance(key, dict) and key.get('public_key') in _DEVELOPMENT_ROOT_PUBLIC_KEYS for key in keys):
+    return ('--release-root contains the DEVELOPMENT-ONLY root key; only a development build '
+            '(--security-development-exceptions true) may pin it')
+  return None
 
 
 def _configure_security_env(env, args):
@@ -176,18 +216,26 @@ def _configure_security_env(env, args):
     return '--security-development-exceptions must be true or false'
   if args.security_profile == 'hardened' and not args.toolchain_id:
     return 'a hardened updater requires --toolchain-id'
-  if args.security_profile == 'hardened' and not args.build_manifest_key:
-    return 'a hardened updater requires --build-manifest-key'
-  if args.security_profile != 'hardened' and args.build_manifest_key:
-    return '--build-manifest-key requires --security-profile hardened'
+  if args.security_profile == 'hardened':
+    if not args.release_root:
+      return 'a hardened updater requires --release-root (the release-root pin)'
+    error = _check_release_root(args.release_root, args.security_development_exceptions == 'true')
+    if error:
+      return error
+    version = args.release_min_delegations_version
+    if not (version.isdigit() and not version.startswith('0')):
+      return '--release-min-delegations-version must be a positive integer'
+  elif args.release_root or args.release_min_delegations_version not in ('', '1'):
+    return '--release-root and --release-min-delegations-version require --security-profile hardened'
   env['SHOREBIRD_SECURITY_PROFILE'] = args.security_profile
   if args.toolchain_id:
     env['SHOREBIRD_TOOLCHAIN_ID'] = args.toolchain_id
   env['SHOREBIRD_SECURITY_DEVELOPMENT_EXCEPTIONS'] = args.security_development_exceptions
   if args.trust_root_key_id:
     env['SHOREBIRD_TRUST_ROOT_KEY_IDS'] = ','.join(args.trust_root_key_id)
-  if args.build_manifest_key:
-    env['SHOREBIRD_BUILD_MANIFEST_KEYS'] = ','.join(args.build_manifest_key)
+  if args.security_profile == 'hardened':
+    env['SHOREBIRD_RELEASE_ROOT'] = args.release_root
+    env['SHOREBIRD_RELEASE_MIN_DELEGATIONS_VERSION'] = args.release_min_delegations_version
   return None
 
 

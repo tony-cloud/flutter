@@ -16,11 +16,44 @@ import 'package:flutter_tools/src/cache.dart';
 import 'package:flutter_tools/src/shorebird/shorebird_artifact_catalog.dart';
 import 'package:flutter_tools/src/shorebird/shorebird_artifact_origins.dart';
 import 'package:flutter_tools/src/shorebird/shorebird_ed25519.dart';
+import 'package:flutter_tools/src/shorebird/shorebird_release_trust.dart';
 
 import '../../src/common.dart';
 import '../../src/fake_http_client.dart';
 import '../../src/fakes.dart';
 import 'shorebird_artifact_catalog_fixtures.dart';
+import 'shorebird_release_trust_fixtures.dart' as release_trust;
+
+/// The test-only production catalog key of [kFixtureTrust].
+const _kProductionCatalogKey = 'zZztknZglq/ihnRvhFj3arnd3YDtvz52y8fHWQ/gCww=';
+
+/// A release-trust bundle under the operator test root that delegates the
+/// test production catalog key for the given roles.
+String _catalogBundle({
+  bool asCatalog = true,
+  bool asManifest = false,
+  bool revoke = false,
+  int version = 1,
+}) => release_trust.bundle(
+  const <Map<String, Object?>>[],
+  release_trust.envelope(
+    kShorebirdReleaseDelegationsSignatureDomain,
+    release_trust.delegationsPayload(
+      version,
+      1,
+      manifest: <List<int>>[release_trust.manifestSeed],
+      catalogPublicKeys: <String>[if (asCatalog) _kProductionCatalogKey],
+      manifestPublicKeys: <String>[if (asManifest) _kProductionCatalogKey],
+      revoked: <String>[if (revoke) shorebirdReleaseKeyId(base64.decode(_kProductionCatalogKey))],
+    ),
+    <List<int>>[release_trust.nextRootSeed],
+  ),
+);
+
+ShorebirdReleaseTrust _catalogTrust([String? bundle]) => verifyShorebirdReleaseTrust(
+  utf8.encode(bundle ?? _catalogBundle()),
+  pinnedRoot: utf8.encode(release_trust.operatorRoot),
+);
 
 List<int> _hex(String hex) => <int>[
   for (var i = 0; i < hex.length; i += 2) int.parse(hex.substring(i, i + 2), radix: 16),
@@ -95,6 +128,7 @@ void main() {
       String engine = kFixtureEngine,
       bool allowUnsigned = false,
       String trust = kFixtureTrust,
+      ShorebirdReleaseTrust? releaseTrust,
     }) => verifyShorebirdArtifactCatalog(
       catalogBytes: _bytes(catalog),
       signatureBytes: signature == null ? null : _bytes(signature),
@@ -102,6 +136,7 @@ void main() {
       securityProfile: profile,
       engineRevision: engine,
       allowUnsigned: allowUnsigned,
+      releaseTrust: releaseTrust ?? (profile == 'hardened' ? _catalogTrust() : null),
     );
 
     Matcher rejects(String reason) => throwsA(
@@ -120,6 +155,41 @@ void main() {
         verify(kHardenedCatalog, kHardenedProdSignature, profile: 'hardened').$2,
         ShorebirdCatalogTrust.production,
       );
+    });
+
+    test('hardened: the signer must be the release root artifact-catalog delegate', () {
+      ShorebirdReleaseTrust? none;
+      expect(
+        () => verifyShorebirdArtifactCatalog(
+          catalogBytes: _bytes(kHardenedCatalog),
+          signatureBytes: _bytes(kHardenedProdSignature),
+          trustBytes: _bytes(kFixtureTrust),
+          securityProfile: 'hardened',
+          engineRevision: kFixtureEngine,
+          releaseTrust: none,
+        ),
+        rejects('under the release root'),
+      );
+      for (final (String bundle, String code) in <(String, String)>[
+        // Not delegated at all, delegated as a build-manifest key (role
+        // confusion), and revoked.
+        (_catalogBundle(asCatalog: false), 'manifest_untrusted_signer'),
+        (_catalogBundle(asCatalog: false, asManifest: true), 'manifest_signer_role'),
+        (_catalogBundle(asCatalog: false, revoke: true, version: 2), 'manifest_signer_revoked'),
+      ]) {
+        expect(
+          () => verify(
+            kHardenedCatalog,
+            kHardenedProdSignature,
+            profile: 'hardened',
+            releaseTrust: _catalogTrust(bundle),
+          ),
+          rejects(code),
+          reason: code,
+        );
+      }
+      // Legacy is unchanged: no release trust is consulted.
+      expect(verify(kLegacyCatalog, kLegacyProdSignature).$2, ShorebirdCatalogTrust.production);
     });
 
     test('a development key is legacy-only', () {
@@ -520,6 +590,28 @@ void main() {
           ),
         ),
       );
+    });
+
+    test('hardened resolves only with the release trust of the toolchain', () async {
+      final Uri url = engineUrl('https://storage.googleapis.com', 'sky_engine.zip');
+      final hardened = <String, String>{'SHOREBIRD_SECURITY_PROFILE': 'hardened'};
+      await expectLater(
+        resolver(hardened).resolve(url, serving(kHardenedCatalog, kHardenedProdSignature)),
+        throwsA(
+          isA<ShorebirdOriginException>().having(
+            (e) => e.message,
+            'message',
+            contains(kShorebirdReleaseTrustEnvVar),
+          ),
+        ),
+      );
+      fileSystem.file('/release-trust.json').writeAsStringSync(_catalogBundle());
+      final ShorebirdResolvedDownload resolved = (await resolver(<String, String>{
+        ...hardened,
+        kShorebirdReleaseTrustEnvVar: '/release-trust.json',
+        kShorebirdReleaseRootEnvVar: base64.encode(utf8.encode(release_trust.operatorRoot)),
+      }).resolve(url, serving(kHardenedCatalog, kHardenedProdSignature)))!;
+      expect(resolved.sha256, isNotNull);
     });
 
     test('development-signed catalogs warn loudly; hardened refuses them', () async {

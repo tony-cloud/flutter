@@ -14,6 +14,7 @@ import 'package:yaml/yaml.dart';
 
 import '../../src/shorebird_native_selection.dart';
 import '../../src/shorebird_replacement.dart';
+import 'shorebird_release_trust_fixtures.dart' as release_trust;
 
 void main() {
   group('ShorebirdYaml', () {
@@ -426,7 +427,7 @@ base_url: https://updates.example.com
         'patch_verification': 'strict',
         'patch_response_verification': 'required',
         'security_profile': 'hardened',
-        'security_contract_version': 1,
+        'security_contract_version': 2,
         'toolchain_id': toolchainId,
       });
       expect(compiled['security_contract_version'], isA<int>());
@@ -446,8 +447,10 @@ base_url: https://updates.example.com
       fs.file('/shorebird.yaml')
         ..createSync()
         ..writeAsStringSync(hardenedYaml);
-      // P3: a hardened build also signs a build manifest (see
-      // shorebird_build_manifest_test.dart); Android binds no engine module.
+      // P3/P4: a hardened build also signs a build manifest under the
+      // release root (see shorebird_build_manifest_test.dart); Android binds
+      // no engine module.
+      fs.file('/release-trust.json').writeAsStringSync(release_trust.operatorBundle());
       fs
           .file('/manifest.pem')
           .writeAsStringSync(
@@ -460,18 +463,21 @@ base_url: https://updates.example.com
         '/shorebird.yaml',
         environment: hardenedEnv(<String, String>{
           'SHOREBIRD_BUILD_MANIFEST_SIGNING_KEY': '/manifest.pem',
+          'SHOREBIRD_RELEASE_TRUST': '/release-trust.json',
+          'SHOREBIRD_RELEASE_ROOT': base64.encode(utf8.encode(release_trust.operatorRoot)),
         }),
         fileSystem: fs,
         targetPlatform: TargetPlatform.android,
         buildMode: BuildMode.release,
         artifacts: Artifacts.test(fileSystem: fs),
+        clock: () => DateTime.utc(2027),
       );
       final String text = fs.file('/shorebird.yaml').readAsStringSync();
-      expect(text.trimRight().split('\n').last, startsWith('shorebird_build_manifest: v1.'));
+      expect(text.trimRight().split('\n').last, startsWith('shorebird_build_manifest: v2.'));
       final loaded = loadYaml(text) as YamlMap;
       expect(loaded['toolchain_id'], toolchainId);
       expect(loaded['security_profile'], 'hardened');
-      expect(loaded['security_contract_version'], 1);
+      expect(loaded['security_contract_version'], 2);
       // The updater splits at the first ':'; the value is emitted plain (unquoted).
       expect(text, contains(RegExp('^toolchain_id: $toolchainId\$', multiLine: true)));
     });
@@ -623,7 +629,7 @@ base_url: https://updates.example.com
       expect(compiled['selection_protocol'], 2);
       expect(compiled['aot_patch_app_build_id'], '1.0.0+1');
       expect(compiled['security_profile'], 'hardened');
-      expect(compiled['security_contract_version'], 1);
+      expect(compiled['security_contract_version'], 2);
       expect(compiled['toolchain_id'], toolchainId);
       expect(compiled['patch_verification'], 'strict');
       expect(compiled['patch_response_verification'], 'required');

@@ -7,11 +7,13 @@ import 'package:yaml_edit/yaml_edit.dart';
 
 import '../artifacts.dart';
 import '../base/file_system.dart';
+import '../base/io.dart';
 import '../build_info.dart';
 import '../globals.dart' as globals;
 import 'shorebird_build_manifest.dart';
 import 'shorebird_interpreter.dart';
 import 'shorebird_native_selection.dart';
+import 'shorebird_release_trust.dart';
 import 'shorebird_replacement.dart';
 import 'shorebird_selection.dart';
 
@@ -33,6 +35,8 @@ void updateShorebirdYaml(
   TargetPlatform? targetPlatform,
   BuildMode? buildMode,
   Artifacts? artifacts,
+  String Function(List<String> argv)? runSigner,
+  DateTime Function()? clock,
 }) {
   final File shorebirdYaml = (fileSystem ?? globals.fs).file(shorebirdYamlPath);
   if (!shorebirdYaml.existsSync()) {
@@ -64,14 +68,20 @@ void updateShorebirdYaml(
       targetPlatform: targetPlatform,
       buildMode: buildMode,
       artifacts: artifacts,
+      runSigner: runSigner,
+      clock: clock,
     ),
     flush: true,
   );
 }
 
-/// Appends the signed build manifest (hardening P3) to the hardened YAML
-/// [text]. The manifest binds every byte of [text], so nothing may change
-/// the file afterwards.
+/// Appends the signed build manifest (hardening P3, release root P4) to the
+/// hardened YAML [text]. The manifest binds every byte of [text], so nothing
+/// may change the file afterwards.
+///
+/// The release-trust bundle must verify under the compiled root pin the
+/// engine was built with, be current at the build clock, and delegate the
+/// signer's key for the `build-manifest` role inside its validity window.
 String signHardenedShorebirdYaml(
   String text, {
   required Map<String, dynamic> compiled,
@@ -80,29 +90,39 @@ String signHardenedShorebirdYaml(
   required TargetPlatform? targetPlatform,
   required BuildMode? buildMode,
   required Artifacts? artifacts,
+  String Function(List<String> argv)? runSigner,
+  DateTime Function()? clock,
 }) {
-  final String keyPath = environment[kShorebirdBuildManifestSigningKeyEnvVar] ?? '';
-  if (keyPath.isEmpty) {
-    throw const FormatException(
-      'The hardened security profile requires $kShorebirdBuildManifestSigningKeyEnvVar '
-      '(the build-manifest signing key compiled into the hardened engine)',
-    );
-  }
-  final File keyFile = fileSystem.file(keyPath);
-  if (!keyFile.existsSync()) {
-    throw FormatException('$kShorebirdBuildManifestSigningKeyEnvVar does not exist: $keyPath');
-  }
   if (targetPlatform == null || buildMode == null || artifacts == null) {
     throw const FormatException(
       'A hardened shorebird.yaml needs the build target to measure its engine module',
     );
   }
-  final List<int> seed = parseShorebirdEd25519PrivateKeyPem(keyFile.readAsStringSync());
-  return appendShorebirdBuildManifest(
+  final developmentExceptions = compiled[kShorebirdSecurityDevelopmentExceptionsKey] == true;
+  final ShorebirdReleaseTrust trust = loadShorebirdReleaseTrust(environment, fileSystem);
+  if (trust.development && !developmentExceptions) {
+    throw const FormatException(
+      'The release root is the DEVELOPMENT-ONLY root, whose private key is public; only a '
+      'development build ($kShorebirdSecurityDevelopmentExceptionsEnvVar=true) may use it',
+    );
+  }
+  final ShorebirdBuildManifestSigner signer = _manifestSigner(
+    environment,
+    fileSystem,
+    runSigner ?? _runSigner,
+  );
+  final DateTime now = (clock ?? DateTime.now)().toUtc();
+  try {
+    trust.roleKey(ShorebirdSigningRole.buildManifest, signer.keyId, at: now);
+  } on ShorebirdReleaseTrustException catch (error) {
+    throw FormatException('The build-manifest signer is not authorized: $error');
+  }
+  final String output = appendShorebirdBuildManifest(
     text.endsWith('\n') ? text : '$text\n',
-    signingSeed: seed,
+    signer: signer,
+    trust: trust,
     toolchainId: compiled[kShorebirdToolchainIdKey] as String,
-    developmentExceptions: compiled[kShorebirdSecurityDevelopmentExceptionsKey] == true,
+    developmentExceptions: developmentExceptions,
     modules: shorebirdEngineModuleMeasurements(
       artifacts: artifacts,
       fileSystem: fileSystem,
@@ -115,6 +135,66 @@ String signHardenedShorebirdYaml(
     ),
     appleTeamIds: shorebirdAppleTeamIds(environment[kShorebirdAppleTeamIdsEnvVar]),
   );
+  final String recordDir = environment[kShorebirdBuildManifestRecordDirEnvVar] ?? '';
+  if (recordDir.isNotEmpty) {
+    final Map<String, Object?> record = shorebirdReleaseRecord(output, trust);
+    final manifests = record['build_manifests']! as List<Object>;
+    final digest = (manifests.single as Map<String, Object?>)['manifest_sha256']! as String;
+    fileSystem.directory(recordDir).createSync(recursive: true);
+    fileSystem
+        .file(fileSystem.path.join(recordDir, 'build-manifest-$digest.json'))
+        .writeAsStringSync(shorebirdCanonicalJson(record), flush: true);
+  }
+  return output;
+}
+
+ShorebirdBuildManifestSigner _manifestSigner(
+  Map<String, String> environment,
+  FileSystem fileSystem,
+  String Function(List<String> argv) runSigner,
+) {
+  final String keyPath = environment[kShorebirdBuildManifestSigningKeyEnvVar] ?? '';
+  final String command = environment[kShorebirdBuildManifestSignerEnvVar] ?? '';
+  if (keyPath.isNotEmpty == command.isNotEmpty) {
+    throw const FormatException(
+      'The hardened security profile requires exactly one build-manifest signer: '
+      '$kShorebirdBuildManifestSigningKeyEnvVar (a PKCS#8 PEM file) or '
+      '$kShorebirdBuildManifestSignerEnvVar (an external KMS/HSM signer)',
+    );
+  }
+  if (command.isNotEmpty) {
+    final String keyId = environment[kShorebirdBuildManifestSignerKeyIdEnvVar] ?? '';
+    if (!RegExp(r'^sha256:[0-9a-f]{64}$').hasMatch(keyId)) {
+      throw const FormatException(
+        '$kShorebirdBuildManifestSignerEnvVar requires $kShorebirdBuildManifestSignerKeyIdEnvVar '
+        '(sha256:<64 lowercase hex>)',
+      );
+    }
+    return ShorebirdCommandManifestSigner(command, keyId, runSigner);
+  }
+  final File keyFile = fileSystem.file(keyPath);
+  if (!keyFile.existsSync()) {
+    throw FormatException('$kShorebirdBuildManifestSigningKeyEnvVar does not exist: $keyPath');
+  }
+  return ShorebirdSeedManifestSigner(
+    parseShorebirdEd25519PrivateKeyPem(keyFile.readAsStringSync()),
+  );
+}
+
+String _runSigner(List<String> argv) {
+  final String executable = argv.first.toLowerCase();
+  final ProcessResult result = globals.processManager.runSync(
+    argv,
+    // A .bat/.cmd adapter needs cmd.exe on Windows; nothing else uses a shell.
+    runInShell: executable.endsWith('.bat') || executable.endsWith('.cmd'),
+  );
+  if (result.exitCode != 0) {
+    throw FormatException(
+      'The build-manifest signer ${argv.first} failed (exit ${result.exitCode}): '
+      '${result.stderr}',
+    );
+  }
+  return result.stdout as String;
 }
 
 String appIdForFlavor(YamlMap yamlMap, {required String? flavor}) {
@@ -156,7 +236,7 @@ const kShorebirdSecurityContractVersionKey = 'security_contract_version';
 const kShorebirdToolchainIdKey = 'toolchain_id';
 const kShorebirdSecurityDevelopmentExceptionsKey = 'security_development_exceptions';
 
-const _kShorebirdSecurityContractVersion = 1;
+const _kShorebirdSecurityContractVersion = 2;
 const _kShorebirdReservedSecurityKeys = <String>[
   kShorebirdSecurityProfileKey,
   kShorebirdSecurityContractVersionKey,

@@ -6,13 +6,17 @@ import 'dart:convert';
 import 'dart:typed_data';
 
 import 'package:crypto/crypto.dart' show sha256;
+import 'package:file/file.dart';
 import 'package:file/memory.dart';
 import 'package:flutter_tools/src/artifacts.dart';
 import 'package:flutter_tools/src/build_info.dart';
 import 'package:flutter_tools/src/shorebird/shorebird_build_manifest.dart';
 import 'package:flutter_tools/src/shorebird/shorebird_ed25519.dart';
+import 'package:flutter_tools/src/shorebird/shorebird_release_trust.dart';
 import 'package:flutter_tools/src/shorebird/shorebird_yaml.dart';
 import 'package:test/test.dart';
+
+import 'shorebird_release_trust_fixtures.dart' as fixtures;
 
 List<int> _hex(String hex) => <int>[
   for (var i = 0; i < hex.length; i += 2) int.parse(hex.substring(i, i + 2), radix: 16),
@@ -170,6 +174,11 @@ String _pem(List<int> seed) {
 
 List<int> _unb64url(String value) => base64Url.decode(base64Url.normalize(value));
 
+ShorebirdReleaseTrust _developmentTrust() => verifyShorebirdReleaseTrust(
+  utf8.encode(fixtures.kDevelopmentBundle),
+  pinnedRoot: base64.decode(fixtures.kDevelopmentRootPin),
+);
+
 void main() {
   group('ed25519 signing', () {
     test('matches RFC 8032 test vectors 1 and 2', () {
@@ -272,7 +281,8 @@ void main() {
       List<String> apple = const <String>[],
     }) => appendShorebirdBuildManifest(
       text,
-      signingSeed: _seed,
+      signer: ShorebirdSeedManifestSigner(_seed),
+      trust: _developmentTrust(),
       toolchainId: _toolchainId,
       developmentExceptions: false,
       modules: modules,
@@ -287,7 +297,11 @@ void main() {
       final String line = output.substring(config.length);
       expect(
         line,
-        matches(RegExp(r'^shorebird_build_manifest: v1\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\n$')),
+        matches(
+          RegExp(
+            r'^shorebird_build_manifest: v2\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\n$',
+          ),
+        ),
       );
       final List<String> parts = line.trim().split(' ').last.split('.');
       final List<int> manifestBytes = _unb64url(parts[1]);
@@ -295,11 +309,15 @@ void main() {
       expect(manifest['config_sha256'], sha256.convert(utf8.encode(config)).toString());
       expect(manifest['toolchain_id'], _toolchainId);
       expect(manifest['signer_key_id'], shorebirdEd25519KeyId(ed25519PublicKey(_seed)));
+      expect(manifest['contract_version'], 2);
+      expect(manifest['delegations_sha256'], _developmentTrust().delegationsSha256);
+      // The last segment is the release-trust bundle, canonical JSON.
+      expect(utf8.decode(_unb64url(parts[3])), fixtures.kDevelopmentBundle);
       expect(manifest['modules'], <Object>[
         <String, String>{'platform': 'linux', 'arch': 'x86_64', 'measurement': _elfGolden},
       ]);
       final List<int> message = utf8.encode(
-        'open-shorebird.build-manifest-signature.v1:${sha256.convert(manifestBytes)}',
+        'open-shorebird.build-manifest-signature.v2:${sha256.convert(manifestBytes)}',
       );
       expect(ed25519Verify(ed25519PublicKey(_seed), message, _unb64url(parts[2])), isTrue);
       // Deterministic: the same inputs give byte-identical output, so a
@@ -309,7 +327,8 @@ void main() {
 
     test('matches the token the updater verifies', () {
       // updater/library/src/integrity.rs `tests::flutter_tools_output_verifies`
-      // pins this exact output and accepts it with the compiled test key.
+      // pins this exact output and accepts it under the compiled
+      // DEVELOPMENT-ONLY release root.
       expect(build(), _kUpdaterGolden);
     });
 
@@ -350,14 +369,22 @@ void main() {
   group('updateShorebirdYaml under hardened', () {
     late MemoryFileSystem fs;
     late Artifacts artifacts;
+    // Inside every fixture validity window.
+    DateTime clock() => DateTime.utc(2027, 3);
     Map<String, String> env([Map<String, String> extra = const <String, String>{}]) =>
         <String, String>{
           'SHOREBIRD_SECURITY_PROFILE': 'hardened',
           'SHOREBIRD_TOOLCHAIN_ID': _toolchainId,
           'SHOREBIRD_PUBLIC_KEY': 'pinned-key',
           kShorebirdBuildManifestSigningKeyEnvVar: '/keys/manifest.pem',
+          kShorebirdReleaseTrustEnvVar: '/keys/release-trust.json',
+          kShorebirdReleaseRootEnvVar: base64.encode(utf8.encode(fixtures.operatorRoot)),
           ...extra,
         };
+
+    void writeTrust(String bundle) => fs.file('/keys/release-trust.json')
+      ..createSync(recursive: true)
+      ..writeAsStringSync(bundle);
 
     setUp(() {
       fs = MemoryFileSystem.test();
@@ -365,6 +392,7 @@ void main() {
       fs.file('/keys/manifest.pem')
         ..createSync(recursive: true)
         ..writeAsStringSync(_pem(_seed));
+      writeTrust(fixtures.operatorBundle());
       fs
           .file('/shorebird.yaml')
           .writeAsStringSync('app_id: app\nbase_url: https://updates.example.com\n');
@@ -378,7 +406,12 @@ void main() {
         ..writeAsBytesSync(_elf64Fixture());
     });
 
-    void update(Map<String, String> environment, TargetPlatform platform) => updateShorebirdYaml(
+    void update(
+      Map<String, String> environment,
+      TargetPlatform platform, {
+      String Function(List<String> argv)? runSigner,
+      DateTime Function()? at,
+    }) => updateShorebirdYaml(
       null,
       '/shorebird.yaml',
       environment: environment,
@@ -386,17 +419,27 @@ void main() {
       targetPlatform: platform,
       buildMode: BuildMode.release,
       artifacts: artifacts,
+      runSigner: runSigner,
+      clock: at ?? clock,
+    );
+
+    Map<String, Object?> manifestOf(String text) {
+      final String token = text.trimRight().split('\n').last.split(' ').last;
+      return jsonDecode(utf8.decode(_unb64url(token.split('.')[1]))) as Map<String, Object?>;
+    }
+
+    Matcher refusedWith(String text) => throwsA(
+      isA<FormatException>().having((FormatException e) => e.message, 'message', contains(text)),
     );
 
     test('binds the engine module the build packages', () {
       update(env(), TargetPlatform.linux_x64);
       final String text = fs.file('/shorebird.yaml').readAsStringSync();
       final List<String> lines = text.trimRight().split('\n');
-      expect(lines.last, startsWith('shorebird_build_manifest: v1.'));
+      expect(lines.last, startsWith('shorebird_build_manifest: v2.'));
       expect(lines.where((String l) => l.startsWith('shorebird_build_manifest')), hasLength(1));
-      final String token = lines.last.split(' ').last;
-      final manifest =
-          jsonDecode(utf8.decode(_unb64url(token.split('.')[1]))) as Map<String, Object?>;
+      expect(text, contains('security_contract_version: 2\n'));
+      final Map<String, Object?> manifest = manifestOf(text);
       expect(manifest['modules'], <Object>[
         <String, String>{'platform': 'linux', 'arch': 'x86_64', 'measurement': _elfGolden},
       ]);
@@ -412,9 +455,9 @@ void main() {
         env(<String, String>{kShorebirdAndroidSigningCertEnvVar: 'ab' * 32}),
         TargetPlatform.android,
       );
-      final String token = fs.file('/shorebird.yaml').readAsStringSync().trim().split(' ').last;
-      final manifest =
-          jsonDecode(utf8.decode(_unb64url(token.split('.')[1]))) as Map<String, Object?>;
+      final Map<String, Object?> manifest = manifestOf(
+        fs.file('/shorebird.yaml').readAsStringSync(),
+      );
       expect(manifest['modules'], isEmpty);
       expect(
         (manifest['package_identity']! as Map<String, Object?>)['android_signing_cert_sha256'],
@@ -428,7 +471,7 @@ void main() {
           env()..remove(kShorebirdBuildManifestSigningKeyEnvVar),
           TargetPlatform.linux_x64,
         ),
-        throwsA(isA<FormatException>()),
+        refusedWith('exactly one build-manifest signer'),
       );
       expect(
         () => update(
@@ -443,6 +486,207 @@ void main() {
         () => updateShorebirdYaml(null, '/shorebird.yaml', environment: env(), fileSystem: fs),
         throwsA(isA<FormatException>()),
       );
+    });
+
+    test('requires a release-trust bundle that chains to the compiled root', () {
+      for (final name in <String>[kShorebirdReleaseTrustEnvVar, kShorebirdReleaseRootEnvVar]) {
+        expect(
+          () => update(env()..remove(name), TargetPlatform.linux_x64),
+          refusedWith(kShorebirdReleaseTrustEnvVar),
+          reason: name,
+        );
+      }
+      // Another root than the engine compiled.
+      expect(
+        () => update(
+          env(<String, String>{
+            kShorebirdReleaseRootEnvVar: base64.encode(
+              utf8.encode(fixtures.rootPayload(1, <List<int>>[fixtures.strangerSeed])),
+            ),
+          }),
+          TargetPlatform.linux_x64,
+        ),
+        refusedWith('trust_unverified'),
+      );
+      // Delegations below the compiled floor.
+      expect(
+        () => update(
+          env(<String, String>{kShorebirdReleaseMinDelegationsVersionEnvVar: '2'}),
+          TargetPlatform.linux_x64,
+        ),
+        refusedWith('trust_rollback'),
+      );
+      for (final bad in <String>['0', '-1', 'x', '01']) {
+        expect(
+          () => update(
+            env(<String, String>{kShorebirdReleaseMinDelegationsVersionEnvVar: bad}),
+            TargetPlatform.linux_x64,
+          ),
+          refusedWith(kShorebirdReleaseMinDelegationsVersionEnvVar),
+          reason: bad,
+        );
+      }
+    });
+
+    test('refuses a signer the delegations do not authorize now', () {
+      // Wrong key ID: a key no role names.
+      fs.file('/keys/manifest.pem').writeAsStringSync(_pem(fixtures.strangerSeed));
+      expect(
+        () => update(env(), TargetPlatform.linux_x64),
+        refusedWith('manifest_untrusted_signer'),
+      );
+      // Role confusion: the artifact-catalog key, or the root key itself.
+      for (final seed in <List<int>>[fixtures.catalogSeed, fixtures.nextRootSeed]) {
+        fs.file('/keys/manifest.pem').writeAsStringSync(_pem(seed));
+        expect(() => update(env(), TargetPlatform.linux_x64), refusedWith('manifest_signer_role'));
+      }
+      // Revoked: delegations v2 rotate to [8]*32 and revoke [7]*32.
+      fs.file('/keys/manifest.pem').writeAsStringSync(_pem(_seed));
+      writeTrust(
+        fixtures.operatorBundle(
+          version: 2,
+          manifest: <List<int>>[fixtures.nextManifestSeed],
+          revoked: <String>[fixtures.keyId(_seed)],
+        ),
+      );
+      expect(() => update(env(), TargetPlatform.linux_x64), refusedWith('manifest_signer_revoked'));
+      // Rotated out: the new key signs.
+      fs.file('/keys/manifest.pem').writeAsStringSync(_pem(fixtures.nextManifestSeed));
+      update(env(), TargetPlatform.linux_x64);
+      // Outside the key's validity window, and after the delegations expire.
+      writeTrust(fixtures.operatorBundle(notBefore: '2028-01-01T00:00:00Z'));
+      fs.file('/keys/manifest.pem').writeAsStringSync(_pem(_seed));
+      fs
+          .file('/shorebird.yaml')
+          .writeAsStringSync('app_id: app\nbase_url: https://updates.example.com\n');
+      expect(() => update(env(), TargetPlatform.linux_x64), refusedWith('signer_outside_window'));
+      writeTrust(fixtures.operatorBundle());
+      expect(
+        () => update(env(), TargetPlatform.linux_x64, at: () => DateTime.utc(2037)),
+        refusedWith('trust_expired'),
+      );
+    });
+
+    test('the DEVELOPMENT-ONLY root needs a development build', () {
+      writeTrust(fixtures.kDevelopmentBundle);
+      final Map<String, String> development = env(<String, String>{
+        kShorebirdReleaseRootEnvVar: fixtures.kDevelopmentRootPin,
+      });
+      expect(() => update(development, TargetPlatform.linux_x64), refusedWith('DEVELOPMENT-ONLY'));
+      update(<String, String>{
+        ...development,
+        'SHOREBIRD_SECURITY_DEVELOPMENT_EXCEPTIONS': 'true',
+      }, TargetPlatform.linux_x64);
+      expect(
+        manifestOf(fs.file('/shorebird.yaml').readAsStringSync())['development_exceptions'],
+        isTrue,
+      );
+    });
+
+    test('an external KMS/HSM signer signs without the key in process', () {
+      final argvs = <List<String>>[];
+      final Map<String, String> external = env(<String, String>{
+        kShorebirdBuildManifestSignerEnvVar: '/opt/kms-signer',
+        kShorebirdBuildManifestSignerKeyIdEnvVar: fixtures.keyId(_seed),
+      })..remove(kShorebirdBuildManifestSigningKeyEnvVar);
+      update(
+        external,
+        TargetPlatform.linux_x64,
+        runSigner: (List<String> argv) {
+          argvs.add(argv);
+          // The adapter holds the key; it signs exactly the message given.
+          return '${base64.encode(ed25519Sign(_seed, utf8.encode(argv.last)))}\n';
+        },
+      );
+      expect(argvs, hasLength(1));
+      expect(argvs.single.sublist(0, 4), <String>[
+        '/opt/kms-signer',
+        'sign',
+        '--key-id',
+        fixtures.keyId(_seed),
+      ]);
+      expect(argvs.single[4], '--message');
+      expect(argvs.single[5], startsWith('open-shorebird.build-manifest-signature.v2:'));
+      // The same output as the in-process signer: signing is deterministic.
+      final String viaKms = fs.file('/shorebird.yaml').readAsStringSync();
+      fs
+          .file('/shorebird.yaml')
+          .writeAsStringSync('app_id: app\nbase_url: https://updates.example.com\n');
+      update(env(), TargetPlatform.linux_x64);
+      expect(fs.file('/shorebird.yaml').readAsStringSync(), viaKms);
+    });
+
+    test('an external signer is checked before its output is used', () {
+      Map<String, String> external(String keyId) => env(<String, String>{
+        kShorebirdBuildManifestSignerEnvVar: '/opt/kms-signer',
+        kShorebirdBuildManifestSignerKeyIdEnvVar: keyId,
+      })..remove(kShorebirdBuildManifestSigningKeyEnvVar);
+      // Both signers, or no key ID.
+      expect(
+        () => update(
+          env(<String, String>{kShorebirdBuildManifestSignerEnvVar: '/opt/kms-signer'}),
+          TargetPlatform.linux_x64,
+        ),
+        refusedWith('exactly one build-manifest signer'),
+      );
+      expect(
+        () => update(external(''), TargetPlatform.linux_x64),
+        refusedWith(kShorebirdBuildManifestSignerKeyIdEnvVar),
+      );
+      // A signer that answers with another key's signature, or garbage.
+      expect(
+        () => update(
+          external(fixtures.keyId(_seed)),
+          TargetPlatform.linux_x64,
+          runSigner: (List<String> argv) =>
+              base64.encode(ed25519Sign(fixtures.strangerSeed, utf8.encode(argv.last))),
+        ),
+        refusedWith('does not verify'),
+      );
+      expect(
+        () => update(
+          external(fixtures.keyId(_seed)),
+          TargetPlatform.linux_x64,
+          runSigner: (List<String> argv) => 'not a signature',
+        ),
+        refusedWith('did not print'),
+      );
+      // A KMS key that the delegations give another role.
+      expect(
+        () => update(
+          external(fixtures.keyId(fixtures.catalogSeed)),
+          TargetPlatform.linux_x64,
+          runSigner: (List<String> argv) => fail('must not be asked to sign'),
+        ),
+        refusedWith('manifest_signer_role'),
+      );
+    });
+
+    test('writes the release record the CLI stores with the release', () {
+      update(
+        env(<String, String>{kShorebirdBuildManifestRecordDirEnvVar: '/records'}),
+        TargetPlatform.linux_x64,
+      );
+      final List<File> files = fs.directory('/records').listSync().whereType<File>().toList();
+      expect(files, hasLength(1));
+      final record = jsonDecode(files.single.readAsStringSync()) as Map<String, Object?>;
+      final String text = fs.file('/shorebird.yaml').readAsStringSync();
+      final String token = text.trimRight().split('\n').last.split(' ').last;
+      final List<int> manifestBytes = _unb64url(token.split('.')[1]);
+      expect(record['schema'], 'open-shorebird.release-record');
+      expect(record['contract_version'], 2);
+      expect(record['toolchain_id'], _toolchainId);
+      expect(
+        record['release_root_sha256'],
+        'sha256:${sha256.convert(utf8.encode(fixtures.operatorRoot))}',
+      );
+      expect(record['delegations_version'], 1);
+      final manifests = record['build_manifests']! as List<Object?>;
+      expect(
+        (manifests.single! as Map<String, Object?>)['manifest_sha256'],
+        sha256.convert(manifestBytes).toString(),
+      );
+      expect(files.single.basename, 'build-manifest-${sha256.convert(manifestBytes)}.json');
     });
 
     test('legacy output never carries a manifest', () {
@@ -466,4 +710,4 @@ void main() {
 const _kUpdaterGolden =
     'app_id: app\nbase_url: https://updates.example.com\n'
     'shorebird_build_manifest: '
-    'v1.eyJzY2hlbWEiOiJvcGVuLXNob3JlYmlyZC5idWlsZC1tYW5pZmVzdCIsImNvbnRyYWN0X3ZlcnNpb24iOjEsInNlY3VyaXR5X3Byb2ZpbGUiOiJoYXJkZW5lZCIsInRvb2xjaGFpbl9pZCI6InNoYTI1Njo3MDIyOWU0MDdlNTMxMTQwMWFhMzI1MTQxOGVmZjEwNjQ2N2E3NTBjY2ZjYjdlOGZlN2I2MWM0NDQyNzAwMDQwIiwiZGV2ZWxvcG1lbnRfZXhjZXB0aW9ucyI6ZmFsc2UsInNpZ25lcl9rZXlfaWQiOiJzaGEyNTY6ZmU4MTJjMTJmM2FiNGNlNmFjNWRiNjlhYzM1MmY5MDZjYjFiMTFlZjQzZmIzM2UyNTJlZjdmZjU1MjI2Mzg4OSIsImNvbmZpZ19zaGEyNTYiOiIwODRjOGQ2NTQyODRjMGZjZjkyZWQ5ZTgxNDE0YTE1ZGQxOTUzMjYxMmU2MzAxZDllMTg0ZTRlMGU2MjQyNmM0IiwibW9kdWxlcyI6W3sicGxhdGZvcm0iOiJsaW51eCIsImFyY2giOiJ4ODZfNjQiLCJtZWFzdXJlbWVudCI6InNoYTI1NjpmMTc3MTY5MjQ1MTg2YmU4ZTBmYTJlOGU2ZmZiOWRmNzBmOGRkMDgyNGM4ZjMwNWMwNmUxN2YzMGY2Mzk5MWNkIn1dLCJwYWNrYWdlX2lkZW50aXR5Ijp7ImFuZHJvaWRfc2lnbmluZ19jZXJ0X3NoYTI1NiI6W10sImFwcGxlX3RlYW1faWRzIjpbXX19.ZYBT71bqRnbCzQ61c36AO41gM27qCV_JTwJcMh0GCw8USHsg9wTsefmPQ3bbnZZQl96YEtgUZhIyUOLpi0xcCw\n';
+    'v2.eyJzY2hlbWEiOiJvcGVuLXNob3JlYmlyZC5idWlsZC1tYW5pZmVzdCIsImNvbnRyYWN0X3ZlcnNpb24iOjIsInNlY3VyaXR5X3Byb2ZpbGUiOiJoYXJkZW5lZCIsInRvb2xjaGFpbl9pZCI6InNoYTI1Njo3MDIyOWU0MDdlNTMxMTQwMWFhMzI1MTQxOGVmZjEwNjQ2N2E3NTBjY2ZjYjdlOGZlN2I2MWM0NDQyNzAwMDQwIiwiZGV2ZWxvcG1lbnRfZXhjZXB0aW9ucyI6ZmFsc2UsInNpZ25lcl9rZXlfaWQiOiJzaGEyNTY6ZmU4MTJjMTJmM2FiNGNlNmFjNWRiNjlhYzM1MmY5MDZjYjFiMTFlZjQzZmIzM2UyNTJlZjdmZjU1MjI2Mzg4OSIsImRlbGVnYXRpb25zX3NoYTI1NiI6Ijc5YTYwNGZmOTFkNjhhYWRjYmQxMmM0ZmE0YTNlNDJjNWRjZTJiNGQ5Y2U3MWExZWYyMmRjMzk3N2NiOTk0ZGYiLCJjb25maWdfc2hhMjU2IjoiMDg0YzhkNjU0Mjg0YzBmY2Y5MmVkOWU4MTQxNGExNWRkMTk1MzI2MTJlNjMwMWQ5ZTE4NGU0ZTBlNjI0MjZjNCIsIm1vZHVsZXMiOlt7InBsYXRmb3JtIjoibGludXgiLCJhcmNoIjoieDg2XzY0IiwibWVhc3VyZW1lbnQiOiJzaGEyNTY6ZjE3NzE2OTI0NTE4NmJlOGUwZmEyZThlNmZmYjlkZjcwZjhkZDA4MjRjOGYzMDVjMDZlMTdmMzBmNjM5OTFjZCJ9XSwicGFja2FnZV9pZGVudGl0eSI6eyJhbmRyb2lkX3NpZ25pbmdfY2VydF9zaGEyNTYiOltdLCJhcHBsZV90ZWFtX2lkcyI6W119fQ.HK-FpA4qt5auJPBUoqhL0ixlBNl5kabAz_RW80B_ZLjc1anfgGMyzGNmAZAJyF8NCCeQurW91yB1aw6bxa2wCw.eyJjb250cmFjdF92ZXJzaW9uIjoyLCJkZWxlZ2F0aW9ucyI6eyJwYXlsb2FkIjoiZXlKamIyNTBjbUZqZEY5MlpYSnphVzl1SWpveUxDSmxlSEJwY21WelgyRjBJam9pTWpBek5pMHhNUzB3TVZRd01Eb3dNRG93TUZvaUxDSnBjM04xWldSZllYUWlPaUl5TURJMkxURXhMVEF4VkRBd09qQXdPakF3V2lJc0luSmxkbTlyWldSZmEyVjVYMmxrY3lJNlcxMHNJbkp2YkdWeklqcDdJbUZ5ZEdsbVlXTjBMV05oZEdGc2IyY2lPbHQ3SW10bGVWOXBaQ0k2SW5Ob1lUSTFOam80Tm1RME5tVXdPV1E1TW1JME1UTXhNREJpWWpZMVl6Rm1NRGs0TWpNMVpXUXlNMlJrWWpnMFpUQTRNV0kxTnpSak1qQmlaVEV4WkRFMVptUTJOVGcwSWl3aWJtOTBYMkZtZEdWeUlqb2lNakF6TmkweE1TMHdNVlF3TURvd01Eb3dNRm9pTENKdWIzUmZZbVZtYjNKbElqb2lNakF5TmkweE1TMHdNVlF3TURvd01Eb3dNRm9pTENKd2RXSnNhV05mYTJWNUlqb2lWblp6ZEVkMkwydGlNemxZTm5JelJqUjZWSEJZYUV0a1IyMTNVMEZHYTFkQ09YbzRMMUpyVVZoMGJ6MGlmVjBzSW1KMWFXeGtMVzFoYm1sbVpYTjBJanBiZXlKclpYbGZhV1FpT2lKemFHRXlOVFk2Wm1VNE1USmpNVEptTTJGaU5HTmxObUZqTldSaU5qbGhZek0xTW1ZNU1EWmpZakZpTVRGbFpqUXpabUl6TTJVeU5USmxaamRtWmpVMU1qSTJNemc0T1NJc0ltNXZkRjloWm5SbGNpSTZJakl3TXpZdE1URXRNREZVTURBNk1EQTZNREJhSWl3aWJtOTBYMkpsWm05eVpTSTZJakl3TWpZdE1URXRNREZVTURBNk1EQTZNREJhSWl3aWNIVmliR2xqWDJ0bGVTSTZJalpyY0hOWkswdGpWV2R4S3psV1FqZEZlVGRHSzFwV1NHUnhOaXQyYm5WVFVXZzNjV0ZTVWtjd2FYYzlJbjFkZlN3aWNtOXZkRjkyWlhKemFXOXVJam94TENKelkyaGxiV0VpT2lKdmNHVnVMWE5vYjNKbFltbHlaQzV5Wld4bFlYTmxMV1JsYkdWbllYUnBiMjV6SWl3aWRtVnljMmx2YmlJNk1YMD0iLCJzaWduYXR1cmVzIjpbeyJrZXlfaWQiOiJzaGEyNTY6MzQ3NTBmOThiZDU5ZmNmYzk0NmRhNDVhYWFiZTkzM2JlMTU0YTRiNTA5NGUxYzRhYmY0Mjg2NjUwNWYzYzk3ZSIsInNpZ25hdHVyZSI6ImI2NzQ1cFFFS2k4WHR4cHg3VzM5NlZqb1pWUWUxUXRNcUthWlJWeFJJcVJobk85NldnUngrK1lxdzFZeE1NR05XZEZYNlhwVnlDQkpQOGtjbEt3WUJBPT0ifV19LCJyb290X2NoYWluIjpbeyJwYXlsb2FkIjoiZXlKamIyNTBjbUZqZEY5MlpYSnphVzl1SWpveUxDSmxlSEJwY21WelgyRjBJam9pTWpBek5pMHhNUzB3T1ZRd01Eb3dNRG93TUZvaUxDSnJaWGx6SWpwYmV5SnJaWGxmYVdRaU9pSnphR0V5TlRZNk16UTNOVEJtT1RoaVpEVTVabU5tWXprME5tUmhORFZoWVdGaVpUa3pNMkpsTVRVMFlUUmlOVEE1TkdVeFl6UmhZbVkwTWpnMk5qVXdOV1l6WXprM1pTSXNJbkIxWW14cFkxOXJaWGtpT2lKcGIycHFNMWhSU2poYVdEbFZkSE4wVUV4d1pHTnpjRzVEWWpoa2JFSkpZamd6VTBsQllsRlFZakYzUFNKOVhTd2ljMk5vWlcxaElqb2liM0JsYmkxemFHOXlaV0pwY21RdWNtVnNaV0Z6WlMxeWIyOTBJaXdpZEdoeVpYTm9iMnhrSWpveExDSjJaWEp6YVc5dUlqb3hmUT09Iiwic2lnbmF0dXJlcyI6W3sia2V5X2lkIjoic2hhMjU2OjM0NzUwZjk4YmQ1OWZjZmM5NDZkYTQ1YWFhYmU5MzNiZTE1NGE0YjUwOTRlMWM0YWJmNDI4NjY1MDVmM2M5N2UiLCJzaWduYXR1cmUiOiJENE5KdWpSL3NZZHNHYWw4VS96VjhFUVY4ck1lZlc4UUR2NnNYdUMvVEd0Lys2YnArZGlpVS9VMjBwYit1VWEyaGxwaVZDTGxtcU1wb29UL2FycldEZz09In1dfV0sInNjaGVtYSI6Im9wZW4tc2hvcmViaXJkLnJlbGVhc2UtdHJ1c3QifQ\n';

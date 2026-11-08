@@ -24,6 +24,7 @@ import 'dart:convert';
 import 'package:crypto/crypto.dart' show sha256;
 
 import 'shorebird_ed25519.dart';
+import 'shorebird_release_trust.dart';
 
 /// Thrown when a catalog, signature or trust document must not be used.
 class ShorebirdCatalogException implements Exception {
@@ -440,11 +441,18 @@ Map<String, _TrustedKey> _parseTrust(List<int> bytes) {
   required String securityProfile,
   required String engineRevision,
   bool allowUnsigned = false,
+  ShorebirdReleaseTrust? releaseTrust,
 }) {
   if (securityProfile != 'legacy' && securityProfile != 'hardened') {
     throw ShorebirdCatalogException('unsupported security profile $securityProfile');
   }
   final hardened = securityProfile == 'hardened';
+  if (hardened && releaseTrust == null) {
+    throw ShorebirdCatalogException(
+      'a hardened toolchain verifies the catalog signer under the release root '
+      '($kShorebirdReleaseTrustEnvVar, $kShorebirdReleaseRootEnvVar)',
+    );
+  }
   final Map<String, _TrustedKey> trust = _parseTrust(trustBytes);
   final ShorebirdArtifactCatalog catalog = ShorebirdArtifactCatalog.parse(catalogBytes);
   if (catalog.engineRevision != engineRevision) {
@@ -513,6 +521,18 @@ Map<String, _TrustedKey> _parseTrust(List<int> bytes) {
     throw ShorebirdCatalogException(
       'a hardened toolchain rejects a catalog signed by a development key',
     );
+  }
+  if (hardened) {
+    // Contract v2 (P4): the signer must also be the release root's current
+    // artifact-catalog delegate, so a revoked, rotated-out or other-role key
+    // (a build-manifest or root key) never authenticates a catalog.
+    try {
+      releaseTrust!.roleKey(ShorebirdSigningRole.artifactCatalog, keyId);
+    } on ShorebirdReleaseTrustException catch (error) {
+      throw ShorebirdCatalogException(
+        'the catalog signer is not an artifact-catalog key under the release root: $error',
+      );
+    }
   }
   return (
     catalog,
