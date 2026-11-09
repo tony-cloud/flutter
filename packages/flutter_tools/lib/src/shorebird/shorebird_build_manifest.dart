@@ -10,6 +10,10 @@
 ///
 ///     shorebird_build_manifest: v2.<b64url(manifest JSON)>.<b64url(Ed25519 signature)>.<b64url(release-trust JSON)>
 ///
+/// A `hardened-diversified` build (stage P5, contract v3, §11) writes the
+/// same line with the `v3.` prefix; its manifest also binds
+/// `diversification_profile_id`. The signature domain is unchanged.
+///
 /// The signer is a `build-manifest` key that the release-trust bundle
 /// delegates under the release root compiled into the engine, and the
 /// manifest binds the digest of those delegations.
@@ -62,8 +66,10 @@ const kShorebirdAppleTeamIdsEnvVar = 'SHOREBIRD_APPLE_TEAM_IDS';
 
 const kShorebirdBuildManifestKey = 'shorebird_build_manifest';
 const _kTokenPrefix = 'v2.';
+const _kDiversifiedTokenPrefix = 'v3.';
 const kShorebirdBuildManifestSignatureDomain = 'open-shorebird.build-manifest-signature.v2:';
 const _kContractVersion = 2;
+const _kDiversifiedContractVersion = 3;
 const _kManifestSchema = 'open-shorebird.build-manifest';
 const _kMeasurementDomain = 'open-shorebird.module-measurement.v1\u0000';
 
@@ -542,6 +548,10 @@ class ShorebirdCommandManifestSigner implements ShorebirdBuildManifestSigner {
 /// manifest key). [signer] must hold a `build-manifest` key delegated by
 /// [trust]; the signature is verified before anything is returned. Returns
 /// the final file contents.
+///
+/// A non-null [diversificationProfileId] makes it the contract v3
+/// (`hardened-diversified`) manifest and `v3.` token; otherwise the output is
+/// the contract v2 hardened line, unchanged.
 String appendShorebirdBuildManifest(
   String config, {
   required ShorebirdBuildManifestSigner signer,
@@ -552,7 +562,12 @@ String appendShorebirdBuildManifest(
   required TargetPlatform targetPlatform,
   List<String> androidSigningCerts = const <String>[],
   List<String> appleTeamIds = const <String>[],
+  String? diversificationProfileId,
 }) {
+  final diversified = diversificationProfileId != null;
+  if (diversified && !RegExp(r'^sha256:[0-9a-f]{64}$').hasMatch(diversificationProfileId)) {
+    throw const FormatException('diversification_profile_id must be sha256:<64 lowercase hex>');
+  }
   if (!config.endsWith('\n') ||
       config.contains('\r') ||
       config.contains(kShorebirdBuildManifestKey)) {
@@ -577,10 +592,11 @@ String appendShorebirdBuildManifest(
   // exact bytes, so the order carries no meaning to the verifier.
   final String manifest = jsonEncode(<String, Object>{
     'schema': _kManifestSchema,
-    'contract_version': _kContractVersion,
-    'security_profile': 'hardened',
+    'contract_version': diversified ? _kDiversifiedContractVersion : _kContractVersion,
+    'security_profile': diversified ? 'hardened-diversified' : 'hardened',
     'toolchain_id': toolchainId,
     'development_exceptions': developmentExceptions,
+    if (diversified) 'diversification_profile_id': diversificationProfileId,
     'signer_key_id': signer.keyId,
     'delegations_sha256': trust.delegationsSha256,
     'config_sha256': sha256.convert(utf8.encode(config)).toString(),
@@ -602,22 +618,27 @@ String appendShorebirdBuildManifest(
       'The build-manifest signature does not verify under the delegated key ${signer.keyId}',
     );
   }
+  final String prefix = diversified ? _kDiversifiedTokenPrefix : _kTokenPrefix;
   return '$config$kShorebirdBuildManifestKey: '
-      '$_kTokenPrefix${_b64url(manifestBytes)}.${_b64url(signature)}.'
+      '$prefix${_b64url(manifestBytes)}.${_b64url(signature)}.'
       '${_b64url(utf8.encode(trust.compactBundle))}\n';
 }
 
-/// The `release-record.v2` document describing the manifest in [text] (the
-/// final hardened shorebird.yaml), which the CLI stores with the release.
+/// The release record describing the manifest in [text] (the final hardened
+/// shorebird.yaml), which the CLI stores with the release:
+/// `release-record.v2` for a hardened manifest, `release-record.v3` (v2 plus
+/// `diversification_profile_id`) for a hardened-diversified one.
 Map<String, Object?> shorebirdReleaseRecord(String text, ShorebirdReleaseTrust trust) {
   final String line = text.trimRight().split('\n').last;
   final String token = line.substring('$kShorebirdBuildManifestKey: '.length);
   final List<int> manifestBytes = base64Url.decode(base64Url.normalize(token.split('.')[1]));
   final manifest = jsonDecode(utf8.decode(manifestBytes)) as Map<String, Object?>;
+  final diversified = manifest['contract_version'] == _kDiversifiedContractVersion;
   return <String, Object?>{
     'schema': 'open-shorebird.release-record',
-    'contract_version': _kContractVersion,
-    'security_profile': 'hardened',
+    'contract_version': diversified ? _kDiversifiedContractVersion : _kContractVersion,
+    'security_profile': diversified ? 'hardened-diversified' : 'hardened',
+    if (diversified) 'diversification_profile_id': manifest['diversification_profile_id'],
     'toolchain_id': manifest['toolchain_id'],
     'development_exceptions': manifest['development_exceptions'],
     'release_root_sha256': trust.rootSha256,

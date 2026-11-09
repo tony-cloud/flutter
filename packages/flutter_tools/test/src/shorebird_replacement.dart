@@ -28,12 +28,24 @@ shorebird_use_interpreter = false
 ''';
 
 /// Writes a version 1 base wrapper fixture with a single mutable root library.
+///
+/// With [profileId] (`sha256:<hex>`), the component is a profiled `DBP3`
+/// component bound to that diversification profile (contract v3), and the
+/// returned environment selects hardened-diversified.
 Map<String, String> writeShorebirdReplacementBase(
   FileSystem fileSystem, {
   String hostAbi = 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
   int content = 1,
+  String? profileId,
 }) {
-  final component = <int>[0x33, 0x43, 0x42, 0x44, 1, 0, 0, 0, content];
+  final component = profileId == null
+      ? <int>[0x33, 0x43, 0x42, 0x44, 1, 0, 0, 0, content]
+      : <int>[
+          0x33, 0x50, 0x42, 0x44, 3, 0, 0, 0, //
+          for (var i = 7; i < profileId.length; i += 2)
+            int.parse(profileId.substring(i, i + 2), radix: 16),
+          content,
+        ];
   final List<int> hash = sha256.convert(component).bytes;
   final manifest = BytesBuilder();
   void u32(BytesBuilder builder, int value) {
@@ -73,6 +85,10 @@ Map<String, String> writeShorebirdReplacementBase(
     kShorebirdReplacementBaseEnvVar: base.path,
     kShorebirdHostAbiEnvVar: hostAbi,
     kShorebirdAotBaseSnapshotHashEnvVar: sha256.convert(bytes).toString(),
+    if (profileId != null) ...<String, String>{
+      kShorebirdSecurityProfileEnvVar: 'hardened-diversified',
+      kShorebirdDiversificationProfileIdEnvVar: profileId,
+    },
   };
 }
 

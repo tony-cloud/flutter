@@ -61,6 +61,46 @@ List<int> _hex(String hex) => <int>[
 
 List<int> _bytes(String text) => utf8.encode(text);
 
+/// The DEVELOPMENT-ONLY diversification profile ID (any `sha256:` ID works
+/// for the catalog rules).
+const _kProfileId = 'sha256:832856d0bed27833434e3f26b65d03cedc313f9850c2577ca7565c4dc644f46d';
+
+/// The seed of the test-only production key of [kFixtureTrust] (public in
+/// shorebird-workspace scripts/test_artifact_catalog.py).
+final List<int> _productionSeed = sha256
+    .convert(utf8.encode('open-shorebird test production key'))
+    .bytes;
+
+/// [kHardenedCatalog] turned into a contract v3 catalog, with [edit] applied
+/// before it is canonicalized.
+String _diversifiedCatalog({
+  String? profileId = _kProfileId,
+  void Function(Map<String, Object?> catalog)? edit,
+}) {
+  final catalog = json.decode(kHardenedCatalog) as Map<String, Object?>;
+  catalog
+    ..['contract_version'] = 3
+    ..['security_profile'] = 'hardened-diversified'
+    ..['diversification_profile_id'] = profileId;
+  edit?.call(catalog);
+  return shorebirdCanonicalJson(catalog);
+}
+
+/// A detached signature of [catalog] by the test production key.
+String _productionSignature(String catalog) {
+  final digest = sha256.convert(utf8.encode(catalog)).toString();
+  return shorebirdCanonicalJson(<String, Object?>{
+    'algorithm': 'ed25519',
+    'catalog_sha256': digest,
+    'contract_version': 1,
+    'key_id': shorebirdReleaseKeyId(ed25519PublicKey(_productionSeed)),
+    'schema': 'open-shorebird.artifact-catalog-signature',
+    'signature': base64.encode(
+      ed25519Sign(_productionSeed, utf8.encode('$kShorebirdSignatureDomain$digest')),
+    ),
+  });
+}
+
 const _flutterRoot = '/flutter';
 const _frameworkRoute =
     r'flutter_infra_release/flutter/$engine/darwin-arm64-release/FlutterMacOS.framework.zip';
@@ -129,6 +169,7 @@ void main() {
       bool allowUnsigned = false,
       String trust = kFixtureTrust,
       ShorebirdReleaseTrust? releaseTrust,
+      String? profileId,
     }) => verifyShorebirdArtifactCatalog(
       catalogBytes: _bytes(catalog),
       signatureBytes: signature == null ? null : _bytes(signature),
@@ -136,7 +177,9 @@ void main() {
       securityProfile: profile,
       engineRevision: engine,
       allowUnsigned: allowUnsigned,
-      releaseTrust: releaseTrust ?? (profile == 'hardened' ? _catalogTrust() : null),
+      releaseTrust: releaseTrust ?? (profile != 'legacy' ? _catalogTrust() : null),
+      diversificationProfileId:
+          profileId ?? (profile == 'hardened-diversified' ? _kProfileId : null),
     );
 
     Matcher rejects(String reason) => throwsA(
@@ -271,6 +314,149 @@ void main() {
           ),
         ),
       );
+    });
+
+    test('hardened-diversified: a contract v3 catalog naming its own profile', () {
+      final String catalog = _diversifiedCatalog();
+      final (ShorebirdArtifactCatalog parsed, ShorebirdCatalogTrust trust) = verify(
+        catalog,
+        _productionSignature(catalog),
+        profile: 'hardened-diversified',
+      );
+      expect(trust, ShorebirdCatalogTrust.production);
+      expect(parsed.securityProfile, 'hardened-diversified');
+      expect(parsed.diversificationProfileId, _kProfileId);
+      // v1 catalogs carry no profile.
+      expect(
+        verify(
+          kHardenedCatalog,
+          kHardenedProdSignature,
+          profile: 'hardened',
+        ).$1.diversificationProfileId,
+        isNull,
+      );
+    });
+
+    test('hardened-diversified: catalog profile, contract and signer rules', () {
+      final String catalog = _diversifiedCatalog();
+      final String signature = _productionSignature(catalog);
+      // Another profile's catalog.
+      final String other = _diversifiedCatalog(profileId: 'sha256:${'0' * 64}');
+      expect(
+        () => verify(other, _productionSignature(other), profile: 'hardened-diversified'),
+        rejects('diversification profile'),
+      );
+      // A v3 catalog for any other toolchain, and a v1 catalog for a
+      // diversified toolchain.
+      expect(
+        () => verify(catalog, signature, profile: 'hardened'),
+        rejects('a hardened toolchain requires a hardened catalog'),
+      );
+      expect(() => verify(catalog, signature), rejects('requires a legacy catalog'));
+      expect(
+        () => verify(kHardenedCatalog, kHardenedProdSignature, profile: 'hardened-diversified'),
+        rejects('requires a hardened-diversified catalog'),
+      );
+      // The hardened signer rule: a production key that is the release
+      // root's artifact-catalog delegate, and a signature.
+      expect(
+        () => verify(catalog, null, profile: 'hardened-diversified', allowUnsigned: true),
+        rejects('requires a production signature'),
+      );
+      final trust = json.decode(kFixtureTrust) as Map<String, Object?>;
+      for (final key in trust['keys']! as List<Object?>) {
+        (key! as Map<String, Object?>)['usage'] = 'development';
+      }
+      expect(
+        () =>
+            verify(catalog, signature, profile: 'hardened-diversified', trust: json.encode(trust)),
+        rejects('development key'),
+      );
+      for (final (String bundle, String code) in <(String, String)>[
+        (_catalogBundle(asCatalog: false), 'manifest_untrusted_signer'),
+        (_catalogBundle(asCatalog: false, asManifest: true), 'manifest_signer_role'),
+        (_catalogBundle(asCatalog: false, revoke: true, version: 2), 'manifest_signer_revoked'),
+      ]) {
+        expect(
+          () => verify(
+            catalog,
+            signature,
+            profile: 'hardened-diversified',
+            releaseTrust: _catalogTrust(bundle),
+          ),
+          rejects(code),
+          reason: code,
+        );
+      }
+      ShorebirdReleaseTrust? none;
+      expect(
+        () => verifyShorebirdArtifactCatalog(
+          catalogBytes: _bytes(catalog),
+          signatureBytes: _bytes(signature),
+          trustBytes: _bytes(kFixtureTrust),
+          securityProfile: 'hardened-diversified',
+          engineRevision: kFixtureEngine,
+          releaseTrust: none,
+          diversificationProfileId: _kProfileId,
+        ),
+        rejects('under the release root'),
+      );
+      // The toolchain's own profile ID is required exactly for diversified.
+      for (final (String profile, String? id) in <(String, String?)>[
+        ('hardened-diversified', ''),
+        ('hardened-diversified', _kProfileId.toUpperCase()),
+        ('hardened', _kProfileId),
+        ('legacy', _kProfileId),
+      ]) {
+        expect(
+          () => verifyShorebirdArtifactCatalog(
+            catalogBytes: _bytes(catalog),
+            signatureBytes: _bytes(signature),
+            trustBytes: _bytes(kFixtureTrust),
+            securityProfile: profile,
+            engineRevision: kFixtureEngine,
+            releaseTrust: _catalogTrust(),
+            diversificationProfileId: id,
+          ),
+          throwsA(isA<ShorebirdCatalogException>()),
+          reason: '$profile $id',
+        );
+      }
+      expect(
+        () => verifyShorebirdArtifactCatalog(
+          catalogBytes: _bytes(catalog),
+          signatureBytes: _bytes(signature),
+          trustBytes: _bytes(kFixtureTrust),
+          securityProfile: 'hardened-diversified',
+          engineRevision: kFixtureEngine,
+          releaseTrust: _catalogTrust(),
+        ),
+        rejects('required exactly'),
+      );
+    });
+
+    test('contract v3 is admissible only for hardened-diversified with a profile', () {
+      void parses(String catalog, {required String rejects}) => expect(
+        () => ShorebirdArtifactCatalog.parse(_bytes(catalog)),
+        throwsA(
+          isA<ShorebirdCatalogException>().having((e) => e.message, 'message', contains(rejects)),
+        ),
+      );
+      parses(
+        _diversifiedCatalog(edit: (Map<String, Object?> c) => c['security_profile'] = 'hardened'),
+        rejects: 'not admissible under contract v3',
+      );
+      parses(_diversifiedCatalog(profileId: null), rejects: 'required under contract v3');
+      parses(_diversifiedCatalog(profileId: 'sha256:${'AB' * 32}'), rejects: 'diversification');
+      parses(_diversifiedCatalog(profileId: 'dev-profile'), rejects: 'diversification');
+      parses(
+        _diversifiedCatalog(edit: (Map<String, Object?> c) => c['contract_version'] = 2),
+        rejects: 'contract 1 or 3',
+      );
+      // Contract v1 keeps the null profile ID, whatever the profile.
+      final v1 = json.decode(kHardenedCatalog) as Map<String, Object?>;
+      v1['diversification_profile_id'] = _kProfileId;
+      parses(shorebirdCanonicalJson(v1), rejects: 'must be null under contract v1');
     });
 
     test('unknown fields and the reserved profile are rejected', () {
@@ -612,6 +798,36 @@ void main() {
         kShorebirdReleaseRootEnvVar: base64.encode(utf8.encode(release_trust.operatorRoot)),
       }).resolve(url, serving(kHardenedCatalog, kHardenedProdSignature)))!;
       expect(resolved.sha256, isNotNull);
+    });
+
+    test('hardened-diversified resolves with its release trust and profile ID', () async {
+      final Uri url = engineUrl('https://storage.googleapis.com', 'sky_engine.zip');
+      final String catalog = _diversifiedCatalog();
+      final String signature = _productionSignature(catalog);
+      fileSystem.file('/release-trust.json').writeAsStringSync(_catalogBundle());
+      final diversified = <String, String>{
+        'SHOREBIRD_SECURITY_PROFILE': 'hardened-diversified',
+        'SHOREBIRD_DIVERSIFICATION_PROFILE_ID': _kProfileId,
+        kShorebirdReleaseTrustEnvVar: '/release-trust.json',
+        kShorebirdReleaseRootEnvVar: base64.encode(utf8.encode(release_trust.operatorRoot)),
+      };
+      final ShorebirdResolvedDownload resolved = (await resolver(
+        diversified,
+      ).resolve(url, serving(catalog, signature)))!;
+      expect(resolved.sha256, isNotNull);
+      // Another profile ID, or none, refuses the catalog.
+      for (final env in <Map<String, String>>[
+        <String, String>{
+          ...diversified,
+          'SHOREBIRD_DIVERSIFICATION_PROFILE_ID': 'sha256:${'0' * 64}',
+        },
+        <String, String>{...diversified}..remove('SHOREBIRD_DIVERSIFICATION_PROFILE_ID'),
+      ]) {
+        await expectLater(
+          resolver(env).resolve(url, serving(catalog, signature)),
+          throwsA(isA<ShorebirdOriginException>()),
+        );
+      }
     });
 
     test('development-signed catalogs warn loudly; hardened refuses them', () async {

@@ -151,9 +151,9 @@ struct AppConfig {
 /// out.
 ///
 /// Tests can call `ResetLaunchStateForTesting()` to re-enable the guards.
-/// The release security profile compiled into this engine: "hardened" when
-/// built with GN `shorebird_security_profile = "hardened"`, else "legacy".
-/// docs/HARDENING_CONTRACTS.md (workspace) §2/§7.
+/// The release security profile compiled into this engine: the GN
+/// `shorebird_security_profile` ("legacy", "hardened" or
+/// "hardened-diversified"). docs/HARDENING_CONTRACTS.md (workspace) §2/§7/§11.
 const char* EngineSecurityProfile();
 
 class Updater {

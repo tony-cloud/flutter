@@ -55,7 +55,8 @@ void updateShorebirdYaml(
   // input and compiled files.
   final yamlEditor = YamlEditor('');
   yamlEditor.update(<Object?>[], compiled);
-  if (compiled[kShorebirdSecurityProfileKey] != 'hardened') {
+  final Object? profile = compiled[kShorebirdSecurityProfileKey];
+  if (profile != 'hardened' && profile != 'hardened-diversified') {
     shorebirdYaml.writeAsStringSync(yamlEditor.toString(), flush: true);
     return;
   }
@@ -75,9 +76,9 @@ void updateShorebirdYaml(
   );
 }
 
-/// Appends the signed build manifest (hardening P3, release root P4) to the
-/// hardened YAML [text]. The manifest binds every byte of [text], so nothing
-/// may change the file afterwards.
+/// Appends the signed build manifest (hardening P3, release root P4, v3 for
+/// hardened-diversified P5) to the hardened YAML [text]. The manifest binds
+/// every byte of [text], so nothing may change the file afterwards.
 ///
 /// The release-trust bundle must verify under the compiled root pin the
 /// engine was built with, be current at the build clock, and delegate the
@@ -134,6 +135,7 @@ String signHardenedShorebirdYaml(
       environment[kShorebirdAndroidSigningCertEnvVar],
     ),
     appleTeamIds: shorebirdAppleTeamIds(environment[kShorebirdAppleTeamIdsEnvVar]),
+    diversificationProfileId: compiled[kShorebirdDiversificationProfileIdKey] as String?,
   );
   final String recordDir = environment[kShorebirdBuildManifestRecordDirEnvVar] ?? '';
   if (recordDir.isNotEmpty) {
@@ -218,9 +220,21 @@ String appIdForFlavor(YamlMap yamlMap, {required String? flavor}) {
 }
 
 /// The environment variable selecting the security profile: `legacy` (default
-/// when unset or empty) or `hardened`. `hardened-diversified` is reserved by
-/// contract v1 and rejected.
+/// when unset or empty), `hardened`, or `hardened-diversified` (contract v3,
+/// P5).
 const kShorebirdSecurityProfileEnvVar = 'SHOREBIRD_SECURITY_PROFILE';
+
+/// The environment variable carrying the diversification profile ID,
+/// `sha256:<64 lowercase hex>`. Required exactly for `hardened-diversified`
+/// (the CLI sets it from the toolchain's `toolchain_security.json`).
+const kShorebirdDiversificationProfileIdEnvVar = 'SHOREBIRD_DIVERSIFICATION_PROFILE_ID';
+
+/// IDs of the committed DEVELOPMENT-ONLY diversification profile
+/// (`scripts/testdata/diversification/` in the workspace), whose seed is
+/// public; only a development build may use it.
+const kShorebirdDevelopmentDiversificationProfileIds = <String>{
+  'sha256:832856d0bed27833434e3f26b65d03cedc313f9850c2577ca7565c4dc644f46d',
+};
 
 /// The environment variable carrying the toolchain identity,
 /// `sha256:<64 lowercase hex>`. Required by the hardened profile.
@@ -235,13 +249,16 @@ const kShorebirdSecurityProfileKey = 'security_profile';
 const kShorebirdSecurityContractVersionKey = 'security_contract_version';
 const kShorebirdToolchainIdKey = 'toolchain_id';
 const kShorebirdSecurityDevelopmentExceptionsKey = 'security_development_exceptions';
+const kShorebirdDiversificationProfileIdKey = 'diversification_profile_id';
 
 const _kShorebirdSecurityContractVersion = 2;
+const _kShorebirdDiversifiedContractVersion = 3;
 const _kShorebirdReservedSecurityKeys = <String>[
   kShorebirdSecurityProfileKey,
   kShorebirdSecurityContractVersionKey,
   kShorebirdToolchainIdKey,
   kShorebirdSecurityDevelopmentExceptionsKey,
+  kShorebirdDiversificationProfileIdKey,
   kShorebirdBuildManifestKey,
 ];
 
@@ -262,6 +279,14 @@ Map<String, dynamic> compileShorebirdYaml(
   final String profile = environment[kShorebirdSecurityProfileEnvVar] ?? '';
   final String? developmentExceptionsValue =
       environment[kShorebirdSecurityDevelopmentExceptionsEnvVar];
+  final String diversificationProfileId =
+      environment[kShorebirdDiversificationProfileIdEnvVar] ?? '';
+  if (diversificationProfileId.isNotEmpty && profile != 'hardened-diversified') {
+    throw const FormatException(
+      '$kShorebirdDiversificationProfileIdEnvVar requires '
+      '$kShorebirdSecurityProfileEnvVar=hardened-diversified',
+    );
+  }
   if (profile.isEmpty || profile == 'legacy') {
     if (developmentExceptionsValue == 'true') {
       throw const FormatException(
@@ -276,9 +301,10 @@ Map<String, dynamic> compileShorebirdYaml(
       fileSystem: fileSystem,
     );
   }
-  if (profile != 'hardened') {
+  if (profile != 'hardened' && profile != 'hardened-diversified') {
     throw FormatException(
-      'Unsupported $kShorebirdSecurityProfileEnvVar "$profile"; expected "legacy" or "hardened"',
+      'Unsupported $kShorebirdSecurityProfileEnvVar "$profile"; expected "legacy", "hardened" '
+      'or "hardened-diversified"',
     );
   }
   // The hardened step wraps the legacy compiler so that its keys and checks
@@ -295,6 +321,7 @@ Map<String, dynamic> compileShorebirdYaml(
     compiled,
     environment: environment,
     developmentExceptionsValue: developmentExceptionsValue,
+    diversificationProfileId: profile == 'hardened-diversified' ? diversificationProfileId : null,
   );
 }
 
@@ -303,6 +330,7 @@ Map<String, dynamic> _applyHardenedProfile(
   Map<String, dynamic> compiled, {
   required Map<String, String> environment,
   required String? developmentExceptionsValue,
+  required String? diversificationProfileId,
 }) {
   final bool developmentExceptions;
   switch (developmentExceptionsValue) {
@@ -322,6 +350,24 @@ Map<String, dynamic> _applyHardenedProfile(
       'The hardened security profile requires $kShorebirdToolchainIdEnvVar of the form '
       'sha256:<64 lowercase hex>',
     );
+  }
+  // P5 (contract v3): hardened-diversified is hardened plus the profile ID
+  // the engine compiled (dart_bytecode_profile).
+  if (diversificationProfileId != null) {
+    if (!RegExp(r'^sha256:[0-9a-f]{64}$').hasMatch(diversificationProfileId)) {
+      throw const FormatException(
+        'The hardened-diversified security profile requires '
+        '$kShorebirdDiversificationProfileIdEnvVar of the form sha256:<64 lowercase hex>',
+      );
+    }
+    if (!developmentExceptions &&
+        kShorebirdDevelopmentDiversificationProfileIds.contains(diversificationProfileId)) {
+      throw const FormatException(
+        '$kShorebirdDiversificationProfileIdEnvVar names the DEVELOPMENT-ONLY diversification '
+        'profile, whose seed is public; only a development build '
+        '($kShorebirdSecurityDevelopmentExceptionsEnvVar=true) may use it',
+      );
+    }
   }
   final Object? publicKey = compiled['patch_public_key'];
   if (publicKey is! String || publicKey.trim().isEmpty) {
@@ -344,9 +390,16 @@ Map<String, dynamic> _applyHardenedProfile(
   _checkHardenedBaseUrl(source, compiled['base_url'], developmentExceptions);
   compiled['patch_verification'] = 'strict';
   compiled['patch_response_verification'] = 'required';
-  compiled[kShorebirdSecurityProfileKey] = 'hardened';
-  compiled[kShorebirdSecurityContractVersionKey] = _kShorebirdSecurityContractVersion;
-  compiled[kShorebirdToolchainIdKey] = toolchainId;
+  if (diversificationProfileId == null) {
+    compiled[kShorebirdSecurityProfileKey] = 'hardened';
+    compiled[kShorebirdSecurityContractVersionKey] = _kShorebirdSecurityContractVersion;
+    compiled[kShorebirdToolchainIdKey] = toolchainId;
+  } else {
+    compiled[kShorebirdSecurityProfileKey] = 'hardened-diversified';
+    compiled[kShorebirdSecurityContractVersionKey] = _kShorebirdDiversifiedContractVersion;
+    compiled[kShorebirdToolchainIdKey] = toolchainId;
+    compiled[kShorebirdDiversificationProfileIdKey] = diversificationProfileId;
+  }
   if (developmentExceptions) {
     compiled[kShorebirdSecurityDevelopmentExceptionsKey] = true;
   }

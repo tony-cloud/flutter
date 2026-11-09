@@ -7,6 +7,7 @@
 
 import argparse
 import base64
+import hashlib
 import json
 import os
 import subprocess
@@ -43,7 +44,8 @@ def main():
   parser.add_argument(
       '--security-profile',
       default='legacy',
-      help='Compiled security profile: legacy or hardened (GN shorebird_security_profile)',
+      help='Compiled security profile: legacy, hardened or hardened-diversified '
+      '(GN shorebird_security_profile)',
   )
   parser.add_argument(
       '--toolchain-id', default='', help='sha256:<hex> toolchain identity (GN shorebird_toolchain_id)'
@@ -68,6 +70,12 @@ def main():
       '--release-min-delegations-version',
       default='1',
       help='Lowest release-delegations version the updater accepts (hardened only)',
+  )
+  parser.add_argument(
+      '--diversification-profile',
+      default='',
+      help='Encoded diversification profile (GN dart_bytecode_profile); '
+      'required exactly for hardened-diversified',
   )
   args = parser.parse_args()
 
@@ -163,7 +171,19 @@ _SECURITY_ENV = (
     'SHOREBIRD_BUILD_MANIFEST_KEYS',
     'SHOREBIRD_RELEASE_ROOT',
     'SHOREBIRD_RELEASE_MIN_DELEGATIONS_VERSION',
+    'SHOREBIRD_DIVERSIFICATION_PROFILE',
 )
+
+_HARDENED_PROFILES = ('hardened', 'hardened-diversified')
+
+# ID of the committed DEVELOPMENT-ONLY diversification profile
+# (scripts/testdata/diversification/profile.DEVELOPMENT-ONLY.json); its seed
+# is public, so only a development build may use it.
+_DEVELOPMENT_DIVERSIFICATION_PROFILE_IDS = (
+    'sha256:832856d0bed27833434e3f26b65d03cedc313f9850c2577ca7565c4dc644f46d',
+)
+_MAX_ENCODED_PROFILE = 8192
+_MAX_FIXED_POINTS = 16
 
 # Public key of the committed DEVELOPMENT-ONLY release root
 # (scripts/testdata/release-trust/root-1.DEVELOPMENT-ONLY.pem); its private
@@ -198,6 +218,67 @@ def _check_release_root(pin, development_exceptions):
   return None
 
 
+def _no_duplicate_keys(pairs):
+  result = {}
+  for key, value in pairs:
+    if key in result:
+      raise ValueError(f'duplicate key {key}')
+    result[key] = value
+  return result
+
+
+def _check_diversification_profile(encoded, development_exceptions):
+  """Return an error for an encoded profile that breaks contract v3 §11.2.
+
+  The same rules as the updater's build.rs and
+  scripts/diversification_profile.py: canonical base64 of canonical JSON
+  (sorted keys, no whitespace, no duplicate keys), the exact v3 field set
+  and constants, wire_opcodes a permutation of 0..N-1 with 2 <= N <= 256,
+  Trap on wire byte 0, fewer than 16 fixed points besides Trap, and no
+  DEVELOPMENT-ONLY profile without development exceptions.
+  """
+  if len(encoded) > _MAX_ENCODED_PROFILE:
+    return f'--diversification-profile exceeds {_MAX_ENCODED_PROFILE} characters'
+  try:
+    raw = base64.b64decode(encoded, validate=True)
+    if base64.b64encode(raw).decode('ascii') != encoded:
+      raise ValueError('non-canonical base64')
+    profile = json.loads(raw.decode('utf-8'), object_pairs_hook=_no_duplicate_keys)
+  except ValueError:
+    return ('--diversification-profile must be the base64 canonical profile JSON '
+            '(scripts/diversification_profile.py gn-args)')
+  if json.dumps(profile, sort_keys=True, separators=(',', ':')).encode('utf-8') != raw:
+    return '--diversification-profile is not canonical JSON'
+  bytecode = profile.get('bytecode') if isinstance(profile, dict) else None
+  if (not isinstance(profile, dict) or
+      set(profile) != {'schema', 'contract_version', 'bytecode', 'native_layout'} or
+      profile['schema'] != 'open-shorebird.diversification-profile' or
+      profile['contract_version'] != 3 or isinstance(profile['contract_version'], bool) or
+      profile['native_layout'] is not None or not isinstance(bytecode, dict) or
+      set(bytecode) != {'scheme', 'format_version', 'opcode_table_sha256', 'wire_opcodes'} or
+      bytecode['scheme'] != 'opcode-permutation-v1' or bytecode['format_version'] != 3 or
+      isinstance(bytecode['format_version'], bool) or
+      not isinstance(bytecode['opcode_table_sha256'], str) or
+      len(bytecode['opcode_table_sha256']) != 64 or
+      any(c not in '0123456789abcdef' for c in bytecode['opcode_table_sha256'])):
+    return '--diversification-profile is not a contract v3 diversification profile'
+  wires = bytecode['wire_opcodes']
+  if (not isinstance(wires, list) or not 2 <= len(wires) <= 256 or
+      any(not isinstance(w, int) or isinstance(w, bool) for w in wires) or
+      sorted(wires) != list(range(len(wires)))):
+    return '--diversification-profile wire_opcodes must be a permutation of 0..N-1 (2 <= N <= 256)'
+  if wires[0] != 0:
+    return '--diversification-profile must keep Trap on wire byte 0'
+  fixed = sum(1 for semantic, wire in enumerate(wires) if semantic and semantic == wire)
+  if fixed >= _MAX_FIXED_POINTS:
+    return f'--diversification-profile has {fixed} fixed points (at most {_MAX_FIXED_POINTS - 1})'
+  profile_id = 'sha256:' + hashlib.sha256(raw).hexdigest()
+  if not development_exceptions and profile_id in _DEVELOPMENT_DIVERSIFICATION_PROFILE_IDS:
+    return ('--diversification-profile is the DEVELOPMENT-ONLY profile; only a development build '
+            '(--security-development-exceptions true) may use it')
+  return None
+
+
 def _configure_security_env(env, args):
   """Set the updater's compiled-policy inputs from GN args only.
 
@@ -207,16 +288,31 @@ def _configure_security_env(env, args):
   """
   for name in _SECURITY_ENV:
     env.pop(name, None)
-  if args.security_profile not in ('legacy', 'hardened'):
+  if args.security_profile not in ('legacy',) + _HARDENED_PROFILES:
     return (
-        f'--security-profile must be legacy or hardened, not {args.security_profile!r} '
-        '(hardened-diversified is reserved by contract v1)'
+        f'--security-profile must be legacy, hardened or hardened-diversified, not '
+        f'{args.security_profile!r}'
     )
+  hardened = args.security_profile in _HARDENED_PROFILES
+  diversified = args.security_profile == 'hardened-diversified'
   if args.security_development_exceptions not in ('true', 'false'):
     return '--security-development-exceptions must be true or false'
-  if args.security_profile == 'hardened' and not args.toolchain_id:
-    return 'a hardened updater requires --toolchain-id'
-  if args.security_profile == 'hardened':
+  if hardened and not args.toolchain_id:
+    return f'a {args.security_profile} updater requires --toolchain-id'
+  if diversified:
+    if not args.diversification_profile:
+      return (
+          'a hardened-diversified updater requires --diversification-profile '
+          '(dart_bytecode_profile)'
+      )
+    error = _check_diversification_profile(
+        args.diversification_profile, args.security_development_exceptions == 'true'
+    )
+    if error:
+      return error
+  elif args.diversification_profile:
+    return '--diversification-profile requires --security-profile hardened-diversified'
+  if hardened:
     if not args.release_root:
       return 'a hardened updater requires --release-root (the release-root pin)'
     error = _check_release_root(args.release_root, args.security_development_exceptions == 'true')
@@ -233,9 +329,11 @@ def _configure_security_env(env, args):
   env['SHOREBIRD_SECURITY_DEVELOPMENT_EXCEPTIONS'] = args.security_development_exceptions
   if args.trust_root_key_id:
     env['SHOREBIRD_TRUST_ROOT_KEY_IDS'] = ','.join(args.trust_root_key_id)
-  if args.security_profile == 'hardened':
+  if hardened:
     env['SHOREBIRD_RELEASE_ROOT'] = args.release_root
     env['SHOREBIRD_RELEASE_MIN_DELEGATIONS_VERSION'] = args.release_min_delegations_version
+  if diversified:
+    env['SHOREBIRD_DIVERSIFICATION_PROFILE'] = args.diversification_profile
   return None
 
 

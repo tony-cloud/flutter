@@ -10,6 +10,11 @@ if (target_cpu == "arm" || target_cpu == "arm64") {
   import("//build/config/arm.gni")
 }
 
+# dart_bytecode_profile and dart_enable_shorebird_interpreter (hardening P5):
+# the hardened-diversified profile reads the Dart VM's own bytecode profile
+# arg, so the opcode map has a single source.
+import("//flutter/third_party/dart/runtime/runtime_args.gni")
+
 declare_args() {
   # The runtime mode ("debug", "profile", "release", or "jit_release")
   flutter_runtime_mode = "debug"
@@ -46,8 +51,11 @@ declare_args() {
   # today's behavior. "hardened" requires shorebird_toolchain_id and makes the
   # updater refuse any bundled shorebird.yaml that does not declare the same
   # profile and toolchain or that is weaker than the hardened floor. Nothing
-  # at runtime can select a different profile. "hardened-diversified" is
-  # reserved by contract v1 and rejected.
+  # at runtime can select a different profile. "hardened-diversified"
+  # (contract v3, §11) is "hardened" plus a release-specific Dart bytecode
+  # opcode map: it requires dart_bytecode_profile (the encoded profile, see
+  # scripts/diversification_profile.py gn-args) and
+  # dart_enable_shorebird_interpreter.
   shorebird_security_profile = "legacy"
 
   # sha256:<hex> toolchain identity (build-identity manifest). Required for
@@ -85,10 +93,30 @@ assert(shorebird_build_manifest_keys == [],
            "root instead (shorebird_release_root, docs/HARDENING_CONTRACTS.md §10)")
 
 assert(shorebird_security_profile == "legacy" ||
-           shorebird_security_profile == "hardened",
-       "shorebird_security_profile must be \"legacy\" or \"hardened\" " +
-           "(\"hardened-diversified\" is reserved by contract v1)")
-if (shorebird_security_profile == "hardened") {
+           shorebird_security_profile == "hardened" ||
+           shorebird_security_profile == "hardened-diversified",
+       "shorebird_security_profile must be \"legacy\", \"hardened\" or " +
+           "\"hardened-diversified\"")
+
+# hardened-diversified is hardened for every P1-P4 rule.
+_shorebird_security_hardened =
+    shorebird_security_profile == "hardened" ||
+    shorebird_security_profile == "hardened-diversified"
+_shorebird_security_diversified =
+    shorebird_security_profile == "hardened-diversified"
+
+# The opcode map exists exactly for hardened-diversified (contract v3 §11.5).
+assert(_shorebird_security_diversified == (dart_bytecode_profile != ""),
+       "dart_bytecode_profile is required exactly for " +
+           "shorebird_security_profile = \"hardened-diversified\"")
+if (_shorebird_security_diversified) {
+  assert(dart_enable_shorebird_interpreter,
+         "A hardened-diversified engine requires " +
+             "dart_enable_shorebird_interpreter (the profile remaps Dart " +
+             "bytecode only)")
+}
+
+if (_shorebird_security_hardened) {
   assert(shorebird_toolchain_id != "",
          "A hardened engine requires shorebird_toolchain_id")
   assert(shorebird_release_root != "",
@@ -145,8 +173,11 @@ if (is_android || is_ios || is_linux || is_mac || is_win) {
   feature_defines_list += [ "SHOREBIRD_PLATFORM_SUPPORTED=1" ]
 }
 
-if (shorebird_security_profile == "hardened") {
+if (_shorebird_security_hardened) {
   feature_defines_list += [ "SHOREBIRD_SECURITY_HARDENED=1" ]
+}
+if (_shorebird_security_diversified) {
+  feature_defines_list += [ "SHOREBIRD_SECURITY_DIVERSIFIED=1" ]
 }
 
 if (is_ios) {

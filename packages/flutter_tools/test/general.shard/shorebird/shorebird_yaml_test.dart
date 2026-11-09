@@ -381,6 +381,17 @@ base_url: https://updates.example.com
           'SHOREBIRD_PUBLIC_KEY': 'pinned-key',
           ...extra,
         };
+    // An operator profile ID (any sha256: ID other than the DEVELOPMENT-ONLY
+    // one).
+    final profileId = 'sha256:${'cd' * 32}';
+    const developmentProfileId =
+        'sha256:832856d0bed27833434e3f26b65d03cedc313f9850c2577ca7565c4dc644f46d';
+    Map<String, String> diversifiedEnv([Map<String, String> extra = const <String, String>{}]) =>
+        hardenedEnv(<String, String>{
+          'SHOREBIRD_SECURITY_PROFILE': 'hardened-diversified',
+          'SHOREBIRD_DIVERSIFICATION_PROFILE_ID': profileId,
+          ...extra,
+        });
     Map<String, dynamic> compile(String yaml, Map<String, String> environment) =>
         compileShorebirdYaml(loadYaml(yaml) as YamlMap, flavor: null, environment: environment);
     void expectRejected(String yaml, Map<String, String> environment, {String? reason}) {
@@ -412,6 +423,7 @@ base_url: https://updates.example.com
           'security_contract_version',
           'toolchain_id',
           'security_development_exceptions',
+          'diversification_profile_id',
         ]) {
           expect(compiled.containsKey(key), isFalse, reason: key);
         }
@@ -580,15 +592,17 @@ base_url: https://updates.example.com
     });
 
     test('source yaml cannot contain the reserved declaration keys in any profile', () {
-      const values = <String, String>{
+      final values = <String, String>{
         'security_profile': 'hardened',
         'security_contract_version': '1',
         'toolchain_id': 'x',
         'security_development_exceptions': 'true',
+        'diversification_profile_id': profileId,
       };
       for (final MapEntry<String, String> entry in values.entries) {
         final yaml = '$hardenedYaml${entry.key}: ${entry.value}\n';
         expectRejected(yaml, hardenedEnv(), reason: entry.key);
+        expectRejected(yaml, diversifiedEnv(), reason: 'diversified ${entry.key}');
         expectRejected(yaml, <String, String>{}, reason: 'unset ${entry.key}');
         expectRejected(yaml, <String, String>{
           'SHOREBIRD_SECURITY_PROFILE': 'legacy',
@@ -596,7 +610,89 @@ base_url: https://updates.example.com
       }
     });
 
+    test('hardened-diversified writes the contract v3 declarations', () {
+      final Map<String, dynamic> compiled = compile(hardenedYaml, diversifiedEnv());
+      expect(compiled, <String, dynamic>{
+        'app_id': 'app',
+        'base_url': 'https://updates.example.com',
+        'patch_public_key': 'pinned-key',
+        'patch_verification': 'strict',
+        'patch_response_verification': 'required',
+        'security_profile': 'hardened-diversified',
+        'security_contract_version': 3,
+        'toolchain_id': toolchainId,
+        'diversification_profile_id': profileId,
+      });
+      // Every hardened check applies.
+      expectRejected('${hardenedYaml}patch_verification: install_only\n', diversifiedEnv());
+      expectRejected('app_id: app\nbase_url: http://updates.example.com\n', diversifiedEnv());
+      expectRejected(hardenedYaml, diversifiedEnv()..remove('SHOREBIRD_TOOLCHAIN_ID'));
+      expectRejected(hardenedYaml, diversifiedEnv()..remove('SHOREBIRD_PUBLIC_KEY'));
+      final Map<String, dynamic> dev = compile(
+        'app_id: app\nbase_url: http://localhost:8080\n',
+        diversifiedEnv(<String, String>{'SHOREBIRD_SECURITY_DEVELOPMENT_EXCEPTIONS': 'true'}),
+      );
+      expect(dev['security_development_exceptions'], true);
+      expect(dev['diversification_profile_id'], profileId);
+    });
+
+    test('the diversification profile ID is required exactly for hardened-diversified', () {
+      expectRejected(
+        hardenedYaml,
+        diversifiedEnv()..remove('SHOREBIRD_DIVERSIFICATION_PROFILE_ID'),
+        reason: 'missing',
+      );
+      for (final bad in <String>[
+        '',
+        'cd' * 32,
+        'sha256:${'cd' * 31}',
+        'sha256:${'CD' * 32}',
+        'sha256:${'cd' * 32}\n',
+        ' sha256:${'cd' * 32}',
+      ]) {
+        expectRejected(
+          hardenedYaml,
+          diversifiedEnv(<String, String>{'SHOREBIRD_DIVERSIFICATION_PROFILE_ID': bad}),
+          reason: bad,
+        );
+      }
+      // Refused for every other profile (legacy outputs stay unchanged only
+      // because nothing sets it there).
+      for (final environment in <Map<String, String>>[
+        hardenedEnv(<String, String>{'SHOREBIRD_DIVERSIFICATION_PROFILE_ID': profileId}),
+        <String, String>{'SHOREBIRD_DIVERSIFICATION_PROFILE_ID': profileId},
+        <String, String>{
+          'SHOREBIRD_SECURITY_PROFILE': 'legacy',
+          'SHOREBIRD_DIVERSIFICATION_PROFILE_ID': profileId,
+        },
+      ]) {
+        expectRejected(hardenedYaml, environment, reason: '$environment');
+      }
+    });
+
+    test('the DEVELOPMENT-ONLY diversification profile needs a development build', () {
+      final Map<String, String> development = diversifiedEnv(<String, String>{
+        'SHOREBIRD_DIVERSIFICATION_PROFILE_ID': developmentProfileId,
+      });
+      expect(
+        () => compile(hardenedYaml, development),
+        throwsA(
+          isA<FormatException>().having(
+            (FormatException e) => e.message,
+            'message',
+            contains('DEVELOPMENT-ONLY'),
+          ),
+        ),
+      );
+      final Map<String, dynamic> compiled = compile(hardenedYaml, <String, String>{
+        ...development,
+        'SHOREBIRD_SECURITY_DEVELOPMENT_EXCEPTIONS': 'true',
+      });
+      expect(compiled['diversification_profile_id'], developmentProfileId);
+    });
+
     test('unknown, reserved and legacy-invalid settings are rejected', () {
+      // hardened-diversified without its profile ID is rejected as well.
       for (final profile in <String>['hardened-diversified', 'strict', 'HARDENED', ' hardened']) {
         expectRejected(
           hardenedYaml,

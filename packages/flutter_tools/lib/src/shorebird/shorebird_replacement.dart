@@ -67,9 +67,7 @@ class ShorebirdReplacementInputs {
         header.getUint32(24, Endian.little) != 1) {
       throw const FormatException('Invalid replacement base wrapper lengths or version');
     }
-    if (header.getUint32(24 + manifestLength, Endian.little) != 0x44424333) {
-      throw const FormatException('Replacement base must contain a DBC3 component');
-    }
+    _checkComponentFormat(bytes, 24 + manifestLength, componentLength, environment);
     String hex(Iterable<int> values) =>
         values.map((int value) => value.toRadixString(16).padLeft(2, '0')).join();
     final componentHash = sha256.convert(bytes.sublist(24 + manifestLength)).toString();
@@ -84,6 +82,54 @@ class ShorebirdReplacementInputs {
   final File base;
   final String hostAbi;
   final String snapshotHash;
+
+  /// The canonical bytecode component magic (`DBC3`).
+  static const kCanonicalMagic = 0x44424333;
+
+  /// The profiled bytecode component magic (`DBP3`, contract v3 §11.3).
+  static const kProfiledMagic = 0x44425033;
+
+  /// A hardened-diversified build bundles a profiled component (`DBP3`,
+  /// format version 3, then the 32 raw digest bytes of the configured
+  /// profile ID); every other build a canonical `DBC3` component.
+  static void _checkComponentFormat(
+    Uint8List bytes,
+    int offset,
+    int length,
+    Map<String, String> environment,
+  ) {
+    final component = ByteData.sublistView(bytes, offset, offset + length);
+    if (environment['SHOREBIRD_SECURITY_PROFILE'] != 'hardened-diversified') {
+      if (component.getUint32(0, Endian.little) != kCanonicalMagic) {
+        throw const FormatException('Replacement base must contain a DBC3 component');
+      }
+      return;
+    }
+    final String id = environment['SHOREBIRD_DIVERSIFICATION_PROFILE_ID'] ?? '';
+    final RegExpMatch? match = RegExp(r'^sha256:([0-9a-f]{64})$').firstMatch(id);
+    if (match == null) {
+      throw const FormatException(
+        'A hardened-diversified replacement base requires SHOREBIRD_DIVERSIFICATION_PROFILE_ID',
+      );
+    }
+    final String digest = match.group(1)!;
+    if (length < 40 ||
+        component.getUint32(0, Endian.little) != kProfiledMagic ||
+        component.getUint32(4, Endian.little) != 3) {
+      throw const FormatException(
+        'A hardened-diversified replacement base must contain a DBP3 (format 3) component',
+      );
+    }
+    final String header = bytes
+        .sublist(offset + 8, offset + 40)
+        .map((int value) => value.toRadixString(16).padLeft(2, '0'))
+        .join();
+    if (header != digest) {
+      throw const FormatException(
+        'The replacement base component is for another diversification profile',
+      );
+    }
+  }
 
   /// Compiler options binding the native baseline to the exact bundled bytes.
   List<String> get frontendOptions => <String>[

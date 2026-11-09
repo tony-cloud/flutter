@@ -22,7 +22,13 @@ namespace flutter {
 namespace shorebird {
 
 namespace {
-#if SHOREBIRD_SECURITY_HARDENED
+#if SHOREBIRD_SECURITY_DIVERSIFIED
+#if !SHOREBIRD_SECURITY_HARDENED
+#error "SHOREBIRD_SECURITY_DIVERSIFIED requires SHOREBIRD_SECURITY_HARDENED"
+#endif
+// Contract v3 (P5): hardened plus a release-specific bytecode opcode map.
+constexpr char kEngineSecurityProfile[] = "hardened-diversified";
+#elif SHOREBIRD_SECURITY_HARDENED
 constexpr char kEngineSecurityProfile[] = "hardened";
 #else
 constexpr char kEngineSecurityProfile[] = "legacy";
@@ -36,9 +42,10 @@ constexpr bool SameProfile(const char* a, const char* b) {
   return *a == *b;
 }
 
-// Contract v1 knows exactly two compiled profiles; GN asserts the same.
+// Contract v3 knows exactly three compiled profiles; GN asserts the same.
 static_assert(SameProfile(kEngineSecurityProfile, "legacy") ||
-                  SameProfile(kEngineSecurityProfile, "hardened"),
+                  SameProfile(kEngineSecurityProfile, "hardened") ||
+                  SameProfile(kEngineSecurityProfile, "hardened-diversified"),
               "unknown compiled Shorebird security profile");
 }  // namespace
 

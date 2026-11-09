@@ -149,6 +149,10 @@ const _peGolden = 'sha256:336fbd0090a289316b3d4d5d1801f4d2f41a699217b3d8c3df50ed
 final List<int> _seed = List<int>.filled(32, 7);
 const _toolchainId = 'sha256:70229e407e5311401aa3251418eff106467a750ccfcb7e8fe7b61c4442700040';
 
+/// The DEVELOPMENT-ONLY diversification profile ID
+/// (`scripts/testdata/diversification/profile.DEVELOPMENT-ONLY.json`).
+const _profileId = 'sha256:832856d0bed27833434e3f26b65d03cedc313f9850c2577ca7565c4dc644f46d';
+
 String _pem(List<int> seed) {
   final der = <int>[
     0x30,
@@ -279,6 +283,7 @@ void main() {
       TargetPlatform platform = TargetPlatform.linux_x64,
       List<String> android = const <String>[],
       List<String> apple = const <String>[],
+      String? profileId,
     }) => appendShorebirdBuildManifest(
       text,
       signer: ShorebirdSeedManifestSigner(_seed),
@@ -289,6 +294,7 @@ void main() {
       targetPlatform: platform,
       androidSigningCerts: android,
       appleTeamIds: apple,
+      diversificationProfileId: profileId,
     );
 
     test('is the signed last line and binds every byte before it', () {
@@ -330,6 +336,39 @@ void main() {
       // pins this exact output and accepts it under the compiled
       // DEVELOPMENT-ONLY release root.
       expect(build(), _kUpdaterGolden);
+    });
+
+    test('hardened-diversified writes a v3 token that binds the profile', () {
+      final String output = build(profileId: _profileId);
+      final String line = output.substring(config.length);
+      expect(line, startsWith('shorebird_build_manifest: v3.'));
+      final List<String> parts = line.trim().split(' ').last.split('.');
+      expect(parts, hasLength(4));
+      final List<int> manifestBytes = _unb64url(parts[1]);
+      final manifest = jsonDecode(utf8.decode(manifestBytes)) as Map<String, Object?>;
+      expect(manifest['contract_version'], 3);
+      expect(manifest['security_profile'], 'hardened-diversified');
+      expect(manifest['diversification_profile_id'], _profileId);
+      expect(manifest['toolchain_id'], _toolchainId);
+      // The signature domain is unchanged (contract §11.6).
+      final List<int> message = utf8.encode(
+        'open-shorebird.build-manifest-signature.v2:${sha256.convert(manifestBytes)}',
+      );
+      expect(ed25519Verify(ed25519PublicKey(_seed), message, _unb64url(parts[2])), isTrue);
+      expect(build(profileId: _profileId), output);
+      // Without a profile, the v2 output is unchanged.
+      expect(build(), _kUpdaterGolden);
+      for (final bad in <String>['', 'sha256:${'AB' * 32}', 'cd' * 32]) {
+        expect(() => build(profileId: bad), throwsFormatException, reason: bad);
+      }
+    });
+
+    test('matches the v3 token the updater verifies', () {
+      // updater/library/src/integrity.rs
+      // `tests::flutter_tools_v3_output_verifies` pins this exact output and
+      // accepts it under a hardened-diversified updater compiled with the
+      // DEVELOPMENT-ONLY release root and diversification profile.
+      expect(build(profileId: _profileId), _kUpdaterV3Golden);
     });
 
     test('declares package identities only where the updater verifies them', () {
@@ -689,6 +728,70 @@ void main() {
       expect(files.single.basename, 'build-manifest-${sha256.convert(manifestBytes)}.json');
     });
 
+    test('hardened-diversified writes the v3 manifest and a release-record.v3', () {
+      final operatorProfileId = 'sha256:${'cd' * 32}';
+      update(
+        env(<String, String>{
+          'SHOREBIRD_SECURITY_PROFILE': 'hardened-diversified',
+          'SHOREBIRD_DIVERSIFICATION_PROFILE_ID': operatorProfileId,
+          kShorebirdBuildManifestRecordDirEnvVar: '/records',
+        }),
+        TargetPlatform.linux_x64,
+      );
+      final String text = fs.file('/shorebird.yaml').readAsStringSync();
+      expect(text, contains('security_profile: hardened-diversified\n'));
+      expect(text, contains('security_contract_version: 3\n'));
+      expect(text, contains('diversification_profile_id: $operatorProfileId\n'));
+      expect(text.trimRight().split('\n').last, startsWith('shorebird_build_manifest: v3.'));
+      final Map<String, Object?> manifest = manifestOf(text);
+      expect(manifest['contract_version'], 3);
+      expect(manifest['security_profile'], 'hardened-diversified');
+      expect(manifest['diversification_profile_id'], operatorProfileId);
+      final File record = fs.directory('/records').listSync().whereType<File>().single;
+      final decoded = jsonDecode(record.readAsStringSync()) as Map<String, Object?>;
+      expect(decoded['contract_version'], 3);
+      expect(decoded['security_profile'], 'hardened-diversified');
+      expect(decoded['diversification_profile_id'], operatorProfileId);
+      expect(decoded['toolchain_id'], _toolchainId);
+      // The release root rules are those of hardened.
+      fs
+          .file('/shorebird.yaml')
+          .writeAsStringSync('app_id: app\nbase_url: https://updates.example.com\n');
+      expect(
+        () => update(
+          env(<String, String>{
+            'SHOREBIRD_SECURITY_PROFILE': 'hardened-diversified',
+            'SHOREBIRD_DIVERSIFICATION_PROFILE_ID': operatorProfileId,
+          })..remove(kShorebirdReleaseTrustEnvVar),
+          TargetPlatform.linux_x64,
+        ),
+        refusedWith(kShorebirdReleaseTrustEnvVar),
+      );
+      // The DEVELOPMENT-ONLY profile needs a development build.
+      expect(
+        () => update(
+          env(<String, String>{
+            'SHOREBIRD_SECURITY_PROFILE': 'hardened-diversified',
+            'SHOREBIRD_DIVERSIFICATION_PROFILE_ID': _profileId,
+          }),
+          TargetPlatform.linux_x64,
+        ),
+        refusedWith('DEVELOPMENT-ONLY'),
+      );
+    });
+
+    test('a hardened release record stays release-record.v2', () {
+      update(
+        env(<String, String>{kShorebirdBuildManifestRecordDirEnvVar: '/records'}),
+        TargetPlatform.linux_x64,
+      );
+      final File record = fs.directory('/records').listSync().whereType<File>().single;
+      final decoded = jsonDecode(record.readAsStringSync()) as Map<String, Object?>;
+      expect(decoded['contract_version'], 2);
+      expect(decoded['security_profile'], 'hardened');
+      expect(decoded.containsKey('diversification_profile_id'), isFalse);
+    });
+
     test('legacy output never carries a manifest', () {
       update(<String, String>{
         kShorebirdBuildManifestSigningKeyEnvVar: '/keys/manifest.pem',
@@ -700,9 +803,21 @@ void main() {
     });
 
     test('a checked-in manifest key is rejected in every profile', () {
-      fs.file('/shorebird.yaml').writeAsStringSync('app_id: app\nshorebird_build_manifest: x\n');
-      expect(() => update(const <String, String>{}, TargetPlatform.linux_x64), throwsA(anything));
-      expect(() => update(env(), TargetPlatform.linux_x64), throwsA(anything));
+      for (final key in <String>['shorebird_build_manifest', 'diversification_profile_id']) {
+        fs.file('/shorebird.yaml').writeAsStringSync('app_id: app\n$key: x\n');
+        expect(() => update(const <String, String>{}, TargetPlatform.linux_x64), throwsA(anything));
+        expect(() => update(env(), TargetPlatform.linux_x64), throwsA(anything));
+        expect(
+          () => update(
+            env(<String, String>{
+              'SHOREBIRD_SECURITY_PROFILE': 'hardened-diversified',
+              'SHOREBIRD_DIVERSIFICATION_PROFILE_ID': 'sha256:${'cd' * 32}',
+            }),
+            TargetPlatform.linux_x64,
+          ),
+          throwsA(anything),
+        );
+      }
     });
   });
 }
@@ -711,3 +826,8 @@ const _kUpdaterGolden =
     'app_id: app\nbase_url: https://updates.example.com\n'
     'shorebird_build_manifest: '
     'v2.eyJzY2hlbWEiOiJvcGVuLXNob3JlYmlyZC5idWlsZC1tYW5pZmVzdCIsImNvbnRyYWN0X3ZlcnNpb24iOjIsInNlY3VyaXR5X3Byb2ZpbGUiOiJoYXJkZW5lZCIsInRvb2xjaGFpbl9pZCI6InNoYTI1Njo3MDIyOWU0MDdlNTMxMTQwMWFhMzI1MTQxOGVmZjEwNjQ2N2E3NTBjY2ZjYjdlOGZlN2I2MWM0NDQyNzAwMDQwIiwiZGV2ZWxvcG1lbnRfZXhjZXB0aW9ucyI6ZmFsc2UsInNpZ25lcl9rZXlfaWQiOiJzaGEyNTY6ZmU4MTJjMTJmM2FiNGNlNmFjNWRiNjlhYzM1MmY5MDZjYjFiMTFlZjQzZmIzM2UyNTJlZjdmZjU1MjI2Mzg4OSIsImRlbGVnYXRpb25zX3NoYTI1NiI6Ijc5YTYwNGZmOTFkNjhhYWRjYmQxMmM0ZmE0YTNlNDJjNWRjZTJiNGQ5Y2U3MWExZWYyMmRjMzk3N2NiOTk0ZGYiLCJjb25maWdfc2hhMjU2IjoiMDg0YzhkNjU0Mjg0YzBmY2Y5MmVkOWU4MTQxNGExNWRkMTk1MzI2MTJlNjMwMWQ5ZTE4NGU0ZTBlNjI0MjZjNCIsIm1vZHVsZXMiOlt7InBsYXRmb3JtIjoibGludXgiLCJhcmNoIjoieDg2XzY0IiwibWVhc3VyZW1lbnQiOiJzaGEyNTY6ZjE3NzE2OTI0NTE4NmJlOGUwZmEyZThlNmZmYjlkZjcwZjhkZDA4MjRjOGYzMDVjMDZlMTdmMzBmNjM5OTFjZCJ9XSwicGFja2FnZV9pZGVudGl0eSI6eyJhbmRyb2lkX3NpZ25pbmdfY2VydF9zaGEyNTYiOltdLCJhcHBsZV90ZWFtX2lkcyI6W119fQ.HK-FpA4qt5auJPBUoqhL0ixlBNl5kabAz_RW80B_ZLjc1anfgGMyzGNmAZAJyF8NCCeQurW91yB1aw6bxa2wCw.eyJjb250cmFjdF92ZXJzaW9uIjoyLCJkZWxlZ2F0aW9ucyI6eyJwYXlsb2FkIjoiZXlKamIyNTBjbUZqZEY5MlpYSnphVzl1SWpveUxDSmxlSEJwY21WelgyRjBJam9pTWpBek5pMHhNUzB3TVZRd01Eb3dNRG93TUZvaUxDSnBjM04xWldSZllYUWlPaUl5TURJMkxURXhMVEF4VkRBd09qQXdPakF3V2lJc0luSmxkbTlyWldSZmEyVjVYMmxrY3lJNlcxMHNJbkp2YkdWeklqcDdJbUZ5ZEdsbVlXTjBMV05oZEdGc2IyY2lPbHQ3SW10bGVWOXBaQ0k2SW5Ob1lUSTFOam80Tm1RME5tVXdPV1E1TW1JME1UTXhNREJpWWpZMVl6Rm1NRGs0TWpNMVpXUXlNMlJrWWpnMFpUQTRNV0kxTnpSak1qQmlaVEV4WkRFMVptUTJOVGcwSWl3aWJtOTBYMkZtZEdWeUlqb2lNakF6TmkweE1TMHdNVlF3TURvd01Eb3dNRm9pTENKdWIzUmZZbVZtYjNKbElqb2lNakF5TmkweE1TMHdNVlF3TURvd01Eb3dNRm9pTENKd2RXSnNhV05mYTJWNUlqb2lWblp6ZEVkMkwydGlNemxZTm5JelJqUjZWSEJZYUV0a1IyMTNVMEZHYTFkQ09YbzRMMUpyVVZoMGJ6MGlmVjBzSW1KMWFXeGtMVzFoYm1sbVpYTjBJanBiZXlKclpYbGZhV1FpT2lKemFHRXlOVFk2Wm1VNE1USmpNVEptTTJGaU5HTmxObUZqTldSaU5qbGhZek0xTW1ZNU1EWmpZakZpTVRGbFpqUXpabUl6TTJVeU5USmxaamRtWmpVMU1qSTJNemc0T1NJc0ltNXZkRjloWm5SbGNpSTZJakl3TXpZdE1URXRNREZVTURBNk1EQTZNREJhSWl3aWJtOTBYMkpsWm05eVpTSTZJakl3TWpZdE1URXRNREZVTURBNk1EQTZNREJhSWl3aWNIVmliR2xqWDJ0bGVTSTZJalpyY0hOWkswdGpWV2R4S3psV1FqZEZlVGRHSzFwV1NHUnhOaXQyYm5WVFVXZzNjV0ZTVWtjd2FYYzlJbjFkZlN3aWNtOXZkRjkyWlhKemFXOXVJam94TENKelkyaGxiV0VpT2lKdmNHVnVMWE5vYjNKbFltbHlaQzV5Wld4bFlYTmxMV1JsYkdWbllYUnBiMjV6SWl3aWRtVnljMmx2YmlJNk1YMD0iLCJzaWduYXR1cmVzIjpbeyJrZXlfaWQiOiJzaGEyNTY6MzQ3NTBmOThiZDU5ZmNmYzk0NmRhNDVhYWFiZTkzM2JlMTU0YTRiNTA5NGUxYzRhYmY0Mjg2NjUwNWYzYzk3ZSIsInNpZ25hdHVyZSI6ImI2NzQ1cFFFS2k4WHR4cHg3VzM5NlZqb1pWUWUxUXRNcUthWlJWeFJJcVJobk85NldnUngrK1lxdzFZeE1NR05XZEZYNlhwVnlDQkpQOGtjbEt3WUJBPT0ifV19LCJyb290X2NoYWluIjpbeyJwYXlsb2FkIjoiZXlKamIyNTBjbUZqZEY5MlpYSnphVzl1SWpveUxDSmxlSEJwY21WelgyRjBJam9pTWpBek5pMHhNUzB3T1ZRd01Eb3dNRG93TUZvaUxDSnJaWGx6SWpwYmV5SnJaWGxmYVdRaU9pSnphR0V5TlRZNk16UTNOVEJtT1RoaVpEVTVabU5tWXprME5tUmhORFZoWVdGaVpUa3pNMkpsTVRVMFlUUmlOVEE1TkdVeFl6UmhZbVkwTWpnMk5qVXdOV1l6WXprM1pTSXNJbkIxWW14cFkxOXJaWGtpT2lKcGIycHFNMWhSU2poYVdEbFZkSE4wVUV4d1pHTnpjRzVEWWpoa2JFSkpZamd6VTBsQllsRlFZakYzUFNKOVhTd2ljMk5vWlcxaElqb2liM0JsYmkxemFHOXlaV0pwY21RdWNtVnNaV0Z6WlMxeWIyOTBJaXdpZEdoeVpYTm9iMnhrSWpveExDSjJaWEp6YVc5dUlqb3hmUT09Iiwic2lnbmF0dXJlcyI6W3sia2V5X2lkIjoic2hhMjU2OjM0NzUwZjk4YmQ1OWZjZmM5NDZkYTQ1YWFhYmU5MzNiZTE1NGE0YjUwOTRlMWM0YWJmNDI4NjY1MDVmM2M5N2UiLCJzaWduYXR1cmUiOiJENE5KdWpSL3NZZHNHYWw4VS96VjhFUVY4ck1lZlc4UUR2NnNYdUMvVEd0Lys2YnArZGlpVS9VMjBwYit1VWEyaGxwaVZDTGxtcU1wb29UL2FycldEZz09In1dfV0sInNjaGVtYSI6Im9wZW4tc2hvcmViaXJkLnJlbGVhc2UtdHJ1c3QifQ\n';
+
+const _kUpdaterV3Golden =
+    'app_id: app\nbase_url: https://updates.example.com\n'
+    'shorebird_build_manifest: '
+    'v3.eyJzY2hlbWEiOiJvcGVuLXNob3JlYmlyZC5idWlsZC1tYW5pZmVzdCIsImNvbnRyYWN0X3ZlcnNpb24iOjMsInNlY3VyaXR5X3Byb2ZpbGUiOiJoYXJkZW5lZC1kaXZlcnNpZmllZCIsInRvb2xjaGFpbl9pZCI6InNoYTI1Njo3MDIyOWU0MDdlNTMxMTQwMWFhMzI1MTQxOGVmZjEwNjQ2N2E3NTBjY2ZjYjdlOGZlN2I2MWM0NDQyNzAwMDQwIiwiZGV2ZWxvcG1lbnRfZXhjZXB0aW9ucyI6ZmFsc2UsImRpdmVyc2lmaWNhdGlvbl9wcm9maWxlX2lkIjoic2hhMjU2OjgzMjg1NmQwYmVkMjc4MzM0MzRlM2YyNmI2NWQwM2NlZGMzMTNmOTg1MGMyNTc3Y2E3NTY1YzRkYzY0NGY0NmQiLCJzaWduZXJfa2V5X2lkIjoic2hhMjU2OmZlODEyYzEyZjNhYjRjZTZhYzVkYjY5YWMzNTJmOTA2Y2IxYjExZWY0M2ZiMzNlMjUyZWY3ZmY1NTIyNjM4ODkiLCJkZWxlZ2F0aW9uc19zaGEyNTYiOiI3OWE2MDRmZjkxZDY4YWFkY2JkMTJjNGZhNGEzZTQyYzVkY2UyYjRkOWNlNzFhMWVmMjJkYzM5NzdjYjk5NGRmIiwiY29uZmlnX3NoYTI1NiI6IjA4NGM4ZDY1NDI4NGMwZmNmOTJlZDllODE0MTRhMTVkZDE5NTMyNjEyZTYzMDFkOWUxODRlNGUwZTYyNDI2YzQiLCJtb2R1bGVzIjpbeyJwbGF0Zm9ybSI6ImxpbnV4IiwiYXJjaCI6Ing4Nl82NCIsIm1lYXN1cmVtZW50Ijoic2hhMjU2OmYxNzcxNjkyNDUxODZiZThlMGZhMmU4ZTZmZmI5ZGY3MGY4ZGQwODI0YzhmMzA1YzA2ZTE3ZjMwZjYzOTkxY2QifV0sInBhY2thZ2VfaWRlbnRpdHkiOnsiYW5kcm9pZF9zaWduaW5nX2NlcnRfc2hhMjU2IjpbXSwiYXBwbGVfdGVhbV9pZHMiOltdfX0.7ENISJNDkATY08LKzMmG06cTNqDolWt8yE7q516TfjdapJmY-H0tlhT2s5JekK5N0vRyUuyHVF_FjJZb7JDBAw.eyJjb250cmFjdF92ZXJzaW9uIjoyLCJkZWxlZ2F0aW9ucyI6eyJwYXlsb2FkIjoiZXlKamIyNTBjbUZqZEY5MlpYSnphVzl1SWpveUxDSmxlSEJwY21WelgyRjBJam9pTWpBek5pMHhNUzB3TVZRd01Eb3dNRG93TUZvaUxDSnBjM04xWldSZllYUWlPaUl5TURJMkxURXhMVEF4VkRBd09qQXdPakF3V2lJc0luSmxkbTlyWldSZmEyVjVYMmxrY3lJNlcxMHNJbkp2YkdWeklqcDdJbUZ5ZEdsbVlXTjBMV05oZEdGc2IyY2lPbHQ3SW10bGVWOXBaQ0k2SW5Ob1lUSTFOam80Tm1RME5tVXdPV1E1TW1JME1UTXhNREJpWWpZMVl6Rm1NRGs0TWpNMVpXUXlNMlJrWWpnMFpUQTRNV0kxTnpSak1qQmlaVEV4WkRFMVptUTJOVGcwSWl3aWJtOTBYMkZtZEdWeUlqb2lNakF6TmkweE1TMHdNVlF3TURvd01Eb3dNRm9pTENKdWIzUmZZbVZtYjNKbElqb2lNakF5TmkweE1TMHdNVlF3TURvd01Eb3dNRm9pTENKd2RXSnNhV05mYTJWNUlqb2lWblp6ZEVkMkwydGlNemxZTm5JelJqUjZWSEJZYUV0a1IyMTNVMEZHYTFkQ09YbzRMMUpyVVZoMGJ6MGlmVjBzSW1KMWFXeGtMVzFoYm1sbVpYTjBJanBiZXlKclpYbGZhV1FpT2lKemFHRXlOVFk2Wm1VNE1USmpNVEptTTJGaU5HTmxObUZqTldSaU5qbGhZek0xTW1ZNU1EWmpZakZpTVRGbFpqUXpabUl6TTJVeU5USmxaamRtWmpVMU1qSTJNemc0T1NJc0ltNXZkRjloWm5SbGNpSTZJakl3TXpZdE1URXRNREZVTURBNk1EQTZNREJhSWl3aWJtOTBYMkpsWm05eVpTSTZJakl3TWpZdE1URXRNREZVTURBNk1EQTZNREJhSWl3aWNIVmliR2xqWDJ0bGVTSTZJalpyY0hOWkswdGpWV2R4S3psV1FqZEZlVGRHSzFwV1NHUnhOaXQyYm5WVFVXZzNjV0ZTVWtjd2FYYzlJbjFkZlN3aWNtOXZkRjkyWlhKemFXOXVJam94TENKelkyaGxiV0VpT2lKdmNHVnVMWE5vYjNKbFltbHlaQzV5Wld4bFlYTmxMV1JsYkdWbllYUnBiMjV6SWl3aWRtVnljMmx2YmlJNk1YMD0iLCJzaWduYXR1cmVzIjpbeyJrZXlfaWQiOiJzaGEyNTY6MzQ3NTBmOThiZDU5ZmNmYzk0NmRhNDVhYWFiZTkzM2JlMTU0YTRiNTA5NGUxYzRhYmY0Mjg2NjUwNWYzYzk3ZSIsInNpZ25hdHVyZSI6ImI2NzQ1cFFFS2k4WHR4cHg3VzM5NlZqb1pWUWUxUXRNcUthWlJWeFJJcVJobk85NldnUngrK1lxdzFZeE1NR05XZEZYNlhwVnlDQkpQOGtjbEt3WUJBPT0ifV19LCJyb290X2NoYWluIjpbeyJwYXlsb2FkIjoiZXlKamIyNTBjbUZqZEY5MlpYSnphVzl1SWpveUxDSmxlSEJwY21WelgyRjBJam9pTWpBek5pMHhNUzB3T1ZRd01Eb3dNRG93TUZvaUxDSnJaWGx6SWpwYmV5SnJaWGxmYVdRaU9pSnphR0V5TlRZNk16UTNOVEJtT1RoaVpEVTVabU5tWXprME5tUmhORFZoWVdGaVpUa3pNMkpsTVRVMFlUUmlOVEE1TkdVeFl6UmhZbVkwTWpnMk5qVXdOV1l6WXprM1pTSXNJbkIxWW14cFkxOXJaWGtpT2lKcGIycHFNMWhSU2poYVdEbFZkSE4wVUV4d1pHTnpjRzVEWWpoa2JFSkpZamd6VTBsQllsRlFZakYzUFNKOVhTd2ljMk5vWlcxaElqb2liM0JsYmkxemFHOXlaV0pwY21RdWNtVnNaV0Z6WlMxeWIyOTBJaXdpZEdoeVpYTm9iMnhrSWpveExDSjJaWEp6YVc5dUlqb3hmUT09Iiwic2lnbmF0dXJlcyI6W3sia2V5X2lkIjoic2hhMjU2OjM0NzUwZjk4YmQ1OWZjZmM5NDZkYTQ1YWFhYmU5MzNiZTE1NGE0YjUwOTRlMWM0YWJmNDI4NjY1MDVmM2M5N2UiLCJzaWduYXR1cmUiOiJENE5KdWpSL3NZZHNHYWw4VS96VjhFUVY4ck1lZlc4UUR2NnNYdUMvVEd0Lys2YnArZGlpVS9VMjBwYit1VWEyaGxwaVZDTGxtcU1wb29UL2FycldEZz09In1dfV0sInNjaGVtYSI6Im9wZW4tc2hvcmViaXJkLnJlbGVhc2UtdHJ1c3QifQ\n';

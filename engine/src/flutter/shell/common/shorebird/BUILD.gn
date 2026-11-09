@@ -70,12 +70,22 @@ if (shorebird_updater_supported) {
         key_id,
       ]
     }
-    if (shorebird_security_profile == "hardened") {
+    if (shorebird_security_profile == "hardened" ||
+        shorebird_security_profile == "hardened-diversified") {
       args += [
         "--release-root",
         shorebird_release_root,
         "--release-min-delegations-version",
         "$shorebird_release_min_delegations_version",
+      ]
+    }
+    if (shorebird_security_profile == "hardened-diversified") {
+      # P5 (contract v3): the Dart VM's own opcode map
+      # (//flutter/third_party/dart/runtime/runtime_args.gni), so the updater
+      # compiles the ID of exactly the profile the VM decodes.
+      args += [
+        "--diversification-profile",
+        dart_bytecode_profile,
       ]
     }
 

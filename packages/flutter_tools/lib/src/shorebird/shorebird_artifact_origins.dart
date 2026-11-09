@@ -350,8 +350,11 @@ class ShorebirdArtifactResolver {
         securityProfile: _securityProfile,
         engineRevision: engine,
         allowUnsigned: _environment['SHOREBIRD_ALLOW_UNSIGNED_ARTIFACT_CATALOG'] == '1',
-        releaseTrust: _securityProfile == 'hardened'
+        releaseTrust: _securityProfile == 'hardened' || _securityProfile == 'hardened-diversified'
             ? loadShorebirdReleaseTrust(_environment, _fileSystem)
+            : null,
+        diversificationProfileId: _securityProfile == 'hardened-diversified'
+            ? _environment['SHOREBIRD_DIVERSIFICATION_PROFILE_ID'] ?? ''
             : null,
       );
     } on FormatException catch (error) {

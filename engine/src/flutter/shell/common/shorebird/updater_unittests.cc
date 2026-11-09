@@ -6,6 +6,7 @@
 
 #include <algorithm>
 #include <utility>
+#include <vector>
 
 #include "flutter/fml/build_config.h"
 #if !FML_OS_WIN
@@ -35,19 +36,38 @@ TEST(UpdaterV2Marker, DirectConfigurationCannotIgnoreCompiledProtocol) {
 
 TEST(UpdaterSecurityProfile, EngineProfileIsOneOfTheContractProfiles) {
   const std::string profile = EngineSecurityProfile();
-#if SHOREBIRD_SECURITY_HARDENED
+#if SHOREBIRD_SECURITY_DIVERSIFIED
+  EXPECT_EQ(profile, "hardened-diversified");
+#elif SHOREBIRD_SECURITY_HARDENED
   EXPECT_EQ(profile, "hardened");
 #else
   EXPECT_EQ(profile, "legacy");
 #endif
 }
 
+#if SHOREBIRD_PLATFORM_SUPPORTED
+TEST(UpdaterSecurityProfile, LinkedRustUpdaterMatchesTheEngineProfile) {
+  // The real updater library was built by build_rust_updater.py from the
+  // same GN args; a stale or mismatched library would differ here.
+  RealUpdater updater;
+  EXPECT_EQ(updater.UpdaterSecurityProfile(), EngineSecurityProfile());
+}
+#endif
+
 TEST(UpdaterSecurityProfile, MismatchedUpdaterLibraryIsNeverInitialized) {
   Updater::ResetLaunchStateForTesting();
   const std::string engine = EngineSecurityProfile();
-  for (const std::string& other :
-       {std::string(engine == "legacy" ? "hardened" : "legacy"),
-        std::string("hardened-diversified"), std::string()}) {
+  // Every other contract profile (P5: three), and garbage.
+  std::vector<std::string> others;
+  for (const char* profile : {"legacy", "hardened", "hardened-diversified"}) {
+    if (engine != profile) {
+      others.emplace_back(profile);
+    }
+  }
+  others.emplace_back("hardened-diversified-v4");
+  others.emplace_back();
+  ASSERT_EQ(others.size(), 4u);
+  for (const std::string& other : others) {
     MockUpdater updater;
     updater.set_updater_security_profile(other.empty() ? "unknown" : other);
     AppConfig config;

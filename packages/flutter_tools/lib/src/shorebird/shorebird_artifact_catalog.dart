@@ -16,7 +16,12 @@
 ///    signed `open-shorebird.artifact-catalog-signature.v1:<sha256 hex>`;
 ///  * a hardened toolchain sees a hardened catalog and a production key. A
 ///    development key or (with an explicit override) no signature is allowed
-///    only for legacy toolchains, and the caller warns loudly.
+///    only for legacy toolchains, and the caller warns loudly;
+///  * contract v3 (P5, section 11): a `hardened-diversified` toolchain sees a
+///    contract version 3 `hardened-diversified` catalog naming its own
+///    `diversification_profile_id`, under the hardened signer rule. Contract
+///    v3 catalogs are accepted for no other profile, and v1 catalogs keep
+///    `diversification_profile_id: null`.
 library;
 
 import 'dart:convert';
@@ -201,6 +206,7 @@ class ShorebirdArtifactCatalog {
   ShorebirdArtifactCatalog._({
     required this.toolchainId,
     required this.securityProfile,
+    required this.diversificationProfileId,
     required this.engineRevision,
     required this.upstreamEngineRevision,
     required this.artifacts,
@@ -209,6 +215,10 @@ class ShorebirdArtifactCatalog {
 
   final String toolchainId;
   final String securityProfile;
+
+  /// `sha256:` ID for a contract v3 `hardened-diversified` catalog; null for
+  /// contract v1.
+  final String? diversificationProfileId;
   final String engineRevision;
   final String upstreamEngineRevision;
 
@@ -233,20 +243,42 @@ class ShorebirdArtifactCatalog {
           'origins',
           'artifacts',
         });
-    if (doc['schema'] != 'open-shorebird.artifact-catalog' || doc['contract_version'] != 1) {
-      throw ShorebirdCatalogException('not an open-shorebird.artifact-catalog contract 1 document');
+    final Object? contractVersion = doc['contract_version'];
+    if (doc['schema'] != 'open-shorebird.artifact-catalog' ||
+        (contractVersion != 1 && contractVersion != 3)) {
+      throw ShorebirdCatalogException(
+        'not an open-shorebird.artifact-catalog contract 1 or 3 document',
+      );
     }
     final String profile = _string(doc, 'security_profile', r'$');
-    if (profile != 'legacy' && profile != 'hardened') {
-      throw ShorebirdCatalogException(
-        r'$.security_profile '
-        '$profile is not admissible under contract v1',
-      );
-    }
-    if (doc['diversification_profile_id'] != null) {
-      throw ShorebirdCatalogException(
-        r'$.diversification_profile_id must be null under contract v1',
-      );
+    final String? diversificationProfileId;
+    if (contractVersion == 1) {
+      if (profile != 'legacy' && profile != 'hardened') {
+        throw ShorebirdCatalogException(
+          r'$.security_profile '
+          '$profile is not admissible under contract v1',
+        );
+      }
+      if (doc['diversification_profile_id'] != null) {
+        throw ShorebirdCatalogException(
+          r'$.diversification_profile_id must be null under contract v1',
+        );
+      }
+      diversificationProfileId = null;
+    } else {
+      // Contract v3 exists only for hardened-diversified toolchains.
+      if (profile != 'hardened-diversified') {
+        throw ShorebirdCatalogException(
+          r'$.security_profile '
+          '$profile is not admissible under contract v3',
+        );
+      }
+      if (doc['diversification_profile_id'] == null) {
+        throw ShorebirdCatalogException(
+          r'$.diversification_profile_id is required under contract v3',
+        );
+      }
+      diversificationProfileId = _string(doc, 'diversification_profile_id', r'$', _sha256Id);
     }
     final String engine = _string(doc, 'engine_revision', r'$', _revision);
     final String upstream = _string(doc, 'upstream_engine_revision', r'$', _revision);
@@ -360,6 +392,7 @@ class ShorebirdArtifactCatalog {
     return ShorebirdArtifactCatalog._(
       toolchainId: _string(doc, 'toolchain_id', r'$', _sha256Id),
       securityProfile: profile,
+      diversificationProfileId: diversificationProfileId,
       engineRevision: engine,
       upstreamEngineRevision: upstream,
       artifacts: artifacts,
@@ -430,7 +463,8 @@ Map<String, _TrustedKey> _parseTrust(List<int> bytes) {
 }
 
 /// Verifies [catalogBytes] and its detached [signatureBytes] against the pinned
-/// [trustBytes] for a toolchain of [securityProfile] (`legacy` or `hardened`).
+/// [trustBytes] for a toolchain of [securityProfile] (`legacy`, `hardened` or
+/// `hardened-diversified`; the last one with its [diversificationProfileId]).
 ///
 /// Returns the catalog and how it was authenticated, or throws a
 /// [ShorebirdCatalogException] naming why it must not be used.
@@ -442,11 +476,24 @@ Map<String, _TrustedKey> _parseTrust(List<int> bytes) {
   required String engineRevision,
   bool allowUnsigned = false,
   ShorebirdReleaseTrust? releaseTrust,
+  String? diversificationProfileId,
 }) {
-  if (securityProfile != 'legacy' && securityProfile != 'hardened') {
+  if (securityProfile != 'legacy' &&
+      securityProfile != 'hardened' &&
+      securityProfile != 'hardened-diversified') {
     throw ShorebirdCatalogException('unsupported security profile $securityProfile');
   }
-  final hardened = securityProfile == 'hardened';
+  final diversified = securityProfile == 'hardened-diversified';
+  // hardened-diversified follows every hardened rule (section 10.6).
+  final bool hardened = securityProfile == 'hardened' || diversified;
+  if (diversified != (diversificationProfileId != null)) {
+    throw ShorebirdCatalogException(
+      'a diversification profile ID is required exactly for a hardened-diversified toolchain',
+    );
+  }
+  if (diversified && !_sha256Id.hasMatch(diversificationProfileId!)) {
+    throw ShorebirdCatalogException('the diversification profile ID must be sha256:<64 hex>');
+  }
   if (hardened && releaseTrust == null) {
     throw ShorebirdCatalogException(
       'a hardened toolchain verifies the catalog signer under the release root '
@@ -460,8 +507,18 @@ Map<String, _TrustedKey> _parseTrust(List<int> bytes) {
       'the catalog is for engine ${catalog.engineRevision}, not this toolchain engine $engineRevision',
     );
   }
-  if (hardened && catalog.securityProfile != 'hardened') {
-    throw ShorebirdCatalogException('a hardened toolchain requires a hardened catalog');
+  if (catalog.securityProfile != securityProfile &&
+      (hardened || catalog.securityProfile == 'hardened-diversified')) {
+    throw ShorebirdCatalogException(
+      'a $securityProfile toolchain requires a $securityProfile catalog, not '
+      '${catalog.securityProfile}',
+    );
+  }
+  if (diversified && catalog.diversificationProfileId != diversificationProfileId) {
+    throw ShorebirdCatalogException(
+      'the catalog is for diversification profile ${catalog.diversificationProfileId}, not '
+      "this toolchain's $diversificationProfileId",
+    );
   }
   if (signatureBytes == null) {
     if (hardened) {
