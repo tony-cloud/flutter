@@ -5,6 +5,7 @@
 package com.flutter.gradle.tasks
 
 import androidx.annotation.VisibleForTesting
+import com.flutter.gradle.ShorebirdEngineJars
 import groovy.json.JsonSlurper
 import org.gradle.api.Action
 import org.gradle.api.GradleException
@@ -115,6 +116,9 @@ object BaseFlutterTaskHelper {
             }
             baseFlutterTask.shorebirdTraceFile?.let {
                 args("--shorebird-trace-file=$it")
+            }
+            baseFlutterTask.shorebirdEngineJars?.let {
+                environment(ShorebirdEngineJars.environment(it.files))
             }
             args("-dTargetFile=${baseFlutterTask.targetPath}")
             args("-dTargetPlatform=android")

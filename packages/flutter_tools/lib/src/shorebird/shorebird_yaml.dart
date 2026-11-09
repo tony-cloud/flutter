@@ -129,12 +129,16 @@ String signHardenedShorebirdYaml(
       fileSystem: fileSystem,
       targetPlatform: targetPlatform,
       buildMode: buildMode,
+      environment: environment,
     ),
     targetPlatform: targetPlatform,
     androidSigningCerts: shorebirdAndroidSigningCerts(
       environment[kShorebirdAndroidSigningCertEnvVar],
     ),
     appleTeamIds: shorebirdAppleTeamIds(environment[kShorebirdAppleTeamIdsEnvVar]),
+    windowsSigningCerts: shorebirdWindowsSigningCerts(
+      environment[kShorebirdWindowsSigningCertEnvVar],
+    ),
     diversificationProfileId: compiled[kShorebirdDiversificationProfileIdKey] as String?,
   );
   final String recordDir = environment[kShorebirdBuildManifestRecordDirEnvVar] ?? '';

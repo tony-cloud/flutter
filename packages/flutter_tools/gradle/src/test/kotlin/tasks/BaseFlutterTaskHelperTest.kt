@@ -192,6 +192,7 @@ class BaseFlutterTaskHelperTest {
         every { baseFlutterTask.intermediateDir } returns BaseFlutterTaskPropertiesTest.intermediateDirFileTest
         every { baseFlutterTask.performanceMeasurementFile } returns BaseFlutterTaskPropertiesTest.PERFORMANCE_MEASUREMENT_FILE_TEST
         every { baseFlutterTask.shorebirdTraceFile } returns "trace.json"
+        every { baseFlutterTask.shorebirdEngineJars } returns null
 
         every { baseFlutterTask.buildMode } returns buildModeString
         every { baseFlutterTask.flutterRoot } returns BaseFlutterTaskPropertiesTest.flutterRootTest
@@ -295,6 +296,7 @@ class BaseFlutterTaskHelperTest {
         every { baseFlutterTask.intermediateDir } returns BaseFlutterTaskPropertiesTest.intermediateDirFileTest
         every { baseFlutterTask.performanceMeasurementFile } returns null
         every { baseFlutterTask.shorebirdTraceFile } returns null
+        every { baseFlutterTask.shorebirdEngineJars } returns null
 
         every { baseFlutterTask.buildMode } returns buildModeString
         every { baseFlutterTask.flutterRoot } returns BaseFlutterTaskPropertiesTest.flutterRootTest

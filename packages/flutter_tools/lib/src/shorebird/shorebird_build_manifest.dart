@@ -30,6 +30,7 @@ library;
 import 'dart:convert';
 import 'dart:typed_data';
 
+import 'package:archive/archive.dart' show ArchiveFile, ZipDecoder;
 import 'package:crypto/crypto.dart' show sha256;
 
 import '../artifacts.dart';
@@ -63,6 +64,18 @@ const kShorebirdAndroidSigningCertEnvVar = 'SHOREBIRD_ANDROID_SIGNING_CERT_SHA25
 
 /// Comma-separated Apple team identifiers allowed to sign a macOS app.
 const kShorebirdAppleTeamIdsEnvVar = 'SHOREBIRD_APPLE_TEAM_IDS';
+
+/// Comma-separated SHA-256 digests (hex, or colon form) of the DER leaf
+/// certificate(s) allowed to Authenticode-sign the Windows engine module
+/// `flutter_windows.dll` (hardening P6, contract §12).
+const kShorebirdWindowsSigningCertEnvVar = 'SHOREBIRD_WINDOWS_SIGNING_CERT_SHA256';
+
+/// JSON array of the absolute paths of the engine jars
+/// (`io.flutter:<abi>_release`) that Gradle resolved for the variant being
+/// built, each carrying `lib/<abi>/libflutter.so`. The Flutter Gradle
+/// plugin sets it for hardened builds only (hardening P6, contract §12):
+/// these are the exact libraries the APK or app bundle packages.
+const kShorebirdAndroidEngineJarsEnvVar = 'SHOREBIRD_ANDROID_ENGINE_JARS';
 
 const kShorebirdBuildManifestKey = 'shorebird_build_manifest';
 const _kTokenPrefix = 'v2.';
@@ -320,15 +333,112 @@ Map<String, String> measureShorebirdMachOArchitectures(Uint8List image) {
   return measurements;
 }
 
+/// Updater arch name of an Android ABI directory.
+const _kAndroidAbiArches = <String, String>{
+  'arm64-v8a': 'aarch64',
+  'armeabi-v7a': 'arm',
+  'x86_64': 'x86_64',
+  'x86': 'x86',
+};
+
+final _kAndroidEngineLibrary = RegExp(r'^lib/([^/]+)/libflutter\.so$');
+
+/// The `libflutter.so` measurements of the Android engine jars listed in
+/// [jars] (the [kShorebirdAndroidEngineJarsEnvVar] value), one per ABI,
+/// sorted by arch. Every jar must carry exactly one engine library, and no
+/// ABI may appear twice.
+List<ShorebirdModuleMeasurement> shorebirdAndroidEngineModuleMeasurements(
+  String? jars,
+  FileSystem fileSystem,
+) {
+  if (jars == null || jars.trim().isEmpty) {
+    throw const FormatException(
+      'A hardened Android build binds the libflutter.so that Gradle packages, but '
+      '$kShorebirdAndroidEngineJarsEnvVar is not set; build through the Flutter Gradle plugin '
+      'of this toolchain',
+    );
+  }
+  final Object? decoded;
+  try {
+    decoded = jsonDecode(jars);
+  } on FormatException {
+    throw const FormatException('$kShorebirdAndroidEngineJarsEnvVar must be a JSON array of paths');
+  }
+  if (decoded is! List<Object?> || decoded.isEmpty || decoded.any((Object? p) => p is! String)) {
+    throw const FormatException(
+      '$kShorebirdAndroidEngineJarsEnvVar must be a non-empty JSON array of paths',
+    );
+  }
+  final measurements = <String, String>{};
+  for (final String path in decoded.cast<String>()) {
+    final File jar = fileSystem.file(path);
+    if (!jar.existsSync()) {
+      throw FormatException('Hardened build cannot measure the engine module: $path is missing');
+    }
+    final libraries = <ArchiveFile>[
+      for (final ArchiveFile entry in ZipDecoder().decodeBytes(jar.readAsBytesSync()).files)
+        if (entry.isFile && _kAndroidEngineLibrary.hasMatch(entry.name)) entry,
+    ];
+    if (libraries.length != 1) {
+      throw FormatException(
+        '$path must carry exactly one lib/<abi>/libflutter.so, not ${libraries.length}',
+      );
+    }
+    final String abi = _kAndroidEngineLibrary.firstMatch(libraries.single.name)!.group(1)!;
+    final String? arch = _kAndroidAbiArches[abi];
+    if (arch == null) {
+      throw FormatException('$path carries an engine for the unsupported ABI $abi');
+    }
+    if (measurements.containsKey(arch)) {
+      throw FormatException('Two engine jars carry a libflutter.so for $abi');
+    }
+    measurements[arch] = measureShorebirdModuleImage(
+      Uint8List.fromList(libraries.single.content as List<int>),
+    );
+  }
+  return <ShorebirdModuleMeasurement>[
+    for (final String arch in measurements.keys.toList()..sort())
+      ShorebirdModuleMeasurement('android', arch, measurements[arch]!),
+  ];
+}
+
+/// The `FlutterMacOS` binary inside [xcframework]: the universal slice of a
+/// published engine (`macos-arm64_x86_64`), or the one slice of a
+/// single-architecture local engine build.
+String _macOSFrameworkBinary(FileSystem fileSystem, String xcframework) {
+  const binary = 'FlutterMacOS.framework/Versions/A/FlutterMacOS';
+  final String universal = fileSystem.path.join(xcframework, 'macos-arm64_x86_64', binary);
+  if (fileSystem.file(universal).existsSync()) {
+    return universal;
+  }
+  final Directory directory = fileSystem.directory(xcframework);
+  final slices = directory.existsSync()
+      ? <String>[
+          for (final FileSystemEntity entity in directory.listSync())
+            if (entity is Directory &&
+                fileSystem.path.basename(entity.path).startsWith('macos-') &&
+                fileSystem.file(fileSystem.path.join(entity.path, binary)).existsSync())
+              fileSystem.path.join(entity.path, binary),
+        ]
+      : <String>[];
+  if (slices.length == 1) {
+    return slices.single;
+  }
+  // Reported as missing by the caller.
+  return universal;
+}
+
 /// The engine modules a hardened build of [targetPlatform] packages, measured
-/// from the engine artifacts this build uses. Android returns none: its
-/// engine library reaches the app through Gradle (P6), and the updater binds
-/// the APK signer instead.
+/// from the engine artifacts this build uses. Android measures the engine
+/// jars Gradle resolved ([kShorebirdAndroidEngineJarsEnvVar] in
+/// [environment]), since its engine library reaches the app through Gradle's
+/// Maven resolution rather than the Flutter artifact cache (P6).
 List<ShorebirdModuleMeasurement> shorebirdEngineModuleMeasurements({
   required Artifacts artifacts,
   required FileSystem fileSystem,
   required TargetPlatform targetPlatform,
   required BuildMode buildMode,
+  Map<String, String> environment = const <String, String>{},
 }) {
   Uint8List read(String path) {
     final File file = fileSystem.file(path);
@@ -357,9 +467,13 @@ List<ShorebirdModuleMeasurement> shorebirdEngineModuleMeasurements({
     case TargetPlatform.darwin:
       final Map<String, String> slices = measureShorebirdMachOArchitectures(
         read(
-          path(
-            Artifact.flutterMacOSXcframework,
-            'macos-arm64_x86_64/FlutterMacOS.framework/Versions/A/FlutterMacOS',
+          _macOSFrameworkBinary(
+            fileSystem,
+            artifacts.getArtifactPath(
+              Artifact.flutterMacOSXcframework,
+              platform: targetPlatform,
+              mode: buildMode,
+            ),
           ),
         ),
       );
@@ -393,7 +507,10 @@ List<ShorebirdModuleMeasurement> shorebirdEngineModuleMeasurements({
     case TargetPlatform.android_arm:
     case TargetPlatform.android_arm64:
     case TargetPlatform.android_x64:
-      return const <ShorebirdModuleMeasurement>[];
+      return shorebirdAndroidEngineModuleMeasurements(
+        environment[kShorebirdAndroidEngineJarsEnvVar],
+        fileSystem,
+      );
     case TargetPlatform.linux_riscv64:
     case TargetPlatform.fuchsia_arm64:
     case TargetPlatform.fuchsia_x64:
@@ -462,6 +579,22 @@ List<String> shorebirdAndroidSigningCerts(String? value) {
     final String hex = raw.replaceAll(':', '').toLowerCase();
     if (!RegExp(r'^[0-9a-f]{64}$').hasMatch(hex)) {
       throw FormatException('$kShorebirdAndroidSigningCertEnvVar entry is not a SHA-256: $raw');
+    }
+    if (!certs.contains(hex)) {
+      certs.add(hex);
+    }
+  }
+  return certs;
+}
+
+/// Normalizes the [kShorebirdWindowsSigningCertEnvVar] list like
+/// [shorebirdAndroidSigningCerts].
+List<String> shorebirdWindowsSigningCerts(String? value) {
+  final certs = <String>[];
+  for (final String raw in _list(value)) {
+    final String hex = raw.replaceAll(':', '').toLowerCase();
+    if (!RegExp(r'^[0-9a-f]{64}$').hasMatch(hex)) {
+      throw FormatException('$kShorebirdWindowsSigningCertEnvVar entry is not a SHA-256: $raw');
     }
     if (!certs.contains(hex)) {
       certs.add(hex);
@@ -562,6 +695,7 @@ String appendShorebirdBuildManifest(
   required TargetPlatform targetPlatform,
   List<String> androidSigningCerts = const <String>[],
   List<String> appleTeamIds = const <String>[],
+  List<String> windowsSigningCerts = const <String>[],
   String? diversificationProfileId,
 }) {
   final diversified = diversificationProfileId != null;
@@ -587,6 +721,14 @@ String appendShorebirdBuildManifest(
       '$kShorebirdAppleTeamIdsEnvVar applies only to macOS builds, not ${targetPlatform.getName()}',
     );
   }
+  if (windowsSigningCerts.isNotEmpty &&
+      targetPlatform != TargetPlatform.windows_x64 &&
+      targetPlatform != TargetPlatform.windows_arm64) {
+    throw FormatException(
+      '$kShorebirdWindowsSigningCertEnvVar applies only to Windows builds, not '
+      '${targetPlatform.getName()}',
+    );
+  }
   final List<int> publicKey = trust.roleKey(ShorebirdSigningRole.buildManifest, signer.keyId);
   // Field order is fixed for reproducible output; the signature covers the
   // exact bytes, so the order carries no meaning to the verifier.
@@ -606,6 +748,9 @@ String appendShorebirdBuildManifest(
     'package_identity': <String, List<String>>{
       'android_signing_cert_sha256': androidSigningCerts,
       'apple_team_ids': appleTeamIds,
+      // Contract §12 (P6): written only when declared, so every manifest
+      // without a Windows identity keeps its pre-P6 bytes.
+      if (windowsSigningCerts.isNotEmpty) 'windows_signing_cert_sha256': windowsSigningCerts,
     },
   });
   final List<int> manifestBytes = utf8.encode(manifest);

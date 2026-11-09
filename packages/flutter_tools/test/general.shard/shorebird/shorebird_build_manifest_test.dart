@@ -5,6 +5,7 @@
 import 'dart:convert';
 import 'dart:typed_data';
 
+import 'package:archive/archive.dart' show Archive, ArchiveFile, ZipEncoder;
 import 'package:crypto/crypto.dart' show sha256;
 import 'package:file/file.dart';
 import 'package:file/memory.dart';
@@ -283,6 +284,7 @@ void main() {
       TargetPlatform platform = TargetPlatform.linux_x64,
       List<String> android = const <String>[],
       List<String> apple = const <String>[],
+      List<String> windows = const <String>[],
       String? profileId,
     }) => appendShorebirdBuildManifest(
       text,
@@ -294,6 +296,7 @@ void main() {
       targetPlatform: platform,
       androidSigningCerts: android,
       appleTeamIds: apple,
+      windowsSigningCerts: windows,
       diversificationProfileId: profileId,
     );
 
@@ -394,6 +397,51 @@ void main() {
       expect(() => shorebirdAppleTeamIds('abcde12345'), throwsFormatException);
     });
 
+    test('a Windows Authenticode identity is written only for Windows, only when declared', () {
+      Map<String, Object?> identityOf(String text) {
+        final String token = text.trimRight().split('\n').last.split(' ').last;
+        final manifest =
+            jsonDecode(utf8.decode(_unb64url(token.split('.')[1]))) as Map<String, Object?>;
+        return manifest['package_identity']! as Map<String, Object?>;
+      }
+
+      final String cert = 'cd' * 32;
+      expect(
+        identityOf(build(platform: TargetPlatform.windows_x64, windows: <String>[cert])),
+        <String, Object?>{
+          'android_signing_cert_sha256': <Object?>[],
+          'apple_team_ids': <Object?>[],
+          'windows_signing_cert_sha256': <Object?>[cert],
+        },
+      );
+      expect(
+        () => build(platform: TargetPlatform.windows_arm64, windows: <String>[cert]),
+        returnsNormally,
+      );
+      // Without a declaration the key is absent: pre-P6 bytes (see the goldens).
+      expect(identityOf(build(platform: TargetPlatform.windows_x64)).keys, <String>[
+        'android_signing_cert_sha256',
+        'apple_team_ids',
+      ]);
+      for (final platform in <TargetPlatform>[
+        TargetPlatform.linux_x64,
+        TargetPlatform.android,
+        TargetPlatform.darwin,
+        TargetPlatform.ios,
+      ]) {
+        expect(
+          () => build(platform: platform, windows: <String>[cert]),
+          throwsFormatException,
+          reason: platform.getName(),
+        );
+      }
+      expect(
+        shorebirdWindowsSigningCerts('AB:${'CD:' * 30}EF, ${'ab' * 32}, ${'AB' * 32}'),
+        <String>['ab${'cd' * 30}ef', 'ab' * 32],
+      );
+      expect(() => shorebirdWindowsSigningCerts('abc'), throwsFormatException);
+    });
+
     test('refuses text it cannot bind exactly', () {
       for (final bad in <String>[
         'app_id: app',
@@ -489,19 +537,115 @@ void main() {
       );
     });
 
-    test('Android binds the signer instead of a module', () {
+    /// An engine jar as Gradle resolves it from Maven.
+    String writeJar(String name, Map<String, List<int>> files) {
+      final archive = Archive();
+      for (final MapEntry<String, List<int>> file in files.entries) {
+        archive.addFile(ArchiveFile(file.key, file.value.length, file.value));
+      }
+      final path = '/gradle/caches/$name.jar';
+      fs.file(path)
+        ..createSync(recursive: true)
+        ..writeAsBytesSync(ZipEncoder().encode(archive)!);
+      return path;
+    }
+
+    test('Android binds the libflutter.so of every engine jar Gradle resolved', () {
+      final Uint8List other = _elf64Fixture()..[0x100] ^= 1;
+      final String arm64 = writeJar('arm64_v8a_release', <String, List<int>>{
+        'lib/arm64-v8a/libflutter.so': _elf64Fixture(),
+        'META-INF/MANIFEST.MF': utf8.encode('Manifest-Version: 1.0\n'),
+      });
+      final String arm = writeJar('armeabi_v7a_release', <String, List<int>>{
+        'lib/armeabi-v7a/libflutter.so': other,
+      });
       update(
-        env(<String, String>{kShorebirdAndroidSigningCertEnvVar: 'ab' * 32}),
+        env(<String, String>{
+          kShorebirdAndroidSigningCertEnvVar: 'ab' * 32,
+          kShorebirdAndroidEngineJarsEnvVar: jsonEncode(<String>[arm64, arm]),
+        }),
         TargetPlatform.android,
       );
       final Map<String, Object?> manifest = manifestOf(
         fs.file('/shorebird.yaml').readAsStringSync(),
       );
-      expect(manifest['modules'], isEmpty);
+      expect(manifest['modules'], <Object>[
+        <String, String>{'platform': 'android', 'arch': 'aarch64', 'measurement': _elfGolden},
+        <String, String>{
+          'platform': 'android',
+          'arch': 'arm',
+          'measurement': measureShorebirdModuleImage(other),
+        },
+      ]);
       expect(
         (manifest['package_identity']! as Map<String, Object?>)['android_signing_cert_sha256'],
         <String>['ab' * 32],
       );
+    });
+
+    test('Android refuses to sign without a measurable engine library for each jar', () {
+      final String good = writeJar('arm64_v8a_release', <String, List<int>>{
+        'lib/arm64-v8a/libflutter.so': _elf64Fixture(),
+      });
+      void refused(String? jars, String reason) {
+        fs
+            .file('/shorebird.yaml')
+            .writeAsStringSync('app_id: app\nbase_url: https://updates.example.com\n');
+        expect(
+          () => update(
+            env(<String, String>{kShorebirdAndroidEngineJarsEnvVar: ?jars}),
+            TargetPlatform.android,
+          ),
+          refusedWith(reason),
+        );
+      }
+
+      refused(null, kShorebirdAndroidEngineJarsEnvVar);
+      refused('', kShorebirdAndroidEngineJarsEnvVar);
+      refused('/a.jar', 'JSON array');
+      refused('[]', 'non-empty JSON array');
+      refused('[1]', 'non-empty JSON array');
+      refused(jsonEncode(<String>['/missing.jar']), 'missing');
+      refused(
+        jsonEncode(<String>[
+          writeJar('empty', <String, List<int>>{
+            'classes.jar': <int>[1],
+          }),
+        ]),
+        'exactly one lib/<abi>/libflutter.so',
+      );
+      refused(
+        jsonEncode(<String>[
+          writeJar('mips', <String, List<int>>{'lib/mips/libflutter.so': _elf64Fixture()}),
+        ]),
+        'unsupported ABI mips',
+      );
+      refused(jsonEncode(<String>[good, good]), 'Two engine jars');
+      refused(
+        jsonEncode(<String>[
+          writeJar('not_elf', <String, List<int>>{
+            'lib/arm64-v8a/libflutter.so': utf8.encode('not an ELF'),
+          }),
+        ]),
+        'Unsupported module format',
+      );
+    });
+
+    test('macOS measures the one slice of a single-architecture local engine', () {
+      final String xcframework = artifacts.getArtifactPath(
+        Artifact.flutterMacOSXcframework,
+        platform: TargetPlatform.darwin,
+        mode: BuildMode.release,
+      );
+      fs.file(
+          fs.path.join(xcframework, 'macos-arm64/FlutterMacOS.framework/Versions/A/FlutterMacOS'),
+        )
+        ..createSync(recursive: true)
+        ..writeAsBytesSync(_machoFixture());
+      update(env(), TargetPlatform.darwin);
+      expect(manifestOf(fs.file('/shorebird.yaml').readAsStringSync())['modules'], <Object>[
+        <String, String>{'platform': 'macos', 'arch': 'aarch64', 'measurement': _machoGolden},
+      ]);
     });
 
     test('fails the build without a key, a target or an engine module', () {

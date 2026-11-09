@@ -740,6 +740,8 @@ class FlutterPlugin : Plugin<Project> {
                     dartDefines = dartDefinesValue
                     performanceMeasurementFile = performanceMeasurementFileValue
                     shorebirdTraceFile = shorebirdTraceFileValue
+                    shorebirdEngineJars =
+                        ShorebirdEngineJars.forVariant(project, variant.name, variantBuildMode, System.getenv())
                     codeSizeDirectory = codeSizeDirectoryValue
                     deferredComponents = deferredComponentsValue
                     validateDeferredComponents = validateDeferredComponentsValue

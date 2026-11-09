@@ -5,10 +5,14 @@
 package com.flutter.gradle.tasks
 
 import org.gradle.api.DefaultTask
+import org.gradle.api.file.FileCollection
 import org.gradle.api.tasks.Input
+import org.gradle.api.tasks.InputFiles
 import org.gradle.api.tasks.Internal
 import org.gradle.api.tasks.Optional
 import org.gradle.api.tasks.OutputFiles
+import org.gradle.api.tasks.PathSensitive
+import org.gradle.api.tasks.PathSensitivity
 import java.io.File
 
 // IMPORTANT: Do not add logic to the methods in this class directly,
@@ -116,6 +120,14 @@ open class BaseFlutterTask : DefaultTask() {
     @Optional
     @Input
     var shorebirdTraceFile: String? = null
+
+    // Shorebird-specific (hardening P6): the engine jars Gradle resolved for
+    // this variant, whose libflutter.so the signed build manifest binds. Set
+    // only for hardened builds (see ShorebirdEngineJars); null otherwise.
+    @get:Optional
+    @get:InputFiles
+    @get:PathSensitive(PathSensitivity.NONE)
+    var shorebirdEngineJars: FileCollection? = null
 
     // Shorebird-specific: a digest of SHOREBIRD_PUBLIC_KEY, which flutter
     // assemble writes into the generated shorebird.yaml, so the task reruns

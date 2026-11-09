@@ -58,6 +58,7 @@ import 'src/pre_run_validator.dart';
 import 'src/project_validator.dart';
 import 'src/resident_runner.dart';
 import 'src/runner/flutter_command.dart';
+import 'src/shorebird/shorebird_verify_artifact_command.dart';
 import 'src/web/web_runner.dart';
 
 /// Main entry point for commands.
@@ -281,6 +282,8 @@ List<FlutterCommand> generateCommands({required bool verboseHelp, required bool 
       // Development-only commands. These are always hidden,
       IdeConfigCommand(),
       UpdatePackagesCommand(verboseHelp: verboseHelp),
+      // Shorebird (hidden): re-verifies a hardened release's distributable.
+      ShorebirdVerifyArtifactCommand(),
     ];
 
 /// An abstraction for instantiation of the correct logger type.

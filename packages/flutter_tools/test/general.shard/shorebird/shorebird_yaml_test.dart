@@ -4,10 +4,13 @@
 
 import 'dart:convert';
 import 'dart:io';
+import 'dart:typed_data';
 
+import 'package:archive/archive.dart' show Archive, ArchiveFile, ZipEncoder;
 import 'package:file/memory.dart';
 import 'package:flutter_tools/src/artifacts.dart';
 import 'package:flutter_tools/src/build_info.dart';
+import 'package:flutter_tools/src/shorebird/shorebird_build_manifest.dart';
 import 'package:flutter_tools/src/shorebird/shorebird_yaml.dart';
 import 'package:test/test.dart';
 import 'package:yaml/yaml.dart';
@@ -460,9 +463,26 @@ base_url: https://updates.example.com
         ..createSync()
         ..writeAsStringSync(hardenedYaml);
       // P3/P4: a hardened build also signs a build manifest under the
-      // release root (see shorebird_build_manifest_test.dart); Android binds
-      // no engine module.
+      // release root (see shorebird_build_manifest_test.dart); P6: Android
+      // binds the libflutter.so of the engine jar Gradle resolved.
       fs.file('/release-trust.json').writeAsStringSync(release_trust.operatorBundle());
+      // A minimal ELF64 with one read-only PT_LOAD segment.
+      final engine = Uint8List(0x100);
+      engine.setRange(0, 7, <int>[0x7f, 0x45, 0x4c, 0x46, 2, 1, 1]);
+      ByteData.sublistView(engine)
+        ..setUint16(0x10, 3, Endian.little)
+        ..setUint64(0x20, 0x40, Endian.little)
+        ..setUint16(0x36, 56, Endian.little)
+        ..setUint16(0x38, 1, Endian.little)
+        ..setUint32(0x40, 1, Endian.little)
+        ..setUint32(0x44, 5, Endian.little)
+        ..setUint64(0x48, 0x80, Endian.little)
+        ..setUint64(0x50, 0x1080, Endian.little)
+        ..setUint64(0x60, 0x40, Endian.little)
+        ..setUint64(0x68, 0x40, Endian.little);
+      final jar = Archive()
+        ..addFile(ArchiveFile('lib/arm64-v8a/libflutter.so', engine.length, engine));
+      fs.file('/arm64_v8a_release.jar').writeAsBytesSync(ZipEncoder().encode(jar)!);
       fs
           .file('/manifest.pem')
           .writeAsStringSync(
@@ -477,6 +497,7 @@ base_url: https://updates.example.com
           'SHOREBIRD_BUILD_MANIFEST_SIGNING_KEY': '/manifest.pem',
           'SHOREBIRD_RELEASE_TRUST': '/release-trust.json',
           'SHOREBIRD_RELEASE_ROOT': base64.encode(utf8.encode(release_trust.operatorRoot)),
+          kShorebirdAndroidEngineJarsEnvVar: jsonEncode(<String>['/arm64_v8a_release.jar']),
         }),
         fileSystem: fs,
         targetPlatform: TargetPlatform.android,
