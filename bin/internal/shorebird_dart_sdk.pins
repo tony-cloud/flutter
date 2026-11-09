@@ -4,4 +4,4 @@
 schema open-shorebird.dart-sdk-lock
 contract_version 1
 engine_revision 44a553c3b3c7797c7f0f20961d46a8b17e06444c
-dart_sdk_revision c3a98bfdfd296ad0f778e0a545ce1d3a18259068
+dart_sdk_revision e7926a3bf22e421cce8342e4c1685c825f42a57a
